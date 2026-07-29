@@ -63,6 +63,12 @@ working files, local environments, and secrets remain untracked. The original
 raw data and pre-rewrite repository are retained in the verified NAS archive
 documented in [the preservation audit](docs/audits/2026-07-29-pre-rewrite.md).
 
+The supported game-data contract, including fields, sources, pinned hashes,
+validation gates, and recovery procedure, is in the
+[data dictionary](docs/data-dictionary.md). The committed
+[build manifest](data/parquet/build_manifest.json) is the authoritative
+machine-readable provenance ledger for this exact publication.
+
 ## Revival roadmap
 
 1. Slice 1: rescue the authored project, archive local data, and remove the

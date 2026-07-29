@@ -1,5 +1,7 @@
 from pathlib import Path
+import json
 import re
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -101,3 +103,33 @@ def test_readme_documents_the_new_contract() -> None:
         "## Revival roadmap",
     ):
         assert heading in readme
+
+
+def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
+    required = {
+        "docs/data-dictionary.md",
+        "scripts/archive_raw_snapshot.sh",
+        "data/parquet/build_manifest.json",
+        "data/parquet/franchises.parquet",
+        "data/parquet/games.parquet",
+        "data/parquet/team_games.parquet",
+        "data/parquet/venues.parquet",
+    }
+    missing = [path for path in required if not (ROOT / path).is_file()]
+    assert missing == []
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "data/raw"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked == []
+
+    manifest = json.loads(
+        (ROOT / "data/parquet/build_manifest.json").read_text(encoding="utf-8")
+    )
+    rendered = json.dumps(manifest, sort_keys=True)
+    assert "/home/" not in rendered
+    assert "/main/" not in rendered
