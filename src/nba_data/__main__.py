@@ -13,6 +13,7 @@ def main() -> None:
     fetch_parser = commands.add_parser("fetch")
     fetch_parser.add_argument("--season", type=int, choices=range(2020, 2027))
     commands.add_parser("inspect-venues")
+    commands.add_parser("build")
     args = parser.parse_args()
     seasons = [args.season] if getattr(args, "season", None) else range(2020, 2027)
     if args.command == "fetch":
@@ -21,6 +22,8 @@ def main() -> None:
         bref.fetch(raw, seasons)
     elif args.command == "inspect-venues":
         build.write_venue_inventory(data)
+    elif args.command == "build":
+        build.run(data)
 
 
 if __name__ == "__main__":

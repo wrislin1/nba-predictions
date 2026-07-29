@@ -1,4 +1,6 @@
 import datetime
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -1653,3 +1655,221 @@ def test_write_venue_inventory_reports_non_covid_observed_limits(
         "observed_non_covid_max": 18_000,
         "observed_non_covid_p99": 17_980,
     }]
+
+
+def publication_fixture(monkeypatch, data_dir):
+    stub_one_game_assembly(monkeypatch)
+    team_games, games, report = build.assemble(data_dir / "raw")
+    monkeypatch.setattr(
+        build,
+        "assemble",
+        lambda raw_dir: (team_games.copy(), games.copy(), report.copy()),
+    )
+    reference_dir = data_dir / "reference"
+    reference_dir.mkdir(parents=True)
+    (reference_dir / "franchises.csv").write_text(
+        "alias,franchise_id,first_season,last_season\n"
+        "Atlanta Hawks,ATL,,\n"
+        "Boston Celtics,BOS,,\n",
+        encoding="utf-8",
+    )
+    (reference_dir / "venue_capacities.csv").write_text(
+        "venue_id,franchise_id,first_season,last_season,capacity,"
+        "capacity_source_url,capacity_note\n"
+        "espn-1,ATL,2020,2026,18000,https://example.test/arena,"
+        "Fixture capacity.\n",
+        encoding="utf-8",
+    )
+    (reference_dir / "game_corrections.csv").write_text(
+        ",".join(CORRECTION_COLUMNS) + "\n",
+        encoding="utf-8",
+    )
+    (reference_dir / "hoopr_snapshot.json").write_text(
+        json.dumps({
+            "repository": "sportsdataverse/hoopR-nba-data",
+            "commit": "fixture-commit",
+            "seasons": [2023],
+        }),
+        encoding="utf-8",
+    )
+    return team_games, games
+
+
+def test_run_preserves_prior_publication_when_validation_fails(
+    monkeypatch, tmp_path
+):
+    output_dir = tmp_path / "data/parquet"
+    output_dir.mkdir(parents=True)
+    sentinels = {
+        name: f"sentinel-{name}".encode()
+        for name in (
+            "team_games.parquet",
+            "games.parquet",
+            "franchises.parquet",
+            "venues.parquet",
+            "build_manifest.json",
+        )
+    }
+    for name, content in sentinels.items():
+        (output_dir / name).write_bytes(content)
+
+    def fail_validation(raw_dir):
+        raise build.ValidationError("seeded publication failure")
+
+    monkeypatch.setattr(build, "assemble", fail_validation)
+
+    with pytest.raises(
+        build.ValidationError, match="seeded publication failure"
+    ):
+        build.run(tmp_path / "data")
+
+    assert {
+        path.name: path.read_bytes() for path in output_dir.iterdir()
+    } == sentinels
+
+
+def test_run_publishes_exact_tables_and_deterministic_manifest(
+    monkeypatch, tmp_path
+):
+    data_dir = tmp_path / "data"
+    team_games, games = publication_fixture(monkeypatch, data_dir)
+
+    build.run(data_dir)
+
+    output_dir = data_dir / "parquet"
+    assert {
+        path.name
+        for path in output_dir.iterdir()
+        if not path.name.startswith(".")
+    } == {
+        "team_games.parquet",
+        "games.parquet",
+        "franchises.parquet",
+        "venues.parquet",
+        "build_manifest.json",
+    }
+    assert pd.read_parquet(output_dir / "team_games.parquet").columns.tolist() == (
+        team_games.columns.tolist()
+    )
+    assert pd.read_parquet(output_dir / "games.parquet").columns.tolist() == (
+        games.columns.tolist()
+    )
+    franchises_frame = pd.read_parquet(output_dir / "franchises.parquet")
+    assert franchises_frame.columns.tolist() == [
+        "alias",
+        "franchise_id",
+        "first_season",
+        "last_season",
+    ]
+    assert franchises_frame.dtypes.astype(str).to_dict() == {
+        "alias": "string",
+        "franchise_id": "string",
+        "first_season": "Int64",
+        "last_season": "Int64",
+    }
+    venues_frame = pd.read_parquet(output_dir / "venues.parquet")
+    assert venues_frame.columns.tolist() == CAPACITY_COLUMNS
+    assert venues_frame.dtypes.astype(str).to_dict() == {
+        "venue_id": "string",
+        "franchise_id": "string",
+        "first_season": "int64",
+        "last_season": "int64",
+        "capacity": "int64",
+        "capacity_source_url": "string",
+        "capacity_note": "string",
+    }
+    manifest = json.loads(
+        (output_dir / "build_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["schema_version"] == 1
+    assert manifest["tables"]["games"] == {
+        "rows": len(games),
+        "min_season": 2019,
+        "max_season": 2023,
+        "sha256": hashlib.sha256(
+            (output_dir / "games.parquet").read_bytes()
+        ).hexdigest(),
+    }
+    assert manifest["tables"]["team_games"] == {
+        "rows": len(team_games),
+        "min_season": 2019,
+        "max_season": 2023,
+        "sha256": hashlib.sha256(
+            (output_dir / "team_games.parquet").read_bytes()
+        ).hexdigest(),
+    }
+    assert manifest["validation"]["totals"] == {
+        "games": 2,
+        "team_games": 4,
+    }
+    assert manifest["validation"]["selected_attendance_exemptions"] == {
+        "2023": 0
+    }
+    assert "/home/" not in json.dumps(manifest)
+    assert "fetched_at" not in json.dumps(manifest)
+
+
+def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
+    data_dir = tmp_path / "data"
+    raw_dir = data_dir / "raw/stats_nba"
+    raw_dir.mkdir(parents=True)
+    payload = raw_dir / "leaguegamefinder_2026.json"
+    payload.write_bytes(b'{"resultSets":[]}')
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    payload.with_name(payload.name + ".meta.json").write_text(
+        json.dumps({
+            "endpoint": "LeagueGameFinder",
+            "season": 2026,
+            "season_label": "2025-26",
+            "sha256": digest,
+            "fetched_at": "not-manifest-provenance",
+        }),
+        encoding="utf-8",
+    )
+
+    provenance = build._raw_provenance(data_dir)
+
+    assert provenance["stats_nba"]["seasons"] == [{
+        "path": "raw/stats_nba/leaguegamefinder_2026.json",
+        "endpoint": "LeagueGameFinder",
+        "season": 2026,
+        "season_label": "2025-26",
+        "sha256": digest,
+    }]
+
+
+def test_run_restores_prior_publication_when_directory_swap_fails(
+    monkeypatch, tmp_path
+):
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output_dir = data_dir / "parquet"
+    output_dir.mkdir()
+    sentinels = {
+        name: f"sentinel-{name}".encode()
+        for name in build.PUBLISHED_FILES
+    }
+    for name, content in sentinels.items():
+        (output_dir / name).write_bytes(content)
+    real_replace = build.os.replace
+
+    def fail_stage_swap(source, destination):
+        if (
+            Path(source).name.startswith(".parquet-stage-")
+            and Path(destination) == output_dir
+        ):
+            raise OSError("seeded stage swap failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(build.os, "replace", fail_stage_swap)
+
+    with pytest.raises(OSError, match="seeded stage swap failure"):
+        build.run(data_dir)
+
+    assert {
+        path.name: path.read_bytes() for path in output_dir.iterdir()
+    } == sentinels
+    assert not any(
+        path.name.startswith((".parquet-stage-", ".parquet-rollback-"))
+        for path in data_dir.iterdir()
+    )

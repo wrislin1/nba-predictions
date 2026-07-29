@@ -83,6 +83,20 @@ def test_inspect_venues_writes_inventory_without_fetching(monkeypatch):
     assert recorder.calls == []
 
 
+def test_build_publishes_from_repository_data_directory(monkeypatch):
+    cli = load_cli()
+    recorder = install_fetch_recorders(monkeypatch, cli)
+    data_dir = Path(__file__).resolve().parents[1] / "data"
+    build_calls = []
+    monkeypatch.setattr(cli.build, "run", build_calls.append, raising=False)
+    monkeypatch.setattr(sys, "argv", ["nba_data", "build"])
+
+    cli.main()
+
+    assert build_calls == [data_dir]
+    assert recorder.calls == []
+
+
 @pytest.mark.parametrize("season", [2019, 2027])
 def test_invalid_season_exits_before_fetching(monkeypatch, season):
     cli = load_cli()

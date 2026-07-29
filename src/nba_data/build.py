@@ -1,5 +1,13 @@
 """Assemble and validate the canonical game and team-game panels."""
 
+import hashlib
+import importlib.metadata
+import json
+import os
+import platform
+import re
+import shutil
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -135,6 +143,34 @@ CAPACITY_COLUMNS = [
     "capacity_note",
 ]
 CAPACITY_EXCEPTION_PREFIX = "ATTENDANCE_EXCEPTION: "
+PUBLISHED_FILES = (
+    "team_games.parquet",
+    "games.parquet",
+    "franchises.parquet",
+    "venues.parquet",
+    "build_manifest.json",
+)
+FRANCHISE_COLUMNS = [
+    "alias",
+    "franchise_id",
+    "first_season",
+    "last_season",
+]
+FRANCHISE_DTYPES = {
+    "alias": "string",
+    "franchise_id": "string",
+    "first_season": "Int64",
+    "last_season": "Int64",
+}
+VENUE_DTYPES = {
+    "venue_id": "string",
+    "franchise_id": "string",
+    "first_season": "int64",
+    "last_season": "int64",
+    "capacity": "int64",
+    "capacity_source_url": "string",
+    "capacity_note": "string",
+}
 ATTENDANCE_COVERAGE_EXEMPTION_REASON = (
     "no_fan_bubble_missing_attendance"
 )
@@ -1106,3 +1142,319 @@ def write_venue_inventory(data_dir: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(destination, index=False)
     return destination
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_metadata(path: Path, content_path: Path) -> dict:
+    metadata = (
+        json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    )
+    digest = _sha256(content_path)
+    expected = metadata.get("sha256")
+    if expected is not None and expected != digest:
+        raise ValidationError(
+            f"raw SHA-256 mismatch for {content_path.name}: "
+            f"{digest}, expected {expected}"
+        )
+    return metadata
+
+
+def _relative_path(path: Path, data_dir: Path) -> str:
+    return path.relative_to(data_dir).as_posix()
+
+
+def _raw_provenance(data_dir: Path) -> dict:
+    raw_dir = data_dir / "raw"
+    stats = []
+    stats_paths = (
+        path
+        for path in (raw_dir / "stats_nba").glob(
+            "leaguegamefinder_*.json"
+        )
+        if not path.name.endswith(".meta.json")
+    )
+    for path in sorted(stats_paths):
+        metadata = _load_metadata(
+            path.with_name(path.name + ".meta.json"), path
+        )
+        stats.append({
+            "path": _relative_path(path, data_dir),
+            "endpoint": metadata.get("endpoint", "LeagueGameFinder"),
+            "season": metadata.get("season"),
+            "season_label": metadata.get("season_label"),
+            "sha256": _sha256(path),
+        })
+
+    snapshot_path = data_dir / "reference/hoopr_snapshot.json"
+    snapshot = (
+        json.loads(snapshot_path.read_text(encoding="utf-8"))
+        if snapshot_path.exists()
+        else {}
+    )
+    hoopr_seasons = []
+    for path in sorted((raw_dir / "hoopr").glob("nba_schedule_*.parquet")):
+        metadata = _load_metadata(
+            path.with_name(path.name + ".meta.json"), path
+        )
+        hoopr_seasons.append({
+            "path": _relative_path(path, data_dir),
+            "season": metadata.get("season"),
+            "sha256": _sha256(path),
+        })
+
+    bref_pages = []
+    for path in sorted((raw_dir / "bref").glob("NBA_*_games-*.html")):
+        metadata = _load_metadata(
+            path.with_name(path.name + ".meta.json"), path
+        )
+        bref_pages.append({
+            "path": _relative_path(path, data_dir),
+            "url": (
+                "https://www.basketball-reference.com/leagues/"
+                f"{path.name}"
+            ),
+            "season": metadata.get("season"),
+            "month": metadata.get("month"),
+            "sha256": _sha256(path),
+        })
+
+    legacy_files = [
+        {
+            "path": _relative_path(path, data_dir),
+            "sha256": _sha256(path),
+        }
+        for path in sorted((raw_dir / "legacy").glob("*"))
+        if path.is_file() and not path.name.endswith(".meta.json")
+    ]
+    return {
+        "stats_nba": {
+            "endpoint": "LeagueGameFinder",
+            "seasons": stats,
+        },
+        "hoopr": {
+            "repository": snapshot.get("repository"),
+            "commit": snapshot.get("commit"),
+            "seasons": hoopr_seasons,
+        },
+        "basketball_reference": {"pages": bref_pages},
+        "legacy": {"files": legacy_files},
+    }
+
+
+def _reference_provenance(data_dir: Path) -> dict:
+    reference_dir = data_dir / "reference"
+    return {
+        _relative_path(path, data_dir): _sha256(path)
+        for path in sorted(reference_dir.glob("*"))
+        if path.is_file()
+    }
+
+
+def _dependency_versions(project_dir: Path) -> dict:
+    versions = {}
+    requirements = project_dir / "requirements.in"
+    if requirements.exists():
+        for line in requirements.read_text(encoding="utf-8").splitlines():
+            requirement = line.split("#", 1)[0].strip()
+            if not requirement:
+                continue
+            match = re.match(r"([A-Za-z0-9_.-]+)", requirement)
+            if match is None:
+                continue
+            name = match.group(1)
+            try:
+                versions[name] = importlib.metadata.version(name)
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise ValidationError(
+                    f"direct dependency is not installed: {name}"
+                ) from exc
+    return {
+        "python": platform.python_version(),
+        "dependencies": dict(sorted(versions.items())),
+    }
+
+
+def _load_franchise_dimension(path: Path) -> pd.DataFrame:
+    frame = pd.read_csv(path, dtype="string")
+    if frame.columns.tolist() != FRANCHISE_COLUMNS:
+        raise ValidationError(
+            f"franchise columns must be {FRANCHISE_COLUMNS}"
+        )
+    for column in ("first_season", "last_season"):
+        frame[column] = pd.to_numeric(
+            frame[column], errors="raise"
+        ).astype("Int64")
+    frame = frame.astype(FRANCHISE_DTYPES)
+    return frame.sort_values(
+        ["franchise_id", "first_season", "last_season", "alias"],
+        na_position="first",
+        kind="stable",
+    ).reset_index(drop=True)
+
+
+def _load_venue_dimension(path: Path) -> pd.DataFrame:
+    frame = load_venue_capacities(path).astype(VENUE_DTYPES)
+    return frame.sort_values(
+        ["venue_id", "franchise_id", "first_season", "last_season"],
+        kind="stable",
+    ).reset_index(drop=True)
+
+
+def _assert_staged_frame(
+    actual: pd.DataFrame,
+    expected: pd.DataFrame,
+    table: str,
+) -> None:
+    if actual.columns.tolist() != expected.columns.tolist():
+        raise ValidationError(
+            f"staged {table} columns changed after Parquet re-read"
+        )
+    if actual.dtypes.astype(str).to_dict() != (
+        expected.dtypes.astype(str).to_dict()
+    ):
+        raise ValidationError(
+            f"staged {table} dtypes changed after Parquet re-read"
+        )
+    if len(actual) != len(expected):
+        raise ValidationError(
+            f"staged {table} rows: {len(actual)}, expected {len(expected)}"
+        )
+
+
+def _table_manifest(path: Path, frame: pd.DataFrame) -> dict:
+    table = {
+        "rows": len(frame),
+        "sha256": _sha256(path),
+    }
+    if "season" in frame:
+        table["min_season"] = int(frame["season"].min())
+        table["max_season"] = int(frame["season"].max())
+    else:
+        bounds = pd.concat(
+            [
+                frame.get("first_season", pd.Series(dtype="Int64")),
+                frame.get("last_season", pd.Series(dtype="Int64")),
+            ]
+        ).dropna()
+        table["min_season"] = int(bounds.min()) if len(bounds) else None
+        table["max_season"] = int(bounds.max()) if len(bounds) else None
+    return table
+
+
+def _publish_stage(stage_dir: Path, output_dir: Path) -> None:
+    rollback_dir = Path(
+        tempfile.mkdtemp(
+            prefix=".parquet-rollback-",
+            dir=output_dir.parent,
+        )
+    )
+    rollback_dir.rmdir()
+    prior_exists = output_dir.exists()
+    if prior_exists:
+        os.replace(output_dir, rollback_dir)
+    try:
+        os.replace(stage_dir, output_dir)
+    except BaseException:
+        if prior_exists and rollback_dir.exists():
+            os.replace(rollback_dir, output_dir)
+        raise
+    if rollback_dir.exists():
+        shutil.rmtree(rollback_dir)
+
+
+def run(data_dir: Path) -> None:
+    """Build, validate, stage, and publish all deterministic data products."""
+    team_games, games, report = assemble(data_dir / "raw")
+    franchises_frame = _load_franchise_dimension(
+        data_dir / "reference/franchises.csv"
+    )
+    venues_frame = _load_venue_dimension(
+        data_dir / "reference/venue_capacities.csv"
+    )
+    frames = {
+        "team_games": team_games,
+        "games": games,
+        "franchises": franchises_frame,
+        "venues": venues_frame,
+    }
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(
+        tempfile.mkdtemp(prefix=".parquet-stage-", dir=data_dir)
+    )
+    try:
+        existing_placeholder = data_dir / "parquet/.gitkeep"
+        if existing_placeholder.exists():
+            shutil.copyfile(
+                existing_placeholder,
+                stage_dir / ".gitkeep",
+            )
+        else:
+            (stage_dir / ".gitkeep").touch()
+        for table, frame in frames.items():
+            frame.to_parquet(
+                stage_dir / f"{table}.parquet",
+                engine="pyarrow",
+                compression="zstd",
+                index=False,
+            )
+
+        reread = {
+            table: pd.read_parquet(stage_dir / f"{table}.parquet")
+            for table in frames
+        }
+        for table, expected in frames.items():
+            _assert_staged_frame(reread[table], expected, table)
+        reread_report = validate(
+            reread["team_games"],
+            reread["games"],
+            expected_counts=stats_nba.EXPECTED_GAMES,
+            expected_legacy=EXPECTED_LEGACY_GAMES,
+        )
+        if reread_report != report:
+            raise ValidationError(
+                "staged validation report changed after Parquet re-read"
+            )
+
+        manifest = {
+            "schema_version": 1,
+            "sources": _raw_provenance(data_dir),
+            "references": _reference_provenance(data_dir),
+            "versions": _dependency_versions(data_dir.parent),
+            "tables": {
+                table: _table_manifest(
+                    stage_dir / f"{table}.parquet",
+                    reread[table],
+                )
+                for table in frames
+            },
+            "validation": reread_report,
+        }
+        (stage_dir / "build_manifest.json").write_text(
+            json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        staged_products = {
+            path.name
+            for path in stage_dir.iterdir()
+            if not path.name.startswith(".")
+        }
+        if staged_products != set(PUBLISHED_FILES):
+            raise ValidationError("staged publication file set is incomplete")
+        _publish_stage(stage_dir, data_dir / "parquet")
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)

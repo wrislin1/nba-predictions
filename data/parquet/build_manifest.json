@@ -1,0 +1,878 @@
+{
+  "references": {
+    "reference/franchises.csv": "aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb",
+    "reference/game_corrections.csv": "cb685a049ecdda635011bdc4e737a213dcd8337a9d708de0e8c2d2e0410cd3be",
+    "reference/hoopr_snapshot.json": "167dfaa6e1d949e9f4812687ff74f2316610b1f016b070fd5bb4151e857ff1dc",
+    "reference/venue_capacities.csv": "7fcd2cfee1485d60541e77b89e6817f37fd6d18261b5680a5442a4bbc4bdbb45"
+  },
+  "schema_version": 1,
+  "sources": {
+    "basketball_reference": {
+      "pages": [
+        {
+          "month": "august",
+          "path": "raw/bref/NBA_2020_games-august.html",
+          "season": 2020,
+          "sha256": "b56ad42ce7ae6e4e8e68639fe6b4f443a8ba139399c619fa29ddeb5f79a4bed1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-august.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2020_games-december.html",
+          "season": 2020,
+          "sha256": "5e1c28a5b2c78a16fca1f9168cd93f07adcc970eee8363856babaea44b6149dd",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2020_games-february.html",
+          "season": 2020,
+          "sha256": "1779faefc05f60cfd2bfc274189f5449114a87375be56673fb5c275e2c811b54",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2020_games-january.html",
+          "season": 2020,
+          "sha256": "b1fae333a0eb3470d75e64409dc925e2edb0fffc9a300efc0559669bf4fbe138",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-january.html"
+        },
+        {
+          "month": "july",
+          "path": "raw/bref/NBA_2020_games-july.html",
+          "season": 2020,
+          "sha256": "75eea33530e890f4c793b5e9c45de39c1fec80926e6420197804e29782489fa6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-july.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2020_games-march.html",
+          "season": 2020,
+          "sha256": "cd2cb36ccd5cac57164c4e0ab28c39f9e6a0e34057b2a6056d46b495ee0eef5b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2020_games-november.html",
+          "season": 2020,
+          "sha256": "147e9aff2b9fe48143351c0f01f4fad168c05368a0698454f52257a051940146",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2020_games-october.html",
+          "season": 2020,
+          "sha256": "64372e11233b62c6589c2be38275153c35f49e9ccae365532ad8970f7f253d0c",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2020_games-october.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2021_games-april.html",
+          "season": 2021,
+          "sha256": "82a6032917dfed015220d70f08b12f22c95a99b442893ad6dba3fe70416c9139",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2021_games-december.html",
+          "season": 2021,
+          "sha256": "dec166dd15c54513055888d945c2908320cd0961b44fe302bbf08a840d59d056",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2021_games-february.html",
+          "season": 2021,
+          "sha256": "b8a16de349dff464d5264523e0567f96c905dd66b759a6dd63fc6a6da7511c34",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2021_games-january.html",
+          "season": 2021,
+          "sha256": "c891625f18e83ed333b727cbcace42a44974aa3d31b55631b0dcb2c7a0a61388",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2021_games-march.html",
+          "season": 2021,
+          "sha256": "5d286e83b260db15c5dbf193b04743eefff6970841d3ed4484343b66d3374d49",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-march.html"
+        },
+        {
+          "month": "may",
+          "path": "raw/bref/NBA_2021_games-may.html",
+          "season": 2021,
+          "sha256": "9350206440fc0ec9a533c5504f8f4c79d895f281d6b98b8b51a68a9b0b4cad8c",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2021_games-may.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2022_games-april.html",
+          "season": 2022,
+          "sha256": "79bbe7936089f25c0a554473a22c3398b50b76ec42179cb2d1555068701813d1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2022_games-december.html",
+          "season": 2022,
+          "sha256": "fc9313ef9ddc8b18ca72f3f6028358315367d7a6ebd888e9e397c26c35d8bb25",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2022_games-february.html",
+          "season": 2022,
+          "sha256": "f6e838c71935e377f0191c3e93805681c923a5b0547bfca92be291045dbbdd02",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2022_games-january.html",
+          "season": 2022,
+          "sha256": "94e44e79fa0ae0fbd08d1fb7794e82e00c00dd71e8d1061634ecbdb289af9ed5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2022_games-march.html",
+          "season": 2022,
+          "sha256": "cf699d1e5de4cf26634d82c2f2e3282a343804ad0c52c66974938a880450ba0a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2022_games-november.html",
+          "season": 2022,
+          "sha256": "e0a92d4bc470562cc3b8e6fe16bc3d43913eabf43600aa6f76aebfbd40956bf0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2022_games-october.html",
+          "season": 2022,
+          "sha256": "5d0b6f8c2e5dce76540195ee3a5b4a6165db82eb3b0708d1edf03297e598e5c6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2022_games-october.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2023_games-april.html",
+          "season": 2023,
+          "sha256": "191849498aeffb9cc3d2984a69f7715514a7b32b7c7eba9b220b192c9ad716c5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2023_games-december.html",
+          "season": 2023,
+          "sha256": "f4bc113308fcdeaff3c4a020fc005131d80eb697386d91f4698f8d12e1ae9005",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2023_games-february.html",
+          "season": 2023,
+          "sha256": "7899cc10e2dda31e26530e854118ec9e0f04521d059e49217e4157639cbc9842",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2023_games-january.html",
+          "season": 2023,
+          "sha256": "c2319537fd947777769076f655e0a2ed82a0601f462b69f3b49574e6cf141980",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2023_games-march.html",
+          "season": 2023,
+          "sha256": "a72b88ebda50f0f99f4fd323b614b1b5745dad2af2854f3b16984be5d5fe9c09",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2023_games-november.html",
+          "season": 2023,
+          "sha256": "709f1fd0cea0c29900ab89572907ffe8464d38667e2920dc7284aa719135a5e2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2023_games-october.html",
+          "season": 2023,
+          "sha256": "6256173ec1d86d03bdf9c5fe72699429f2037b306f0ad526c0eab2f015200197",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2023_games-october.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2024_games-april.html",
+          "season": 2024,
+          "sha256": "7f5f43aad61c58ff3855c1b29fa853b373168568a006c35c808d0e938e1a28bc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2024_games-december.html",
+          "season": 2024,
+          "sha256": "ae38940a30162bad80266d771a7c2a71f20b140542c77530b1c6bed1494e0c69",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2024_games-february.html",
+          "season": 2024,
+          "sha256": "7cabe1392176b3bd166465de4b63af677d3f71d007cfcbd4c6bf9ae679072821",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2024_games-january.html",
+          "season": 2024,
+          "sha256": "cd92dee673321e1cbf37d3f4d34a9e38a9d8b8a8bb1e2e295e2d95a583ecdc3d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2024_games-march.html",
+          "season": 2024,
+          "sha256": "27af72875b95d5f4a7b5c21c223cf6e6072ffb0bf6aeddab8e65d3c8bb2aade1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2024_games-november.html",
+          "season": 2024,
+          "sha256": "10fd29e6e0abf1ebd84908fe9dfee2c7626124722a77bad240dd709fd2da6d1d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2024_games-october.html",
+          "season": 2024,
+          "sha256": "ddc66462e08cc8feaf15b6b4055e9f27d52ca60af96f67a6ad94e112a625623e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2024_games-october.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2025_games-april.html",
+          "season": 2025,
+          "sha256": "f939b6e5336f815e20bf8535f72984c520493f27bd55be1d9b39016fe6e2b32c",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2025_games-december.html",
+          "season": 2025,
+          "sha256": "81a47446904245c85aa2acf89f1b9d3a27884424470b870bc9c15bc7f2bb8255",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2025_games-february.html",
+          "season": 2025,
+          "sha256": "6b8b4fb93a8a4ad480e768cae85ef6376301cba7c8b907ceb3194e8b869f18fe",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2025_games-january.html",
+          "season": 2025,
+          "sha256": "7adb088d7b3c47701f28032c52bf0e88c16d3b693974ea4f167d574d51664f01",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2025_games-march.html",
+          "season": 2025,
+          "sha256": "016a10fce0ff270f0ad5a7f6d5d92c0f01b0a3a115a259705cedd3f66a71a907",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2025_games-november.html",
+          "season": 2025,
+          "sha256": "238384fb3d3dedfa9512fe6375164a03e1aef123ba30365c5f14ea0004e7e419",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2025_games-october.html",
+          "season": 2025,
+          "sha256": "34d33d33b25d8f4331ad2ed5c0b2f4ed295f6bf452257bdb2e4e8ade157f48b0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2025_games-october.html"
+        },
+        {
+          "month": "april",
+          "path": "raw/bref/NBA_2026_games-april.html",
+          "season": 2026,
+          "sha256": "486496f9f87c557e055184495624ad5be3585f3bb1e9642cc231a55cfbff1531",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-april.html"
+        },
+        {
+          "month": "december",
+          "path": "raw/bref/NBA_2026_games-december.html",
+          "season": 2026,
+          "sha256": "10cdb78803185010746a929c58ea8929b914f74e42ac1b0566fbbf0f976cac5d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-december.html"
+        },
+        {
+          "month": "february",
+          "path": "raw/bref/NBA_2026_games-february.html",
+          "season": 2026,
+          "sha256": "9ce90ce8173c1008bccf1180f721fdc21268297407568620b7df2feb9057f190",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-february.html"
+        },
+        {
+          "month": "january",
+          "path": "raw/bref/NBA_2026_games-january.html",
+          "season": 2026,
+          "sha256": "b09ba48c4e1a30439c7f6133ce4d06651c937ce20b25509a56320844259634a0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-january.html"
+        },
+        {
+          "month": "march",
+          "path": "raw/bref/NBA_2026_games-march.html",
+          "season": 2026,
+          "sha256": "49ecc2eef0db978dacc9df4760689fe09e9e608ae32aa0ed9a1cfbf5543da1c7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-march.html"
+        },
+        {
+          "month": "november",
+          "path": "raw/bref/NBA_2026_games-november.html",
+          "season": 2026,
+          "sha256": "e66964624aebbc8b02cb401f1c1b30bf6b9f3400ce68adacdcf57a8555183ca0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-november.html"
+        },
+        {
+          "month": "october",
+          "path": "raw/bref/NBA_2026_games-october.html",
+          "season": 2026,
+          "sha256": "5e19280b0f68153fee40315f8071a1115278ca15a369de8c61d07abbf4655a65",
+          "url": "https://www.basketball-reference.com/leagues/NBA_2026_games-october.html"
+        }
+      ]
+    },
+    "hoopr": {
+      "commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143",
+      "repository": "sportsdataverse/hoopR-nba-data",
+      "seasons": [
+        {
+          "path": "raw/hoopr/nba_schedule_2020.parquet",
+          "season": 2020,
+          "sha256": "cfe7e328c34cf36f160be9b8adebf16806c5c932274c0177566deb2ac2d743bf"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2021.parquet",
+          "season": 2021,
+          "sha256": "7fbdfe4350da317a063dedf17ecdad0b1c0a6ebf40c605cf0131fb1b002b43c2"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2022.parquet",
+          "season": 2022,
+          "sha256": "22703c94919428bf8134533ee5f652b1d156980736ee41f14fd297fcd7bcb16d"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2023.parquet",
+          "season": 2023,
+          "sha256": "eddbd2de64d401cc9e44b1a567f52e408f71b96bc413a9dfd22cc4ad0e404f13"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2024.parquet",
+          "season": 2024,
+          "sha256": "7840d80ebb7ab34cedec77fb620519b88c282c2662b2a0f9f45d538457bbb37f"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2025.parquet",
+          "season": 2025,
+          "sha256": "157dd9c130dd7518812302e8ed50496e7c3773fbc9c7efc98c40f5ff39314355"
+        },
+        {
+          "path": "raw/hoopr/nba_schedule_2026.parquet",
+          "season": 2026,
+          "sha256": "4033bfb809a0cf60e706e733cb8b1fb561dec185055957570a8583e22258f8be"
+        }
+      ]
+    },
+    "legacy": {
+      "files": [
+        {
+          "path": "raw/legacy/league_boxscores_extra.csv",
+          "sha256": "e512c1a15b5a2046c47efb86152b1087c28c8955b183fdf5c0e8151876f8b822"
+        },
+        {
+          "path": "raw/legacy/nba-teams-1984-2019-ordered.csv",
+          "sha256": "3a71f75829452032523098280542485f2a94513facde2ea3f78b5b4c4356764c"
+        }
+      ]
+    },
+    "stats_nba": {
+      "endpoint": "LeagueGameFinder",
+      "seasons": [
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2020.json",
+          "season": 2020,
+          "season_label": "2019-20",
+          "sha256": "9349ad765225a5586d37197285fd73a0f407e7f630bcd04884e445536b90ce6a"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2021.json",
+          "season": 2021,
+          "season_label": "2020-21",
+          "sha256": "379fb6bb4874fb21efc80f7ed782c5cfb68d8d078d68930d01e51e6e47a4de8a"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2022.json",
+          "season": 2022,
+          "season_label": "2021-22",
+          "sha256": "892c54e9c203ea1f4ba4b2ecda5215e7347d96bee34050bc2558c0fbe665a3e2"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2023.json",
+          "season": 2023,
+          "season_label": "2022-23",
+          "sha256": "42d18653724ef95d1a34a56426abf4069650ba607d5673230a828bea3a850e5b"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2024.json",
+          "season": 2024,
+          "season_label": "2023-24",
+          "sha256": "abee3c8041c58df0f1c3920835a1313109d87c7782b221710d348a2ce05ab91a"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2025.json",
+          "season": 2025,
+          "season_label": "2024-25",
+          "sha256": "f710bbe024bb093ffcee08593234db2ebafa63c80596b99a4e2cacff5b32eb67"
+        },
+        {
+          "endpoint": "LeagueGameFinder",
+          "path": "raw/stats_nba/leaguegamefinder_2026.json",
+          "season": 2026,
+          "season_label": "2025-26",
+          "sha256": "b5f223d082300c92187223577bfd1d3b78b13f3afd9af9eb9cd51e5ea5265601"
+        }
+      ]
+    }
+  },
+  "tables": {
+    "franchises": {
+      "max_season": 2015,
+      "min_season": 1984,
+      "rows": 41,
+      "sha256": "532eaaf5dbbc2a472b61371e1981232c2b212fd589a7c8544c27a1cc451a7e32"
+    },
+    "games": {
+      "max_season": 2026,
+      "min_season": 1984,
+      "rows": 49117,
+      "sha256": "5a439cda13120d22c77505d855d21dfb0dd9cc689697fbef1b9caa0fb6e4ec4a"
+    },
+    "team_games": {
+      "max_season": 2026,
+      "min_season": 1984,
+      "rows": 98234,
+      "sha256": "2a083d5e92c0845dd2400f5fee22773e986c2b5f4276d4e235f9b6a3b1495c06"
+    },
+    "venues": {
+      "max_season": 2022,
+      "min_season": 2020,
+      "rows": 40,
+      "sha256": "3d99a0727242b1cede114755fde08c360e882da65686a62be7157f1f7ab33b1a"
+    }
+  },
+  "validation": {
+    "attendance_counts": {
+      "1984": {
+        "missing": 14,
+        "reported_positive": 929,
+        "reported_zero": 0
+      },
+      "1985": {
+        "missing": 5,
+        "reported_positive": 938,
+        "reported_zero": 0
+      },
+      "1986": {
+        "missing": 0,
+        "reported_positive": 943,
+        "reported_zero": 0
+      },
+      "1987": {
+        "missing": 1,
+        "reported_positive": 942,
+        "reported_zero": 0
+      },
+      "1988": {
+        "missing": 14,
+        "reported_positive": 929,
+        "reported_zero": 0
+      },
+      "1989": {
+        "missing": 107,
+        "reported_positive": 918,
+        "reported_zero": 0
+      },
+      "1990": {
+        "missing": 1,
+        "reported_positive": 1106,
+        "reported_zero": 0
+      },
+      "1991": {
+        "missing": 0,
+        "reported_positive": 1107,
+        "reported_zero": 0
+      },
+      "1992": {
+        "missing": 1,
+        "reported_positive": 1106,
+        "reported_zero": 0
+      },
+      "1993": {
+        "missing": 1,
+        "reported_positive": 1106,
+        "reported_zero": 0
+      },
+      "1994": {
+        "missing": 0,
+        "reported_positive": 1107,
+        "reported_zero": 0
+      },
+      "1995": {
+        "missing": 0,
+        "reported_positive": 1107,
+        "reported_zero": 0
+      },
+      "1996": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "1997": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "1998": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "1999": {
+        "missing": 0,
+        "reported_positive": 725,
+        "reported_zero": 0
+      },
+      "2000": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "2001": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "2002": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "2003": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "2004": {
+        "missing": 0,
+        "reported_positive": 1189,
+        "reported_zero": 0
+      },
+      "2005": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2006": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2007": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2008": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2009": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2010": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2011": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2012": {
+        "missing": 0,
+        "reported_positive": 990,
+        "reported_zero": 0
+      },
+      "2013": {
+        "missing": 0,
+        "reported_positive": 1229,
+        "reported_zero": 0
+      },
+      "2014": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2015": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2016": {
+        "missing": 82,
+        "reported_positive": 1148,
+        "reported_zero": 0
+      },
+      "2017": {
+        "missing": 82,
+        "reported_positive": 1148,
+        "reported_zero": 0
+      },
+      "2018": {
+        "missing": 82,
+        "reported_positive": 1148,
+        "reported_zero": 0
+      },
+      "2019": {
+        "missing": 82,
+        "reported_positive": 1148,
+        "reported_zero": 0
+      },
+      "2020": {
+        "missing": 87,
+        "reported_positive": 971,
+        "reported_zero": 1
+      },
+      "2021": {
+        "missing": 7,
+        "reported_positive": 503,
+        "reported_zero": 570
+      },
+      "2022": {
+        "missing": 5,
+        "reported_positive": 1215,
+        "reported_zero": 10
+      },
+      "2023": {
+        "missing": 2,
+        "reported_positive": 1228,
+        "reported_zero": 0
+      },
+      "2024": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2025": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      },
+      "2026": {
+        "missing": 0,
+        "reported_positive": 1230,
+        "reported_zero": 0
+      }
+    },
+    "bref_espn_agreement": {
+      "2020": 0.992798353909465,
+      "2021": 0.9962721342031687,
+      "2022": 0.9975510204081632,
+      "2023": 0.9983726606997559,
+      "2024": 0.9991869918699187,
+      "2025": 0.9975609756097561,
+      "2026": 0.9951219512195122
+    },
+    "bref_join_coverage": {
+      "2020": 1.0,
+      "2021": 1.0,
+      "2022": 1.0,
+      "2023": 1.0,
+      "2024": 1.0,
+      "2025": 1.0,
+      "2026": 1.0
+    },
+    "games_by_season": {
+      "1984": 943,
+      "1985": 943,
+      "1986": 943,
+      "1987": 943,
+      "1988": 943,
+      "1989": 1025,
+      "1990": 1107,
+      "1991": 1107,
+      "1992": 1107,
+      "1993": 1107,
+      "1994": 1107,
+      "1995": 1107,
+      "1996": 1189,
+      "1997": 1189,
+      "1998": 1189,
+      "1999": 725,
+      "2000": 1189,
+      "2001": 1189,
+      "2002": 1189,
+      "2003": 1189,
+      "2004": 1189,
+      "2005": 1230,
+      "2006": 1230,
+      "2007": 1230,
+      "2008": 1230,
+      "2009": 1230,
+      "2010": 1230,
+      "2011": 1230,
+      "2012": 990,
+      "2013": 1229,
+      "2014": 1230,
+      "2015": 1230,
+      "2016": 1230,
+      "2017": 1230,
+      "2018": 1230,
+      "2019": 1230,
+      "2020": 1059,
+      "2021": 1080,
+      "2022": 1230,
+      "2023": 1230,
+      "2024": 1230,
+      "2025": 1230,
+      "2026": 1230
+    },
+    "selected_attendance_coverage": {
+      "2020": 1.0,
+      "2021": 0.9935185185185185,
+      "2022": 0.9959349593495935,
+      "2023": 0.9983739837398374,
+      "2024": 1.0,
+      "2025": 1.0,
+      "2026": 1.0
+    },
+    "selected_attendance_eligible_denominator": {
+      "2020": 972,
+      "2021": 1080,
+      "2022": 1230,
+      "2023": 1230,
+      "2024": 1230,
+      "2025": 1230,
+      "2026": 1230
+    },
+    "selected_attendance_exemptions": {
+      "2020": 87,
+      "2021": 0,
+      "2022": 0,
+      "2023": 0,
+      "2024": 0,
+      "2025": 0,
+      "2026": 0
+    },
+    "selected_attendance_raw_coverage": {
+      "2020": 0.9178470254957507,
+      "2021": 0.9935185185185185,
+      "2022": 0.9959349593495935,
+      "2023": 0.9983739837398374,
+      "2024": 1.0,
+      "2025": 1.0,
+      "2026": 1.0
+    },
+    "team_games_by_season": {
+      "1984": 1886,
+      "1985": 1886,
+      "1986": 1886,
+      "1987": 1886,
+      "1988": 1886,
+      "1989": 2050,
+      "1990": 2214,
+      "1991": 2214,
+      "1992": 2214,
+      "1993": 2214,
+      "1994": 2214,
+      "1995": 2214,
+      "1996": 2378,
+      "1997": 2378,
+      "1998": 2378,
+      "1999": 1450,
+      "2000": 2378,
+      "2001": 2378,
+      "2002": 2378,
+      "2003": 2378,
+      "2004": 2378,
+      "2005": 2460,
+      "2006": 2460,
+      "2007": 2460,
+      "2008": 2460,
+      "2009": 2460,
+      "2010": 2460,
+      "2011": 2460,
+      "2012": 1980,
+      "2013": 2458,
+      "2014": 2460,
+      "2015": 2460,
+      "2016": 2460,
+      "2017": 2460,
+      "2018": 2460,
+      "2019": 2460,
+      "2020": 2118,
+      "2021": 2160,
+      "2022": 2460,
+      "2023": 2460,
+      "2024": 2460,
+      "2025": 2460,
+      "2026": 2460
+    },
+    "totals": {
+      "games": 49117,
+      "team_games": 98234
+    }
+  },
+  "versions": {
+    "dependencies": {
+      "beautifulsoup4": "4.15.0",
+      "duckdb": "1.5.5",
+      "jupyter": "1.1.1",
+      "linearmodels": "7.0",
+      "lxml": "6.1.1",
+      "matplotlib": "3.11.1",
+      "nba_api": "1.11.4",
+      "openpyxl": "3.1.5",
+      "pandas": "3.0.5",
+      "pyarrow": "25.0.0",
+      "pytest": "9.1.1",
+      "requests": "2.34.2",
+      "seaborn": "0.13.2",
+      "setuptools": "83.0.0",
+      "statsmodels": "0.14.6"
+    },
+    "python": "3.12.3"
+  }
+}
