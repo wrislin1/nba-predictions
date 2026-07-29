@@ -503,11 +503,13 @@ Compile a fully pinned UTF-8 requirements file:
 
 ```bash
 cd /tmp/nba-predictions-revival-20260729
-/home/riz/.local/bin/uv pip compile --python-version 3.12 --universal requirements.in --output-file requirements.txt
+/home/riz/.local/bin/uv pip compile --upgrade --python-version 3.12 --universal requirements.in --output-file requirements.txt
 file requirements.txt
 ```
 
 Expected: `file` reports UTF-8 or ASCII text, not UTF-16.
+The explicit `--upgrade` prevents uv from preserving incompatible preferences
+from the legacy output file.
 
 Create `src/nba_data/__init__.py` with:
 

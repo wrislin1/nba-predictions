@@ -47,6 +47,14 @@ python3 -m venv .venv
 `requirements.in` records direct dependencies; `requirements.txt` is the
 fully pinned, UTF-8 environment compiled from it.
 
+Regenerate the lock with an explicit upgrade so uv does not preserve stale
+preferences from an existing output file:
+
+```bash
+uv pip compile --upgrade --python-version 3.12 --universal \
+  requirements.in --output-file requirements.txt
+```
+
 ## Data policy
 
 Small curated Parquet tables may be committed when their provenance is
