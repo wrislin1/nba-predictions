@@ -2,6 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** Slice 2A — implemented + hardened on `slice2a-game-data`;
+verified with 202 passing tests, deterministic artifact hashes, and the
+recoverable NAS raw snapshot.
+
+**Landed commits:** `6536143`, `24a77b3`, `3094ab2`, `93dfe10`, `e90dbe8`,
+`5c8ebfd`, `6209c14`, `8996cb9`, `b6960e7`, `69f3564`, `38352ae`,
+`f5190c9`, `0b85823`, `646ee06`, `111074a`, `473ad12`, `a801e83`,
+`7d6b5fc`, `6d047a3`, `ea341ed`, `aa44f96`, `06e5d18`, `57e6336`,
+`c8657f6`, `c4b449f`, `48b52b6`, and `de97a0b`.
+
 **Goal:** Build validated `team_games`, `games`, `franchises`, and `venues` Parquet tables covering 1983-84 through 2025-26, using NBA Stats for canonical box scores, hoopR for schedule/venue enrichment, and basketball-reference for attendance.
 
 **Architecture:** Normalize the archived and newly fetched NBA Stats rows through one shared team-game adapter so all 43 seasons retain the same schema and canonical NBA `GAME_ID`. Enrich the seven modern seasons by joining a pinned hoopR schedule and politely cached basketball-reference pages on `season + game_date + home_franchise_id + away_franchise_id`. Raw responses are checksummed and gitignored; only validated, deterministically sorted Parquet tables, curated references, and a build manifest are committed.
@@ -11,7 +21,8 @@
 ## Global Constraints
 
 - Repository: `/home/riz/dev/nba-predictions-revived`; run every command from this root.
-- Work on branch `slice2a-game-data`; do not merge or push.
+- Implementation branch: `slice2a-game-data`; merge and push occur only after
+  the completed plan passes final verification.
 - CPU only; no task in this plan allocates GPU memory.
 - Season is always the ending year: `2021` means 2020-21.
 - Raw provider files live under gitignored `data/raw/`; curated Parquet lives under committed `data/parquet/`.
@@ -105,7 +116,7 @@ remain deferred to Slice 2B. They are not inputs to this game-data build.
 **Interfaces:**
 - Produces: importable `nba_data` package and registered `integration` pytest marker.
 
-- [ ] **Step 1: Verify the clean baseline**
+- [x] **Step 1: Verify the clean baseline**
 
 Run:
 
@@ -116,11 +127,11 @@ git status --short
 
 Expected: clean after this plan is committed; `15 passed`.
 
-- [ ] **Step 2: Create the branch**
+- [x] **Step 2: Create the branch**
 
 Run: `git switch -c slice2a-game-data`
 
-- [ ] **Step 3: Add the package configuration**
+- [x] **Step 3: Add the package configuration**
 
 Add `setuptools` to `requirements.in`. Create:
 
@@ -144,7 +155,7 @@ markers = [
 ]
 ```
 
-- [ ] **Step 4: Regenerate and install**
+- [x] **Step 4: Regenerate and install**
 
 ```bash
 /home/riz/.local/bin/uv pip compile --upgrade --python-version 3.12 --universal requirements.in --output-file requirements.txt
@@ -152,7 +163,7 @@ markers = [
 .venv/bin/python -m pip install --no-deps --no-build-isolation -e .
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 .venv/bin/python -c "import nba_data; print(nba_data.__file__)"
@@ -176,7 +187,7 @@ git commit -m "build: make nba_data an installable src package"
   `UnknownTeamError`; `AmbiguousTeamError`;
   `FRANCHISE_IDS: frozenset[str]`.
 
-- [ ] **Step 1: Write the reference**
+- [x] **Step 1: Write the reference**
 
 Create the CSV with these rows:
 
@@ -225,7 +236,7 @@ Washington Bullets,WAS,,1997
 Washington Wizards,WAS,1998,
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [x] **Step 2: Write the failing tests**
 
 ```python
 import pandas as pd
@@ -254,12 +265,12 @@ def test_all_reference_boundaries_resolve_once():
         assert franchises.resolve(row.alias, last) == row.franchise_id
 ```
 
-- [ ] **Step 3: Verify failure**
+- [x] **Step 3: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_franchises.py -q`
 Expected: FAIL importing `nba_data.franchises`.
 
-- [ ] **Step 4: Implement**
+- [x] **Step 4: Implement**
 
 ```python
 """Season-aware source team names mapped to stable franchise IDs."""
@@ -303,7 +314,7 @@ def resolve(name: str, season: int) -> str:
     raise AmbiguousTeamError(f"multiple franchise eras for {name!r} in {season}")
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_franchises.py -q
@@ -328,7 +339,7 @@ git commit -m "feat: add season-aware franchise identity"
   `legacy.load_team_games(path) -> pd.DataFrame`;
   `legacy.load_attendance(path) -> pd.DataFrame`.
 
-- [ ] **Step 1: Write the failing normalizer test**
+- [x] **Step 1: Write the failing normalizer test**
 
 ```python
 import pandas as pd
@@ -357,12 +368,12 @@ def test_normalizes_two_nba_stats_rows():
     assert result["wl"].tolist() == [1, 0]
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_team_rows.py -q`
 Expected: FAIL importing `nba_data.team_rows`.
 
-- [ ] **Step 3: Implement the normalizer**
+- [x] **Step 3: Implement the normalizer**
 
 ```python
 """Normalize the shared archived/live NBA Stats team-game schema."""
@@ -406,7 +417,7 @@ def normalize_team_rows(raw: pd.DataFrame, source: str) -> pd.DataFrame:
     return output
 ```
 
-- [ ] **Step 4: Add the exact raw-snapshot restore**
+- [x] **Step 4: Add the exact raw-snapshot restore**
 
 The shipped `scripts/restore_raw.sh` is the inverse of
 `scripts/archive_raw_snapshot.sh`, not a legacy-only bootstrap. It derives the
@@ -416,7 +427,7 @@ inventory, stages the whole raw tree, and refuses to replace an existing
 `data/raw/`. This restores NBA Stats, hoopR, b-ref schedules, the two legacy
 CSVs, and all 23 historical reconciliation body/sidecar pairs.
 
-- [ ] **Step 5: Write the failing legacy tests**
+- [x] **Step 5: Write the failing legacy tests**
 
 ```python
 def test_legacy_zero_attendance_becomes_missing():
@@ -434,7 +445,7 @@ def test_complete_legacy_panel():
     assert result["game_id"].nunique() == 40_828
 ```
 
-- [ ] **Step 6: Implement the legacy loaders**
+- [x] **Step 6: Implement the legacy loaders**
 
 ```python
 """Load the verified archived NBA Stats CSVs."""
@@ -458,7 +469,7 @@ def load_attendance(path) -> pd.DataFrame:
     })
 ```
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest \
@@ -485,7 +496,7 @@ git commit -m "feat: normalize and restore verified NBA data"
   `read_valid(path: Path, validator: Callable[[Path], None]) -> bytes | None`;
   `publish_bytes(path: Path, payload: bytes, metadata: dict, validator) -> Path`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 def test_publish_and_read_checksummed_cache(tmp_path):
@@ -504,12 +515,12 @@ def test_changed_cache_fails_without_repair(tmp_path):
         cache.read_valid(path, lambda _: None)
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_cache.py -q`
 Expected: FAIL importing `nba_data.cache`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Atomic body/metadata cache with SHA-256 verification."""
@@ -569,7 +580,7 @@ def publish_bytes(path: Path, payload: bytes, metadata: dict, validator) -> Path
     return path
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_cache.py -q
@@ -593,7 +604,7 @@ git commit -m "feat: add checksummed raw source cache"
   `fetch(raw_dir: Path, seasons: Iterable[int], sleep_s: float = 12) -> None`;
   `load_season(raw_dir: Path, season: int, expected_games: int | None = None) -> pd.DataFrame`.
 
-- [ ] **Step 1: Write the failing DNS test**
+- [x] **Step 1: Write the failing DNS test**
 
 ```python
 def test_dns_preflight_rejects_adguard_sinkhole(monkeypatch):
@@ -604,7 +615,7 @@ def test_dns_preflight_rejects_adguard_sinkhole(monkeypatch):
         stats_nba.preflight_dns()
 ```
 
-- [ ] **Step 2: Write the failing payload test**
+- [x] **Step 2: Write the failing payload test**
 
 ```python
 def fixture_leaguegamefinder_payload():
@@ -651,12 +662,12 @@ def test_load_season_normalizes_cached_leaguegamefinder(tmp_path):
     assert set(result["source"]) == {"nba_stats"}
 ```
 
-- [ ] **Step 3: Verify failure**
+- [x] **Step 3: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_stats_nba.py -q`
 Expected: FAIL importing `nba_data.stats_nba`.
 
-- [ ] **Step 4: Implement DNS and payload validation**
+- [x] **Step 4: Implement DNS and payload validation**
 
 ```python
 SEASONS = {
@@ -703,7 +714,7 @@ def validate_payload(path: Path) -> None:
         raise ValueError(f"missing LeagueGameFinder columns: {sorted(missing)}")
 ```
 
-- [ ] **Step 5: Implement fetch and load**
+- [x] **Step 5: Implement fetch and load**
 
 ```python
 def fetch(raw_dir: Path, seasons=SEASONS, sleep_s: float = 12.0) -> None:
@@ -757,7 +768,7 @@ def load_season(
     return output
 ```
 
-- [ ] **Step 6: Add cached integration tests**
+- [x] **Step 6: Add cached integration tests**
 
 ```python
 @pytest.mark.integration
@@ -771,7 +782,7 @@ def test_cached_season_counts(season, games):
     assert result["game_id"].nunique() == games
 ```
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_stats_nba.py -q
@@ -794,7 +805,7 @@ git commit -m "feat: fetch canonical modern NBA Stats box scores"
   -> tuple[pd.DataFrame, pd.DataFrame]`
   returning schedule rows and exclusion rows.
 
-- [ ] **Step 1: Create the snapshot**
+- [x] **Step 1: Create the snapshot**
 
 ```json
 {
@@ -804,7 +815,7 @@ git commit -m "feat: fetch canonical modern NBA Stats box scores"
 }
 ```
 
-- [ ] **Step 2: Write the failing fixture test**
+- [x] **Step 2: Write the failing fixture test**
 
 Construct a temporary schedule parquet containing two completed NBA games, an
 All-Star row, an incomplete game, and a real-franchise row with
@@ -819,12 +830,12 @@ assert schedule["venue_id"].str.startswith("espn-").all()
 assert schedule["espn_attendance"].dtype == "Int64"
 ```
 
-- [ ] **Step 3: Verify failure**
+- [x] **Step 3: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_hoopr.py -q`
 Expected: FAIL importing `nba_data.hoopr`.
 
-- [ ] **Step 4: Implement fetch**
+- [x] **Step 4: Implement fetch**
 
 Use Task 3 around a single schedule URL per season:
 
@@ -849,7 +860,7 @@ cache.publish_bytes(
 Catch `requests.RequestException` and wrap its exact type/URL in
 `SourceAccessError`; do not retry.
 
-- [ ] **Step 5: Implement normalization**
+- [x] **Step 5: Implement normalization**
 
 Filter completed `season_type == 2`. Classify `ALLSTAR` and exact
 case-normalized `RISING STARS` as exhibition; classify `CC` as Cup
@@ -877,7 +888,7 @@ pd.DataFrame({
 })
 ```
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_hoopr.py -q
@@ -898,7 +909,7 @@ git commit -m "feat: add pinned hoopR schedule enrichment"
   `fetch(raw_dir: Path, seasons, sleep_s=12) -> None`;
   `load_attendance(raw_dir: Path, season: int, months=None) -> pd.DataFrame`.
 
-- [ ] **Step 1: Write the failing parser test**
+- [x] **Step 1: Write the failing parser test**
 
 Use a 12-column HTML fixture with explicit zero, positive, blank, and
 postponed rows:
@@ -911,12 +922,12 @@ assert pd.isna(result.iloc[2]["attendance"])
 assert result["game_date"].map(type).eq(datetime.date).all()
 ```
 
-- [ ] **Step 2: Verify failure**
+- [x] **Step 2: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_bref.py -q`
 Expected: FAIL importing `nba_data.bref`.
 
-- [ ] **Step 3: Implement month and schema contracts**
+- [x] **Step 3: Implement month and schema contracts**
 
 ```python
 STANDARD = ("october", "november", "december", "january",
@@ -938,14 +949,14 @@ Parse exactly one table with `id="schedule"` and exactly 12 columns. Assign
 Keep rows where both scores parse; parse attendance with `errors="coerce"` and
 never call `fillna(0)`.
 
-- [ ] **Step 4: Implement polite fetch**
+- [x] **Step 4: Implement polite fetch**
 
 For each missing page, call `requests.Session.get(url, timeout=30,
 verify=True)`, require HTTP 200, validate the table, then publish through Task
 3. Sleep 12 seconds after a real request before another real request. A valid
 cache hit performs neither network nor sleep.
 
-- [ ] **Step 5: Verify the real spike and commit**
+- [x] **Step 5: Verify the real spike and commit**
 
 ```python
 @pytest.mark.integration
@@ -979,7 +990,7 @@ git commit -m "feat: add cached basketball-reference attendance"
   `write_venue_inventory(data_dir: Path) -> Path`;
   `ValidationError`.
 
-- [ ] **Step 1: Write the failing canonical crosswalk test**
+- [x] **Step 1: Write the failing canonical crosswalk test**
 
 ```python
 def one_nba_game(game_id="0022000001"):
@@ -1018,7 +1029,7 @@ def test_nba_id_remains_canonical_after_espn_join():
     assert result.iloc[0]["espn_game_id"] == "espn-401300001"
 ```
 
-- [ ] **Step 2: Write failing attendance precedence tests**
+- [x] **Step 2: Write failing attendance precedence tests**
 
 ```python
 def test_matched_bref_blank_does_not_fall_back_to_espn():
@@ -1040,7 +1051,7 @@ def test_unmatched_bref_uses_espn():
     assert game["attendance_source"] == "espn"
 ```
 
-- [ ] **Step 3: Write one failing test per gate**
+- [x] **Step 3: Write one failing test per gate**
 
 Tests must seed and assert diagnostics for:
 
@@ -1063,12 +1074,12 @@ non-neutral 2020..2022 venue missing capacity
 Each unit test passes a one-season `expected_counts` mapping and
 `expected_legacy=0`; the production call passes all seven seasons and 40,828.
 
-- [ ] **Step 4: Verify failure**
+- [x] **Step 4: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_build_gates.py -q`
 Expected: FAIL importing `nba_data.build`.
 
-- [ ] **Step 5: Implement pairing and crosswalk**
+- [x] **Step 5: Implement pairing and crosswalk**
 
 Pair home/away NBA rows by `game_id`; reject non-unique sides before
 constructing games:
@@ -1161,14 +1172,14 @@ legacy_games["attendance_status"] = legacy_games["attendance"].map(
 )
 ```
 
-- [ ] **Step 6: Implement validation report**
+- [x] **Step 6: Implement validation report**
 
 Accumulate every gate failure and raise one `ValidationError("; ".join(errors))`
 before writing. Return per-season counts for games/team rows, b-ref join
 coverage, zero/positive/missing attendance, selected coverage, and b-ref/ESPN
 agreement. Require full production totals 49,117 and 98,234.
 
-- [ ] **Step 7: Implement the venue inventory writer**
+- [x] **Step 7: Implement the venue inventory writer**
 
 ```python
 def write_venue_inventory(data_dir: Path) -> Path:
@@ -1199,7 +1210,7 @@ def write_venue_inventory(data_dir: Path) -> Path:
     return destination
 ```
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_build_gates.py -q
@@ -1220,13 +1231,13 @@ git commit -m "feat: assemble and validate the canonical game panel"
   `python -m nba_data inspect-venues`. Task 10 adds `build` after publication
   exists.
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Monkeypatch provider functions and assert `fetch` calls NBA Stats, hoopR, then
 b-ref; `inspect-venues` calls no fetch function; invalid seasons exit before
 network.
 
-- [ ] **Step 2: Implement argparse dispatch**
+- [x] **Step 2: Implement argparse dispatch**
 
 ```python
 def main() -> None:
@@ -1248,7 +1259,7 @@ def main() -> None:
         build.write_venue_inventory(data)
 ```
 
-- [ ] **Step 3: Verify offline behavior and commit**
+- [x] **Step 3: Verify offline behavior and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_cli.py -q
@@ -1257,7 +1268,7 @@ git add src/nba_data/__main__.py tests/test_cli.py
 git commit -m "feat: add explicit fetch inspect and build commands"
 ```
 
-- [ ] **Step 4: Fetch all seven seasons**
+- [x] **Step 4: Fetch all seven seasons**
 
 Run: `.venv/bin/python -m nba_data fetch`
 
@@ -1273,7 +1284,7 @@ one .meta.json sidecar per raw body
 On any failure, stop and report the provider/URL/exception. Do not change
 provider, TLS settings, or request cadence.
 
-- [ ] **Step 5: Run cached integration tests**
+- [x] **Step 5: Run cached integration tests**
 
 ```bash
 .venv/bin/python -m pytest -m integration -q -rs
@@ -1296,7 +1307,7 @@ provider fixtures pass.
   `load_venue_capacities() -> pd.DataFrame`;
   final `venues` contract.
 
-- [ ] **Step 1: Generate the inventory**
+- [x] **Step 1: Generate the inventory**
 
 Run: `.venv/bin/python -m nba_data inspect-venues`
 
@@ -1304,7 +1315,7 @@ Expected file:
 `data/raw/reports/venue_inventory.csv` with venue ID/name/city, franchise,
 first/last season, games, non-COVID max attendance, and non-COVID p99.
 
-- [ ] **Step 2: Create the capacity reference**
+- [x] **Step 2: Create the capacity reference**
 
 Use this exact header:
 
@@ -1317,7 +1328,7 @@ capacity effective for that era and a direct source URL. Split season ranges
 when configuration changed. Do not infer capacity solely from observed
 attendance. Neutral bubble venues may be absent.
 
-- [ ] **Step 3: Add the failing coverage test**
+- [x] **Step 3: Add the failing coverage test**
 
 ```python
 def test_primary_window_non_neutral_venues_have_capacity():
@@ -1338,14 +1349,14 @@ def test_primary_window_non_neutral_venues_have_capacity():
     assert (joined["capacity"] > 0).all()
 ```
 
-- [ ] **Step 4: Implement the season-aware join**
+- [x] **Step 4: Implement the season-aware join**
 
 Join on `venue_id + home_franchise_id`, then filter inclusive
 `first_season <= season <= last_season`. Raise if a game resolves zero or
 multiple capacity rows. Report positive attendance above 105% of capacity;
 allow it only when `capacity_note` documents the configuration exception.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_build_gates.py -q
@@ -1371,13 +1382,13 @@ git commit -m "data: add provenance-backed venue capacities"
 **Interfaces:**
 - Produces: `run(data_dir: Path) -> None`; deterministic five-file publication.
 
-- [ ] **Step 1: Write the failing publication test**
+- [x] **Step 1: Write the failing publication test**
 
 In a temporary data tree, retain sentinel output files, seed a validation
 failure, call `run`, and assert the sentinels remain byte-identical. Then seed
 passing fixtures and assert four parquet files plus the manifest are created.
 
-- [ ] **Step 2: Implement staging**
+- [x] **Step 2: Implement staging**
 
 Build frames in memory, coerce exact column order/dtypes, sort deterministically,
 and call the full validator. Write to a temporary sibling directory, re-read
@@ -1385,7 +1396,7 @@ all Parquet files, and repeat schema/row-count checks before replacing final
 files. Preserve prior final files in a rollback directory until all five new
 files are published.
 
-- [ ] **Step 3: Implement the deterministic manifest**
+- [x] **Step 3: Implement the deterministic manifest**
 
 Write sorted-key JSON with:
 
@@ -1403,7 +1414,7 @@ Parquet SHA-256 values
 
 Exclude build time, absolute paths, random IDs, and cache fetch timestamps.
 
-- [ ] **Step 4: Build and verify determinism**
+- [x] **Step 4: Build and verify determinism**
 
 Before running the build, add the final parser branch:
 
@@ -1425,7 +1436,7 @@ cmp /tmp/nba-parquet-before.sha256 /tmp/nba-parquet-after.sha256
 
 Expected: 49,117 games, 98,234 team rows, single-digit MiB, identical hashes.
 
-- [ ] **Step 5: Run all verification and commit**
+- [x] **Step 5: Run all verification and commit**
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -1447,7 +1458,7 @@ git commit -m "data: publish validated NBA game panel through 2025-26"
 **Interfaces:**
 - Produces: user-facing source/field documentation and verified NAS recovery copy.
 
-- [ ] **Step 1: Document the final contract**
+- [x] **Step 1: Document the final contract**
 
 Document every table/column/type, ending-year seasons, canonical NBA versus
 ESPN IDs, franchise lineage, neutral-site semantics, attendance precedence,
@@ -1456,7 +1467,7 @@ all three CLI commands. Link the design, corrected source audit, and manifest.
 State that the original failure was an AdGuard DNS sinkhole and document the
 preflight diagnostic without suggesting TLS bypass.
 
-- [ ] **Step 2: Write the raw archive script**
+- [x] **Step 2: Write the raw archive script**
 
 ```bash
 #!/usr/bin/env bash
@@ -1499,13 +1510,13 @@ test -z "$changes" || {
 printf 'verified raw snapshot: %s\n' "$destination"
 ```
 
-- [ ] **Step 3: Add layout assertions**
+- [x] **Step 3: Add layout assertions**
 
 Assert the data dictionary, manifest, four Parquet files, and archive script
 exist; assert no path under `data/raw/` is tracked; assert the manifest has no
 absolute `/home/` paths or `/main/` hoopR URL.
 
-- [ ] **Step 4: Verify, archive, and commit**
+- [x] **Step 4: Verify, archive, and commit**
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -1519,20 +1530,20 @@ git commit -m "docs: document and preserve the game-data pipeline"
 
 ## Final Verification
 
-- [ ] `git status --short` is clean.
-- [ ] `.venv/bin/python -m pytest -q` passes with no skipped integration tests.
-- [ ] `.venv/bin/python scripts/verify_repository.py` exits zero.
-- [ ] `games` has 49,117 rows and `team_games` has 98,234.
-- [ ] Each modern season has its exact required game count and every game has two team rows.
-- [ ] Every modern NBA game joins exactly one hoopR schedule row.
-- [ ] b-ref row-join coverage is at least 95% per modern season.
-- [ ] Selected known-attendance coverage is at least 95% after removing only
+- [x] `git status --short` is clean.
+- [x] `.venv/bin/python -m pytest -q` passes with no skipped integration tests.
+- [x] `.venv/bin/python scripts/verify_repository.py` exits zero.
+- [x] `games` has 49,117 rows and `team_games` has 98,234.
+- [x] Each modern season has its exact required game count and every game has two team rows.
+- [x] Every modern NBA game joins exactly one hoopR schedule row.
+- [x] b-ref row-join coverage is at least 95% per modern season.
+- [x] Selected known-attendance coverage is at least 95% after removing only
   the 87 enumerated missing-attendance 2020 no-fan bubble games; raw numeric
   coverage, eligible denominator, and exemption count remain separately
   reported in the manifest.
-- [ ] Blank b-ref attendance remains missing and explicit zero is never inferred.
-- [ ] Every non-neutral primary-window venue resolves one provenance-backed capacity.
-- [ ] The manifest and second build have identical hashes.
-- [ ] No raw file, absolute workstation path, mutable hoopR URL, or TLS bypass is tracked.
-- [ ] The verified raw-cache snapshot exists on NAS.
-- [ ] Branch `slice2a-game-data` is ready for separate-session review and has not been merged or pushed.
+- [x] Blank b-ref attendance remains missing and explicit zero is never inferred.
+- [x] Every non-neutral primary-window venue resolves one provenance-backed capacity.
+- [x] The manifest and second build have identical hashes.
+- [x] No raw file, absolute workstation path, mutable hoopR URL, or TLS bypass is tracked.
+- [x] The verified raw-cache snapshot exists on NAS.
+- [x] Branch `slice2a-game-data` is ready for separate-session review and has not been merged or pushed.
