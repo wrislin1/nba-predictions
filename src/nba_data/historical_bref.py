@@ -36,6 +36,25 @@ class HistoricalPage:
     filename: str
 
 
+@dataclass(frozen=True)
+class _CuratedPlayoffBoundary:
+    first_playoff_game_id: str
+    schedule_url: str
+    note: str
+
+
+CURATED_PLAYOFF_BOUNDARIES = {
+    1947: _CuratedPlayoffBoundary(
+        first_playoff_game_id="bref-194704020PHW",
+        schedule_url=f"{BASE_URL}/leagues/BAA_1947_games-april.html",
+        note=(
+            "The checksum-verified cached April schedule starts with this "
+            "April 2 playoff game and has no in-table Playoffs separator."
+        ),
+    ),
+}
+
+
 def league_for_season(season: int) -> str:
     if season not in HISTORICAL_SEASONS:
         raise ValueError(f"historical season must be 1947..1983: {season}")
@@ -220,6 +239,26 @@ def validate_month(path: Path, season: int, url: str) -> None:
     parse_schedule_page(path.read_bytes(), season=season, schedule_url=url)
 
 
+def _playoff_separator_source_row(payload: bytes, schedule_url: str) -> int | None:
+    root = _document(payload, schedule_url)
+    tables = root.xpath("//table[@id='schedule']")
+    if len(tables) != 1:
+        raise ValueError(
+            f"{schedule_url}: expected one schedule table, found {len(tables)}"
+        )
+    matches = [
+        source_row
+        for source_row, row in enumerate(
+            tables[0].xpath("./tbody/tr"), start=1
+        )
+        if "thead" in row.get("class", "").split()
+        and " ".join("".join(row.itertext()).split()) == "Playoffs"
+    ]
+    if len(matches) > 1:
+        raise ValueError(f"{schedule_url}: duplicate Playoffs separator")
+    return matches[0] if matches else None
+
+
 def _request(session: requests.Session, url: str) -> bytes:
     try:
         response = session.get(url, timeout=30, verify=True)
@@ -302,7 +341,8 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
         index_path,
         lambda path: validate_index(path, season),
     )
-    frames = []
+    parsed_pages = []
+    separator_found = False
     for page in discover_month_pages(payload, season):
         month_payload = cache.require_valid(
             cache_dir / page.filename,
@@ -310,9 +350,49 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
                 path, value, url
             ),
         )
-        frames.append(parse_schedule_page(
+        if separator_found:
+            continue
+        frame = parse_schedule_page(
             month_payload, season=season, schedule_url=page.url
-        ))
+        )
+        separator_row = _playoff_separator_source_row(month_payload, page.url)
+        if separator_row is not None:
+            parsed_pages.append(
+                (page, frame.loc[frame["source_row"] < separator_row])
+            )
+            separator_found = True
+            continue
+        parsed_pages.append((page, frame))
+    if not separator_found:
+        boundary = CURATED_PLAYOFF_BOUNDARIES.get(season)
+        if boundary is None:
+            raise ValueError(
+                f"{season}: no postseason boundary in source or curated data"
+            )
+        matches = [
+            (position, page, frame, source_row)
+            for position, (page, frame) in enumerate(parsed_pages)
+            for source_row in frame.loc[
+                frame["game_id"].eq(boundary.first_playoff_game_id),
+                "source_row",
+            ]
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"{season}: expected one curated postseason boundary target "
+                f"{boundary.first_playoff_game_id}, found {len(matches)}"
+            )
+        position, page, frame, source_row = matches[0]
+        if page.url != boundary.schedule_url:
+            raise ValueError(
+                f"{season}: curated postseason boundary target is in "
+                f"{page.url}, expected {boundary.schedule_url}"
+            )
+        parsed_pages = [
+            *parsed_pages[:position],
+            (page, frame.loc[frame["source_row"] < source_row]),
+        ]
+    frames = [frame for _, frame in parsed_pages]
     combined = pd.concat(frames, ignore_index=True)
     combined = _assign_game_ids(combined.drop(columns=["game_id"]))
     return combined.sort_values(
