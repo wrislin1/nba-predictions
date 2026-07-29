@@ -22,8 +22,12 @@ crowd, using the COVID era as a natural experiment.
 
 ## Global constraints
 
-- **CPU-only.** Both RTX 3090s are running a long-term training task; nothing in
-  this project may allocate GPU memory. All tooling is pandas/DuckDB/statsmodels.
+- **CPU-only for now.** Both RTX 3090s are currently running a long-term
+  training task; while that runs, nothing in this project may allocate GPU
+  memory. This is a temporary condition, not a design principle — once the
+  training completes (or between runs), the GPUs are available to this project
+  for whatever it needs. Check `nvidia-smi` before any GPU work. The planned
+  slices happen to need only pandas/DuckDB/statsmodels regardless.
 - **Polite scraping.** basketball-reference: ≤1 request per 12 s (their bot
   policy is ~20/min); browser-like User-Agent; every fetched page cached to disk
   before parsing so no re-fetch is ever needed.
