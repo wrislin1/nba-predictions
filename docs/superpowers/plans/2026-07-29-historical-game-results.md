@@ -958,6 +958,72 @@ Expected: all focused tests pass and no test performs a real request.
 
 - [ ] **Step 1: Write the failing offline audit test**
 
+`scripts/` is not a package; load the audit module by file path (the same
+`parents[1]` convention `tests/test_verify_repository.py` uses for script
+paths). Add to `tests/test_historical_bref.py`:
+
+```python
+import importlib.util
+
+_AUDIT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts/audit_historical_source.py"
+)
+_AUDIT_SPEC = importlib.util.spec_from_file_location(
+    "audit_historical_source", _AUDIT_PATH
+)
+audit_historical_source = importlib.util.module_from_spec(_AUDIT_SPEC)
+_AUDIT_SPEC.loader.exec_module(audit_historical_source)
+```
+
+Add a helper that publishes a complete verified one-month fixture season
+through the real cache utilities. It builds its own single-month index so
+`load_season`'s month-completeness requirement is satisfied with only the
+committed month fixture (the Task 1 two-month index fixture stays dedicated
+to discovery tests):
+
+```python
+FIXTURE_SPIKE_MONTH = {1947: "november", 1960: "october", 1983: "october"}
+
+
+def publish_historical_fixture_season(raw_dir, *, season):
+    league = historical_bref.league_for_season(season)
+    month = FIXTURE_SPIKE_MONTH[season]
+    cache_dir = raw_dir / "historical_bref"
+    month_name = f"{league}_{season}_games-{month}.html"
+    index_payload = (
+        f'<html><body><a href="/leagues/{month_name}">'
+        f"{month.title()}</a></body></html>"
+    ).encode()
+    cache.publish_bytes(
+        cache_dir / historical_bref.index_filename(season),
+        index_payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_index",
+            "league": league,
+            "season": season,
+            "url": historical_bref.index_url(season),
+        },
+        lambda path: historical_bref.validate_index(path, season),
+    )
+    month_url = f"{historical_bref.BASE_URL}/leagues/{month_name}"
+    cache.publish_bytes(
+        cache_dir / month_name,
+        (FIXTURES / month_name).read_bytes(),
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": league,
+            "season": season,
+            "month": month,
+            "url": month_url,
+        },
+        lambda path: historical_bref.validate_month(path, season, month_url),
+    )
+```
+
+Then add the failing test:
+
 ```python
 def test_audit_reports_source_shape_and_ambiguities(tmp_path):
     publish_historical_fixture_season(tmp_path, season=1947)
@@ -1630,6 +1696,42 @@ def source_game(
     }
 ```
 
+Add the two shared fixture helpers next to it:
+
+```python
+def seed_historical_references(data_dir, counts):
+    reference = data_dir / "reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    lines = ["season,league,expected_games,source_url,source_note"]
+    for season, games in sorted(counts.items()):
+        league = historical_build.historical_bref.league_for_season(season)
+        lines.append(
+            f"{season},{league},{games},"
+            f"https://www.basketball-reference.com/leagues/"
+            f"{league}_{season}.html,Curated test count."
+        )
+    (reference / "historical_season_counts.csv").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
+    (reference / "historical_site_corrections.csv").write_text(
+        "game_id,site_status,source_url,note\n", encoding="utf-8"
+    )
+
+
+def assembled_game_frame():
+    frame = pd.DataFrame([{
+        **source_game(),
+        "away_franchise_id": "NYK",
+        "home_franchise_id": "TOR_1946",
+        "home_margin": -2,
+    }])
+    frame = frame.loc[:, historical_build.HISTORICAL_COLUMNS]
+    return frame.astype(historical_build.HISTORICAL_DTYPES)
+```
+
+`assembled_game_frame` must pass `validate(games, {1947: 1})` unchanged so
+each Step 7 mutation isolates exactly one gate.
+
 - [ ] **Step 2: Write failing schema and gate tests**
 
 ```python
@@ -1816,8 +1918,14 @@ attendance value/status disagree
 site_status is outside home/neutral/unknown
 boxscore URL is non-null but not an HTTPS basketball-reference boxscore URL
 schedule URL is not an HTTPS basketball-reference league URL
-minimum season is not 1947 or maximum season is not 1983
+minimum/maximum season differ from the minimum/maximum expected_counts key
 ```
+
+Derive the span gate from `expected_counts`, not from literal 1947/1983:
+`load_expected_counts` already pins production keys to exactly
+`HISTORICAL_SEASONS`, so real builds still enforce 1947–1983, while unit
+tests may validate small single-season frames such as `{1947: 1}` (Step 2's
+`assemble` test and Step 7's mutation tests depend on that).
 
 Return a deterministic report:
 
@@ -1908,7 +2016,11 @@ git commit -m "feat: assemble and validate historical games"
 
 **Interfaces:**
 - Consumes: Task 5 `assemble`; `cache.read_valid`; `cache.sha256_file`;
-  existing modern `_publish_stage`.
+  these existing helpers reused from `nba_data.build` (do not redefine):
+  `_assert_staged_frame(actual: pd.DataFrame, expected: pd.DataFrame, table: str) -> None`,
+  `_table_manifest(path: Path, frame: pd.DataFrame) -> dict` (returns
+  `rows`, `sha256`, `min_season`, `max_season`), and
+  `_dependency_versions(project_dir: Path) -> dict`.
 - Produces: `_raw_provenance(data_dir: Path) -> dict`;
   `_publish_historical_pair(stage_dir: Path, output_dir: Path) -> None`;
   `run(data_dir: Path) -> None`; modern publisher preservation of the complete
@@ -1916,8 +2028,59 @@ git commit -m "feat: assemble and validate historical games"
 
 - [ ] **Step 1: Write failing raw-inventory and sidecar-binding tests**
 
-Create a helper that publishes one index/month cache pair with metadata. Then
-add:
+Add a helper that publishes one verified index/month cache pair through the
+real cache utilities (same shape as Task 2's
+`publish_historical_fixture_season`, but rooted at `repo_dir / "raw"` and
+kept local to `tests/test_historical_build.py`):
+
+```python
+SEED_INDEX_HTML = (
+    b'<html><body>'
+    b'<a href="/leagues/BAA_1947_games-november.html">November</a>'
+    b"</body></html>"
+)
+SEED_MONTH_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/historical_bref/BAA_1947_games-november.html"
+)
+SEED_MONTH_URL = (
+    "https://www.basketball-reference.com/leagues/"
+    "BAA_1947_games-november.html"
+)
+
+
+def seed_verified_historical_cache(repo_dir):
+    cache_dir = repo_dir / "raw/historical_bref"
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games.html",
+        SEED_INDEX_HTML,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_index",
+            "league": "BAA",
+            "season": 1947,
+            "url": historical_bref.index_url(1947),
+        },
+        lambda path: historical_bref.validate_index(path, 1947),
+    )
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games-november.html",
+        SEED_MONTH_FIXTURE.read_bytes(),
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": "BAA",
+            "season": 1947,
+            "month": "november",
+            "url": SEED_MONTH_URL,
+        },
+        lambda path: historical_bref.validate_month(
+            path, 1947, SEED_MONTH_URL
+        ),
+    )
+```
+
+Then add:
 
 ```python
 def test_raw_provenance_rejects_orphan_body(tmp_path):
@@ -2041,7 +2204,10 @@ Here `metadata` is the checksum-verified sidecar object for that body.
 
 - [ ] **Step 5: Build a deterministic manifest in a stage directory**
 
-`run` performs:
+At `historical_build` module scope add `import json`, `import os`,
+`import shutil`, `import tempfile`, and `from nba_data import build`
+(`build` does not import `historical_build`, so there is no cycle). `run`
+performs:
 
 ```python
 def run(data_dir: Path) -> None:
@@ -2070,7 +2236,7 @@ def run(data_dir: Path) -> None:
             index=False,
         )
         reread = pd.read_parquet(parquet_path)
-        _assert_staged_frame(reread, games)
+        build._assert_staged_frame(reread, games, "historical_games")
         reread_report = validate(
             reread,
             load_expected_counts(
@@ -2086,9 +2252,9 @@ def run(data_dir: Path) -> None:
             "schema_version": 1,
             "sources": provenance,
             "references": references,
-            "versions": _dependency_versions(data_dir.parent),
+            "versions": build._dependency_versions(data_dir.parent),
             "tables": {
-                "historical_games": _table_manifest(
+                "historical_games": build._table_manifest(
                     parquet_path, reread
                 )
             },
@@ -2118,8 +2284,9 @@ reference/historical_site_corrections.csv
 ```
 
 Before hashing, require the checkout franchise bytes to match
-`franchises.REFERENCE`. `_dependency_versions` records Python plus direct
-runtime packages and omits host paths and timestamps.
+`franchises.REFERENCE`. The reused `build._dependency_versions` already
+records Python plus direct runtime packages and omits host paths and
+timestamps.
 
 - [ ] **Step 6: Implement recoverable two-file replacement**
 
@@ -2128,6 +2295,54 @@ names. It moves any prior complete pair into a temporary rollback directory,
 moves both staged files into `data/parquet`, and restores the complete prior
 pair if either replacement raises. It rejects an orphan prior file. Unrelated
 modern files are never moved or copied.
+
+```python
+HISTORICAL_PRODUCTS = (
+    "historical_games.parquet",
+    "historical_games_manifest.json",
+)
+
+
+def _publish_historical_pair(stage_dir: Path, output_dir: Path) -> None:
+    staged = sorted(path.name for path in stage_dir.iterdir())
+    if staged != sorted(HISTORICAL_PRODUCTS):
+        raise HistoricalValidationError(
+            "historical stage must contain exactly "
+            f"{sorted(HISTORICAL_PRODUCTS)}"
+        )
+    existing = [
+        name for name in HISTORICAL_PRODUCTS if (output_dir / name).exists()
+    ]
+    if existing and len(existing) != len(HISTORICAL_PRODUCTS):
+        raise HistoricalValidationError(
+            "historical publication pair is incomplete"
+        )
+    rollback_dir = None
+    if existing:
+        rollback_dir = Path(
+            tempfile.mkdtemp(
+                prefix=".historical-rollback-", dir=output_dir.parent
+            )
+        )
+        for name in HISTORICAL_PRODUCTS:
+            os.replace(output_dir / name, rollback_dir / name)
+    try:
+        for name in HISTORICAL_PRODUCTS:
+            os.replace(stage_dir / name, output_dir / name)
+    except OSError:
+        if rollback_dir is not None:
+            for name in HISTORICAL_PRODUCTS:
+                if (rollback_dir / name).exists():
+                    os.replace(rollback_dir / name, output_dir / name)
+        raise
+    if rollback_dir is not None:
+        shutil.rmtree(rollback_dir)
+```
+
+Every directory involved lives under `data/`, so each `os.replace` stays on
+one filesystem. Step 8's rollback test must monkeypatch a *selective*
+`os.replace` wrapper that fails only on the second stage-to-output move and
+delegates every other call, so the restore path itself still works.
 
 - [ ] **Step 7: Preserve the historical pair during a modern directory swap**
 
@@ -2347,8 +2562,58 @@ Do not add `data/raw/historical_bref`.
 
 - [ ] **Step 1: Write failing archive/restore inverse tests**
 
-Seed a temporary repository with a manifest and two cache pairs. Invoke both
-scripts with environment overrides:
+Seed a temporary repository with a manifest and two cache pairs, and invoke
+the checkout's scripts by absolute path (the temporary repository has no
+`scripts/` directory; every path the scripts touch comes from the
+environment overrides):
+
+```python
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+ARCHIVE_SCRIPT = SCRIPTS / "archive_historical_raw_snapshot.sh"
+RESTORE_SCRIPT = SCRIPTS / "restore_historical_raw.sh"
+
+
+def inventory(directory):
+    return {
+        str(path.relative_to(directory)): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def seed_historical_snapshot_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    archive_root = tmp_path / "nas"
+    archive_root.mkdir()
+    cache_dir = repo / "data/raw/historical_bref"
+    cache_dir.mkdir(parents=True)
+    for name, payload in {
+        "BAA_1947_games.html": b"<html>index</html>",
+        "BAA_1947_games.html.meta.json": b'{"sha256": "seeded-index"}\n',
+        "BAA_1947_games-november.html": b"<html>month</html>",
+        "BAA_1947_games-november.html.meta.json": (
+            b'{"sha256": "seeded-month"}\n'
+        ),
+    }.items():
+        (cache_dir / name).write_bytes(payload)
+    parquet_dir = repo / "data/parquet"
+    parquet_dir.mkdir(parents=True)
+    (parquet_dir / "historical_games_manifest.json").write_text(
+        json.dumps(
+            {"tables": {"historical_games": {"max_season": 1983}}},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return repo, archive_root, inventory(cache_dir)
+```
+
+The scripts verify byte inventories, not sidecar semantics, so literal seeded
+bytes are sufficient here. Then add:
 
 ```python
 def historical_environment(repo, archive_root):
@@ -2372,7 +2637,7 @@ def test_archive_and_restore_are_exact_inverses(tmp_path):
         tmp_path
     )
     archived = subprocess.run(
-        ["bash", "scripts/archive_historical_raw_snapshot.sh"],
+        ["bash", str(ARCHIVE_SCRIPT)],
         cwd=repo,
         env=historical_environment(repo, archive_root),
         capture_output=True,
@@ -2380,7 +2645,7 @@ def test_archive_and_restore_are_exact_inverses(tmp_path):
     )
     assert archived.returncode == 0, archived.stderr
     restored = subprocess.run(
-        ["bash", "scripts/restore_historical_raw.sh"],
+        ["bash", str(RESTORE_SCRIPT)],
         cwd=repo,
         env=historical_environment(repo, archive_root),
         capture_output=True,
@@ -2593,15 +2858,98 @@ checksum inventory passes.
 
 - [ ] **Step 1: Declare NumPy as a direct runtime dependency**
 
-Add `numpy` to `requirements.in` and the `[project].dependencies` list. Then:
+Add `numpy` to `requirements.in` and the `[project].dependencies` list. Then
+compile **without** `--upgrade`: NumPy is already pinned transitively
+(`numpy==2.5.1` via pandas/matplotlib), so a no-upgrade compile only
+reclassifies it as direct. An `--upgrade` compile (the README's routine
+maintenance command) could bump pandas/pyarrow and change committed Parquet
+bytes, violating this plan's modern byte-stability constraint mid-slice.
 
 ```bash
-/home/riz/.local/bin/uv pip compile --upgrade --python-version 3.12 --universal requirements.in --output-file requirements.txt
+/home/riz/.local/bin/uv pip compile --python-version 3.12 --universal requirements.in --output-file requirements.txt
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+git diff requirements.txt
 ```
 
+Expected: the `requirements.txt` diff touches only NumPy's classification
+comment lines; no pinned version changes.
+
 - [ ] **Step 2: Write failing union-boundary and orientation tests**
+
+Define the three fixture helpers in `tests/test_home_court.py` first. Each
+writes only the columns `load_results_panel` selects or derives:
+
+```python
+import datetime
+
+
+def write_historical_parquet(
+    data_dir,
+    *,
+    season,
+    home_pts=100,
+    away_pts=90,
+    site_status="home",
+):
+    parquet = data_dir / "parquet"
+    parquet.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{
+        "game_id": f"bref-hist-{season}",
+        "season": season,
+        "league": "BAA" if season <= 1949 else "NBA",
+        "game_date": datetime.date(season, 1, 15),
+        "home_franchise_id": "BOS",
+        "away_franchise_id": "NYK",
+        "home_pts": home_pts,
+        "away_pts": away_pts,
+        "home_margin": home_pts - away_pts,
+        "site_status": site_status,
+    }]).to_parquet(parquet / "historical_games.parquet", index=False)
+
+
+def write_modern_parquet(
+    data_dir,
+    *,
+    season,
+    home_pts=100,
+    away_pts=90,
+    neutral_site=False,
+):
+    parquet = data_dir / "parquet"
+    parquet.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{
+        "game_id": f"modern-{season}",
+        "season": season,
+        "game_date": datetime.date(season, 1, 15),
+        "home_franchise_id": "BOS",
+        "away_franchise_id": "NYK",
+        "home_pts": home_pts,
+        "away_pts": away_pts,
+        "neutral_site": neutral_site,
+    }]).to_parquet(parquet / "games.parquet", index=False)
+
+
+def result_panel(rows):
+    records = []
+    for index, (season, franchise, site_status, margin) in enumerate(rows):
+        records.append({
+            "game_id": f"panel-{index:02d}",
+            "season": season,
+            "league": "BAA" if season <= 1949 else "NBA",
+            "game_date": datetime.date(season, 2, 1),
+            "home_franchise_id": franchise,
+            "away_franchise_id": "OPP",
+            "home_pts": 100 + margin,
+            "away_pts": 100,
+            "home_margin": margin,
+            "site_status": site_status,
+            "period": "historical",
+        })
+    return pd.DataFrame(records)
+```
+
+Then add the failing tests:
 
 ```python
 def test_load_results_panel_joins_exact_1983_1984_boundary(tmp_path):
@@ -2717,10 +3065,8 @@ def load_results_panel(data_dir: Path) -> pd.DataFrame:
         period="modern",
     )
     if (
-        int(historical["season"].min()) != 1947
-        or int(historical["season"].max()) != 1983
+        int(historical["season"].max()) != 1983
         or int(modern["season"].min()) != 1984
-        or int(modern["season"].max()) != 2026
     ):
         raise ValueError("results panel must meet the exact 1983/1984 boundary")
     panel = pd.concat(
@@ -2736,6 +3082,13 @@ def load_results_panel(data_dir: Path) -> pd.DataFrame:
         raise ValueError("results panel contains duplicate game_id")
     return panel
 ```
+
+The union layer checks only the 1983/1984 boundary so the Step 2 fixtures
+(one season on each side) remain valid. Full-span guarantees are enforced
+elsewhere: the historical build gates 1947–1983 through
+`load_expected_counts`, and Task 10 Step 6 plus Task 12 Step 4 assert the
+real panel spans exactly 1947–2026. Do not hard-code 2026 here; the modern
+table grows every season.
 
 - [ ] **Step 6: Implement Wilson and fixed-seed cluster-bootstrap intervals**
 
@@ -2867,6 +3220,59 @@ git commit -m "feat: summarize long-run home-court advantage"
   committed outputs.
 
 - [ ] **Step 1: Write failing render smoke and determinism tests**
+
+`analysis/` is not a package; load the report module by file path in
+`tests/test_historical_report.py` and build a constant full-span summary
+fixture:
+
+```python
+import hashlib
+import importlib.util
+from pathlib import Path
+
+import pandas as pd
+
+from nba_data import home_court
+
+_REPORT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "analysis/covid_hca/build_historical_trend.py"
+)
+_REPORT_SPEC = importlib.util.spec_from_file_location(
+    "build_historical_trend", _REPORT_PATH
+)
+historical_report = importlib.util.module_from_spec(_REPORT_SPEC)
+_REPORT_SPEC.loader.exec_module(historical_report)
+
+
+def synthetic_summary_1947_to_2026():
+    seasons = list(range(1947, 2027))
+    frame = pd.DataFrame({
+        "season": seasons,
+        "league": [
+            "BAA" if season <= 1949 else "NBA" for season in seasons
+        ],
+        "games": 100,
+        "home_site_games": 90,
+        "neutral_site_games": 6,
+        "unknown_site_games": 4,
+        "home_site_coverage": 0.9,
+        "home_wins": 54,
+        "home_losses": 36,
+        "home_win_pct": 0.6,
+        "home_win_ci_low": 0.55,
+        "home_win_ci_high": 0.65,
+        "mean_home_margin": 3.2,
+        "median_home_margin": 3.0,
+        "mean_margin_ci_low": 2.4,
+        "mean_margin_ci_high": 4.0,
+        "trailing_5_home_win_pct": 0.6,
+        "trailing_5_mean_home_margin": 3.2,
+    })
+    return frame.loc[:, home_court.SUMMARY_COLUMNS]
+```
+
+Then add:
 
 ```python
 def test_report_run_writes_three_deterministic_products(
