@@ -21,12 +21,36 @@ def validate_payload(path: Path) -> None:
     pq.ParquetFile(path)
 
 
+def _read_pinned_cache(path: Path, season: int) -> bytes | None:
+    """Accept a cache only when its sidecar names the exact source pin."""
+    payload = cache.read_valid(path, validate_payload)
+    if payload is None:
+        return None
+    sidecar = path.with_name(path.name + ".meta.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    expected = {
+        "provider": "hoopr",
+        "season": season,
+        "upstream_commit": SNAPSHOT["commit"],
+    }
+    observed = {key: metadata.get(key) for key in expected}
+    exact_types = all(
+        type(observed[key]) is type(expected[key]) for key in expected
+    )
+    if observed != expected or not exact_types:
+        raise cache.CacheIntegrityError(
+            f"hoopR cache metadata mismatch for {path}: "
+            f"expected {expected}, observed {observed}"
+        )
+    return payload
+
+
 def fetch(raw_dir: Path, seasons: Iterable[int] = SNAPSHOT["seasons"]) -> None:
     """Cache one verified schedule parquet for each requested ending season."""
     session = requests.Session()
     for season in seasons:
         destination = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
-        if cache.read_valid(destination, validate_payload) is not None:
+        if _read_pinned_cache(destination, season) is not None:
             continue
         url = (
             "https://raw.githubusercontent.com/sportsdataverse/hoopR-nba-data/"
@@ -57,7 +81,7 @@ def load_season(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load completed regular-season rows and explicit schedule exclusions."""
     path = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
-    cache.read_valid(path, validate_payload)
+    _read_pinned_cache(path, season)
     raw = pd.read_parquet(path)
     completed = raw.loc[
         (raw["season_type"] == 2) & raw["status_type_completed"].astype(bool)

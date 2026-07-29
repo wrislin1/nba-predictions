@@ -222,6 +222,95 @@ def test_load_game_corrections_accepts_explicit_no_fan_exemption_reason(
 
 
 @pytest.mark.parametrize(
+    "corrected_value",
+    [
+        pytest.param("-1", id="negative"),
+        pytest.param("+1", id="signed"),
+        pytest.param("1.0", id="decimal"),
+        pytest.param(" 1", id="leading-whitespace"),
+    ],
+)
+def test_load_game_corrections_rejects_noncanonical_box_scalars(
+    tmp_path, corrected_value
+):
+    """Would fail if a box correction were not a nonnegative base-10 integer."""
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0028300493",
+        "franchise_id": "BKN",
+        "field": "pts",
+        "corrected_value": corrected_value,
+        "source_url": "https://www.basketball-reference.com/boxscores/example",
+        "note": "Historical box-score reconciliation.",
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="invalid box correction value",
+    ):
+        build.load_game_corrections(path)
+
+
+@pytest.mark.parametrize(
+    "corrected_value",
+    [
+        pytest.param("0", id="zero"),
+        pytest.param("100", id="positive"),
+        pytest.param(" ", id="whitespace"),
+    ],
+)
+def test_load_game_corrections_requires_exact_blank_attendance_value(
+    tmp_path, corrected_value
+):
+    """Would fail if attendance corrections could manufacture a numeric value."""
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0022200056",
+        "franchise_id": pd.NA,
+        "field": "attendance",
+        "corrected_value": corrected_value,
+        "source_url": "https://statsdmz.nba.com/gamebook.pdf",
+        "note": "Official scorer report says attendance was not counted.",
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="attendance correction value must be blank",
+    ):
+        build.load_game_corrections(path)
+
+
+@pytest.mark.parametrize(
+    "corrected_value",
+    [
+        pytest.param("TRUE", id="uppercase"),
+        pytest.param("1", id="integer"),
+        pytest.param("yes", id="word"),
+        pytest.param(" true", id="whitespace"),
+    ],
+)
+def test_load_game_corrections_requires_exact_boolean_literals(
+    tmp_path, corrected_value
+):
+    """Would fail if a neutral-site correction accepted a fuzzy boolean."""
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0021901233",
+        "franchise_id": pd.NA,
+        "field": "neutral_site",
+        "corrected_value": corrected_value,
+        "source_url": "https://www.nba.com/news/restart",
+        "note": "Official single-site restart game.",
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="invalid boolean correction value",
+    ):
+        build.load_game_corrections(path)
+
+
+@pytest.mark.parametrize(
     ("field", "corrected_value", "reason"),
     [
         pytest.param(
@@ -909,6 +998,93 @@ def test_validation_rejects_score_outside_range_or_tie(home_pts, away_pts):
 
     assert_invalid(
         team_games, games, {2023: 1}, "invalid score or tie"
+    )
+
+
+def test_validation_rejects_wl_that_disagrees_with_score():
+    """Would fail if a losing team could retain wl=1 after score correction."""
+    team_games = one_team_game_panel()
+    team_games.loc[team_games["is_home"], "wl"] = 0
+    team_games.loc[~team_games["is_home"], "wl"] = 1
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "wl disagrees with final score",
+    )
+
+
+def test_validation_rejects_game_without_exactly_one_winner():
+    """Would fail if both team rows could be published as winners."""
+    team_games = one_team_game_panel().assign(wl=1)
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "game without exactly one winner",
+    )
+
+
+def test_validation_rejects_negative_box_statistic():
+    """Would fail if a negative deterministic box value were accepted."""
+    team_games = one_team_game_panel()
+    team_games.loc[team_games["is_home"], "ast"] = -1
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "negative box statistic",
+    )
+
+
+@pytest.mark.parametrize(
+    ("made", "attempted"),
+    [
+        pytest.param("fgm", "fga", id="field-goals"),
+        pytest.param("fg3m", "fg3a", id="three-pointers"),
+        pytest.param("ftm", "fta", id="free-throws"),
+    ],
+)
+def test_validation_rejects_makes_above_attempts(made, attempted):
+    """Would fail if a made-shot total could exceed its attempt total."""
+    team_games = one_team_game_panel()
+    home = team_games["is_home"]
+    team_games.loc[home, made] = team_games.loc[home, attempted] + 1
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "makes exceed attempts",
+    )
+
+
+def test_validation_rejects_rebound_component_disagreement():
+    """Would fail if offensive plus defensive rebounds differed from total."""
+    team_games = one_team_game_panel()
+    team_games.loc[team_games["is_home"], "dreb"] = 29
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "rebound component disagreement",
+    )
+
+
+def test_validation_rejects_point_accounting_disagreement():
+    """Would fail if points differed from 2*FGM + FG3M + FTM."""
+    team_games = one_team_game_panel()
+    team_games.loc[team_games["is_home"], "fgm"] = 44
+
+    assert_invalid(
+        team_games,
+        one_valid_game(),
+        {2023: 1},
+        "point accounting disagreement",
     )
 
 
@@ -1892,6 +2068,73 @@ def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
         "endpoint": "LeagueGameFinder",
         "season": 2026,
         "season_label": "2025-26",
+        "sha256": digest,
+    }]
+
+
+def test_raw_provenance_records_verified_hoopr_pin_per_season(tmp_path):
+    """Would fail if the manifest attributed season bodies only to a global pin."""
+    data_dir = tmp_path / "data"
+    raw_dir = data_dir / "raw/hoopr"
+    raw_dir.mkdir(parents=True)
+    payload = raw_dir / "nba_schedule_2024.parquet"
+    pd.DataFrame({"fixture": [1]}).to_parquet(payload, index=False)
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    commit = "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
+    payload.with_name(payload.name + ".meta.json").write_text(
+        json.dumps({
+            "provider": "hoopr",
+            "season": 2024,
+            "upstream_commit": commit,
+            "sha256": digest,
+        }),
+        encoding="utf-8",
+    )
+
+    provenance = build._raw_provenance(data_dir)
+
+    assert provenance["hoopr"]["seasons"] == [{
+        "path": "raw/hoopr/nba_schedule_2024.parquet",
+        "provider": "hoopr",
+        "season": 2024,
+        "upstream_commit": commit,
+        "sha256": digest,
+    }]
+
+
+def test_raw_provenance_records_historical_reconciliation_boxscores(
+    tmp_path,
+):
+    data_dir = tmp_path / "data"
+    raw_dir = data_dir / "raw/reconciliation/bref"
+    raw_dir.mkdir(parents=True)
+    payload = raw_dir / "198311080CHI.html"
+    payload.write_bytes(b"<html>historical box score</html>")
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    url = (
+        "https://www.basketball-reference.com/boxscores/"
+        "198311080CHI.html"
+    )
+    payload.with_name(payload.name + ".meta.json").write_text(
+        json.dumps({
+            "provider": "basketball_reference",
+            "resource": "historical_boxscore",
+            "game_id": "0028300064",
+            "url": url,
+            "sha256": digest,
+            "fetched_at": "not-manifest-provenance",
+        }),
+        encoding="utf-8",
+    )
+
+    provenance = build._raw_provenance(data_dir)
+
+    assert provenance["basketball_reference"][
+        "historical_boxscores"
+    ] == [{
+        "path": "raw/reconciliation/bref/198311080CHI.html",
+        "game_id": "0028300064",
+        "url": url,
         "sha256": digest,
     }]
 

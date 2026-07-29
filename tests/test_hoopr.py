@@ -107,7 +107,10 @@ def schedule_fixture() -> pd.DataFrame:
 
 
 def publish_schedule_fixture(
-    tmp_path: Path, season: int = 2024, frame: pd.DataFrame | None = None
+    tmp_path: Path,
+    season: int = 2024,
+    frame: pd.DataFrame | None = None,
+    metadata: dict | None = None,
 ) -> Path:
     """Publish an actual Parquet cache entry for the schedule loader."""
     source = tmp_path / "fixture.parquet"
@@ -116,7 +119,15 @@ def publish_schedule_fixture(
     cache.publish_bytes(
         destination,
         source.read_bytes(),
-        {"provider": "hoopr", "season": season},
+        (
+            {
+                "provider": "hoopr",
+                "season": season,
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            }
+            if metadata is None
+            else metadata
+        ),
         lambda path: hoopr.pq.ParquetFile(path),
     )
     return destination
@@ -172,6 +183,89 @@ def schedule_parquet_bytes(tmp_path: Path) -> bytes:
     source = tmp_path / "fetched.parquet"
     schedule_fixture().to_parquet(source, index=False)
     return source.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        pytest.param(
+            {
+                "provider": "hoopr",
+                "season": 2024,
+                "upstream_commit": "wrong-commit",
+            },
+            id="wrong-commit",
+        ),
+        pytest.param(
+            {"provider": "hoopr", "season": 2024},
+            id="missing-commit",
+        ),
+        pytest.param(
+            {
+                "provider": "other",
+                "season": 2024,
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            },
+            id="wrong-provider",
+        ),
+        pytest.param(
+            {
+                "provider": "hoopr",
+                "season": 2025,
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            },
+            id="wrong-season",
+        ),
+    ],
+)
+def test_load_season_rejects_misattributed_checksum_valid_cache(
+    tmp_path, metadata
+):
+    """Would fail if load accepted a valid body attributed to another pin."""
+    publish_schedule_fixture(tmp_path, metadata=metadata)
+
+    with pytest.raises(
+        cache.CacheIntegrityError,
+        match="hoopR cache metadata mismatch",
+    ):
+        hoopr.load_season(tmp_path, 2024, expected_games=2)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        pytest.param(
+            {
+                "provider": "hoopr",
+                "season": 2024,
+                "upstream_commit": "wrong-commit",
+            },
+            id="wrong-commit",
+        ),
+        pytest.param(
+            {
+                "provider": "hoopr",
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            },
+            id="missing-season",
+        ),
+    ],
+)
+def test_fetch_rejects_misattributed_checksum_valid_cache(
+    tmp_path, monkeypatch, metadata
+):
+    """Would fail if fetch silently reused or replaced a misattributed cache."""
+    publish_schedule_fixture(tmp_path, metadata=metadata)
+    session = FakeSession(FakeResponse(schedule_parquet_bytes(tmp_path)))
+    monkeypatch.setattr(hoopr.requests, "Session", lambda: session)
+
+    with pytest.raises(
+        cache.CacheIntegrityError,
+        match="hoopR cache metadata mismatch",
+    ):
+        hoopr.fetch(tmp_path, [2024])
+
+    assert session.calls == []
 
 
 def test_fetch_caches_the_pinned_schedule_parquet(tmp_path, monkeypatch):

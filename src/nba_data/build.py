@@ -218,6 +218,24 @@ def load_game_corrections(path: Path) -> pd.DataFrame:
     )
     if (invalid_team | invalid_game).any():
         raise ValidationError("invalid game correction field or scope")
+    box_corrections = team_scope
+    valid_box_value = corrections["corrected_value"].str.fullmatch(
+        r"(?:0|[1-9][0-9]*)", na=False
+    )
+    if (box_corrections & ~valid_box_value).any():
+        raise ValidationError("invalid box correction value")
+    attendance_corrections = corrections["field"].eq("attendance")
+    if (
+        attendance_corrections
+        & corrections["corrected_value"].notna()
+    ).any():
+        raise ValidationError("attendance correction value must be blank")
+    boolean_corrections = corrections["field"].eq("neutral_site")
+    valid_boolean_value = corrections["corrected_value"].isin(
+        {"true", "false"}
+    )
+    if (boolean_corrections & ~valid_boolean_value).any():
+        raise ValidationError("invalid boolean correction value")
     exemption_reason = corrections[
         "attendance_coverage_exemption_reason"
     ]
@@ -228,7 +246,7 @@ def load_game_corrections(path: Path) -> pd.DataFrame:
         ).fillna(False)
         & ~team_scope
         & corrections["field"].eq("neutral_site")
-        & corrections["corrected_value"].str.lower().eq("true")
+        & corrections["corrected_value"].eq("true")
         & corrections["game_id"].isin(
             ATTENDANCE_COVERAGE_EXEMPT_GAME_IDS
         )
@@ -422,7 +440,7 @@ def apply_game_corrections(
                 )
             )
         else:
-            value = str(correction.corrected_value).lower() == "true"
+            value = correction.corrected_value == "true"
             corrected.loc[match, "neutral_site"] = value
             corrected.loc[match, "neutral_site_source"] = (
                 "game_correction:neutral_site"
@@ -727,6 +745,22 @@ def _validate(
             f"{bad_sides.index[:5].tolist()}"
         )
 
+    invalid_wl = ~team_games["wl"].isin([0, 1])
+    winner_counts = team_games.groupby("game_id")["wl"].agg(
+        ["size", "sum"]
+    )
+    bad_winners = winner_counts[
+        (winner_counts["size"] != 2)
+        | (winner_counts["sum"] != 1)
+    ].index.union(
+        team_games.loc[invalid_wl, "game_id"].unique()
+    )
+    if len(bad_winners):
+        errors.append(
+            "game without exactly one winner: "
+            f"{bad_winners[:5].tolist()}"
+        )
+
     unique_games = games[~games["game_id"].duplicated(keep=False)]
     comparable = team_games[
         ~team_games["game_id"].isin(bad_sides.index)
@@ -766,6 +800,18 @@ def _validate(
             errors.append(
                 "team/game disagreement: "
                 f"{comparable.loc[disagreement, 'game_id'].head().tolist()}"
+            )
+        expected_wl = comparable["home_pts"].gt(
+            comparable["away_pts"]
+        ).where(
+            comparable["is_home"],
+            comparable["away_pts"].gt(comparable["home_pts"]),
+        ).astype("int64")
+        wl_disagreement = comparable["wl"].ne(expected_wl).fillna(True)
+        if wl_disagreement.any():
+            errors.append(
+                "wl disagrees with final score: "
+                f"{comparable.loc[wl_disagreement, 'game_id'].head().tolist()}"
             )
 
     referenced_franchises = set()
@@ -852,6 +898,44 @@ def _validate(
             errors.append(
                 "missing box statistic: "
                 f"{team_games.loc[missing_stats, 'game_id'].head().tolist()}"
+            )
+        negative_stats = team_games[BOX_STATS].lt(0).any(axis=1)
+        if negative_stats.any():
+            errors.append(
+                "negative box statistic: "
+                f"{team_games.loc[negative_stats, 'game_id'].head().tolist()}"
+            )
+        makes_above_attempts = (
+            team_games["fgm"].gt(team_games["fga"])
+            | team_games["fg3m"].gt(team_games["fg3a"])
+            | team_games["ftm"].gt(team_games["fta"])
+        ).fillna(False)
+        if makes_above_attempts.any():
+            errors.append(
+                "makes exceed attempts: "
+                f"{team_games.loc[makes_above_attempts, 'game_id'].head().tolist()}"
+            )
+        rebound_disagreement = (
+            team_games["oreb"]
+            .add(team_games["dreb"])
+            .ne(team_games["reb"])
+        ).fillna(False)
+        if rebound_disagreement.any():
+            errors.append(
+                "rebound component disagreement: "
+                f"{team_games.loc[rebound_disagreement, 'game_id'].head().tolist()}"
+            )
+        point_disagreement = (
+            team_games["fgm"]
+            .mul(2)
+            .add(team_games["fg3m"])
+            .add(team_games["ftm"])
+            .ne(team_games["pts"])
+        ).fillna(False)
+        if point_disagreement.any():
+            errors.append(
+                "point accounting disagreement: "
+                f"{team_games.loc[point_disagreement, 'game_id'].head().tolist()}"
             )
 
     bad_zero = games["attendance_status"].eq("reported_zero") & ~games[
@@ -1223,12 +1307,16 @@ def _raw_provenance(data_dir: Path) -> dict:
     )
     hoopr_seasons = []
     for path in sorted((raw_dir / "hoopr").glob("nba_schedule_*.parquet")):
+        season = int(path.stem.removeprefix("nba_schedule_"))
+        hoopr._read_pinned_cache(path, season)
         metadata = _load_metadata(
             path.with_name(path.name + ".meta.json"), path
         )
         hoopr_seasons.append({
             "path": _relative_path(path, data_dir),
-            "season": metadata.get("season"),
+            "provider": metadata["provider"],
+            "season": metadata["season"],
+            "upstream_commit": metadata["upstream_commit"],
             "sha256": _sha256(path),
         })
 
@@ -1245,6 +1333,30 @@ def _raw_provenance(data_dir: Path) -> dict:
             ),
             "season": metadata.get("season"),
             "month": metadata.get("month"),
+            "sha256": _sha256(path),
+        })
+
+    historical_boxscores = []
+    for path in sorted(
+        (raw_dir / "reconciliation/bref").glob("*.html")
+    ):
+        metadata = _load_metadata(
+            path.with_name(path.name + ".meta.json"), path
+        )
+        if (
+            metadata.get("provider") != "basketball_reference"
+            or metadata.get("resource") != "historical_boxscore"
+            or not isinstance(metadata.get("game_id"), str)
+            or not isinstance(metadata.get("url"), str)
+        ):
+            raise ValidationError(
+                "historical box-score cache metadata mismatch for "
+                f"{path.name}"
+            )
+        historical_boxscores.append({
+            "path": _relative_path(path, data_dir),
+            "game_id": metadata["game_id"],
+            "url": metadata["url"],
             "sha256": _sha256(path),
         })
 
@@ -1266,7 +1378,10 @@ def _raw_provenance(data_dir: Path) -> dict:
             "commit": snapshot.get("commit"),
             "seasons": hoopr_seasons,
         },
-        "basketball_reference": {"pages": bref_pages},
+        "basketball_reference": {
+            "pages": bref_pages,
+            "historical_boxscores": historical_boxscores,
+        },
         "legacy": {"files": legacy_files},
     }
 

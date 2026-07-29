@@ -1,13 +1,153 @@
 {
   "references": {
     "reference/franchises.csv": "aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb",
-    "reference/game_corrections.csv": "cb685a049ecdda635011bdc4e737a213dcd8337a9d708de0e8c2d2e0410cd3be",
+    "reference/game_corrections.csv": "4fe5af540239bb1dfb1b08b99e256dfd88a8fe05531c092256a633a19c84e6e4",
     "reference/hoopr_snapshot.json": "167dfaa6e1d949e9f4812687ff74f2316610b1f016b070fd5bb4151e857ff1dc",
     "reference/venue_capacities.csv": "7fcd2cfee1485d60541e77b89e6817f37fd6d18261b5680a5442a4bbc4bdbb45"
   },
   "schema_version": 1,
   "sources": {
     "basketball_reference": {
+      "historical_boxscores": [
+        {
+          "game_id": "0028300064",
+          "path": "raw/reconciliation/bref/198311080CHI.html",
+          "sha256": "bee0864db2adee454373ba1333bf61d77d3d414ca3b5956b0b77546a421e9a5a",
+          "url": "https://www.basketball-reference.com/boxscores/198311080CHI.html"
+        },
+        {
+          "game_id": "0028300074",
+          "path": "raw/reconciliation/bref/198311100HOU.html",
+          "sha256": "b20cec3be082a80869a701beb87916fb184e7322fd841d995178ed958cbcdf2d",
+          "url": "https://www.basketball-reference.com/boxscores/198311100HOU.html"
+        },
+        {
+          "game_id": "0028300080",
+          "path": "raw/reconciliation/bref/198311110SEA.html",
+          "sha256": "8b40fc93af3c121c9aa8a66ddf283eb4f1def951f42b4dd3cc9ad4d58368dadc",
+          "url": "https://www.basketball-reference.com/boxscores/198311110SEA.html"
+        },
+        {
+          "game_id": "0028300099",
+          "path": "raw/reconciliation/bref/198311150CHI.html",
+          "sha256": "a9de68a0d66f07cc5d606b8cf657b0db36dc6f09bfeb69be002f3972b1b1bdbb",
+          "url": "https://www.basketball-reference.com/boxscores/198311150CHI.html"
+        },
+        {
+          "game_id": "0028300147",
+          "path": "raw/reconciliation/bref/198311230UTA.html",
+          "sha256": "48917eb78e4c9039c465a8463e483ebdbe7758a7d45bdb6cd2a1eb19512b7e3d",
+          "url": "https://www.basketball-reference.com/boxscores/198311230UTA.html"
+        },
+        {
+          "game_id": "0028300230",
+          "path": "raw/reconciliation/bref/198312080PHO.html",
+          "sha256": "cab094e8379d2359d9d08addc9985b62bc112890ce22e094e0ad581a8db776ca",
+          "url": "https://www.basketball-reference.com/boxscores/198312080PHO.html"
+        },
+        {
+          "game_id": "0028300360",
+          "path": "raw/reconciliation/bref/198401030WSB.html",
+          "sha256": "80d7f92a46d1af5ff61bd51983dec0b6f6e558bdbdcd4781de5b2c34be085f73",
+          "url": "https://www.basketball-reference.com/boxscores/198401030WSB.html"
+        },
+        {
+          "game_id": "0028300493",
+          "path": "raw/reconciliation/bref/198401260UTA.html",
+          "sha256": "a0269353adbe3b491a22add1ed6e4ea369c66bb357939575b6bdcf26df46ff34",
+          "url": "https://www.basketball-reference.com/boxscores/198401260UTA.html"
+        },
+        {
+          "game_id": "0028300531",
+          "path": "raw/reconciliation/bref/198402040ATL.html",
+          "sha256": "f7c5cbec4ab9e3ab76f9c8031beafc8f81d89d72a40d31b361667ff59a939484",
+          "url": "https://www.basketball-reference.com/boxscores/198402040ATL.html"
+        },
+        {
+          "game_id": "0028300525",
+          "path": "raw/reconciliation/bref/198402040UTA.html",
+          "sha256": "d25eae33b41f4990520f50aac19921685fb39f81144f14b503091e8616c4edbe",
+          "url": "https://www.basketball-reference.com/boxscores/198402040UTA.html"
+        },
+        {
+          "game_id": "0028300541",
+          "path": "raw/reconciliation/bref/198402070ATL.html",
+          "sha256": "1aae5547f211fe53ffedc81c4924195a9d22d189096c55d0f8b67af8c5912c40",
+          "url": "https://www.basketball-reference.com/boxscores/198402070ATL.html"
+        },
+        {
+          "game_id": "0028300574",
+          "path": "raw/reconciliation/bref/198402110KCK.html",
+          "sha256": "411c1835e4bfec51946953e38547ffadf8a3649048ab8a1fea905a6c5f219664",
+          "url": "https://www.basketball-reference.com/boxscores/198402110KCK.html"
+        },
+        {
+          "game_id": "0028300639",
+          "path": "raw/reconciliation/bref/198402230KCK.html",
+          "sha256": "d869bcc235bb7557c265542f0dba4757bc8e10e42095a0b74062f5b6cfc0f353",
+          "url": "https://www.basketball-reference.com/boxscores/198402230KCK.html"
+        },
+        {
+          "game_id": "0028300665",
+          "path": "raw/reconciliation/bref/198402280KCK.html",
+          "sha256": "8d4e46f217bf5499e220a333b9143399e80a6970cbf937148f0755d608a2be63",
+          "url": "https://www.basketball-reference.com/boxscores/198402280KCK.html"
+        },
+        {
+          "game_id": "0028300803",
+          "path": "raw/reconciliation/bref/198403230DEN.html",
+          "sha256": "d0bf1496a126c1d94ffe346d3346de50062b3a290e3e77d1ff91c3c7ebfa556c",
+          "url": "https://www.basketball-reference.com/boxscores/198403230DEN.html"
+        },
+        {
+          "game_id": "0028300873",
+          "path": "raw/reconciliation/bref/198404030PHO.html",
+          "sha256": "cb1ab4c70083c81e21135cd5d66cf2eaf5c94914677bd828b026d463b02c7e6f",
+          "url": "https://www.basketball-reference.com/boxscores/198404030PHO.html"
+        },
+        {
+          "game_id": "0028400006",
+          "path": "raw/reconciliation/bref/198410260GSW.html",
+          "sha256": "206fd3ce74d75e661dec060a4fe752a4450949ea05d21b77aea0fbda29ade7f9",
+          "url": "https://www.basketball-reference.com/boxscores/198410260GSW.html"
+        },
+        {
+          "game_id": "0028400489",
+          "path": "raw/reconciliation/bref/198501240KCK.html",
+          "sha256": "83227bfced1e1ac667cf76bb8a930853c0b588e35aefe87acb6219ccd57527a6",
+          "url": "https://www.basketball-reference.com/boxscores/198501240KCK.html"
+        },
+        {
+          "game_id": "0028400538",
+          "path": "raw/reconciliation/bref/198502020CLE.html",
+          "sha256": "2a958e72c4a18fa9d925c60ab1269e2f6644ebe8010462fcca382a06b93a1ed4",
+          "url": "https://www.basketball-reference.com/boxscores/198502020CLE.html"
+        },
+        {
+          "game_id": "0028400690",
+          "path": "raw/reconciliation/bref/198503030LAC.html",
+          "sha256": "190e64f7d67f822f2a0e27855fb412037d9bbb9f6315835440bef20a538289d2",
+          "url": "https://www.basketball-reference.com/boxscores/198503030LAC.html"
+        },
+        {
+          "game_id": "0028400836",
+          "path": "raw/reconciliation/bref/198503270SAS.html",
+          "sha256": "6ad70ecd8b32f26bdb730fb514267e794303a4c4b88dda928fd8319114800610",
+          "url": "https://www.basketball-reference.com/boxscores/198503270SAS.html"
+        },
+        {
+          "game_id": "0028400895",
+          "path": "raw/reconciliation/bref/198504060GSW.html",
+          "sha256": "78eee1066ccdc717b6f5ffcfbb6326fa5611a063cee0dcd61f1b7d810ec3ac56",
+          "url": "https://www.basketball-reference.com/boxscores/198504060GSW.html"
+        },
+        {
+          "game_id": "0028800100",
+          "path": "raw/reconciliation/bref/198811190SAS.html",
+          "sha256": "96aecd75a623085f3e2ddc352e4a6f6d1b3fbe2b44985f1cc610577ebd185edc",
+          "url": "https://www.basketball-reference.com/boxscores/198811190SAS.html"
+        }
+      ],
       "pages": [
         {
           "month": "august",
@@ -360,38 +500,52 @@
       "seasons": [
         {
           "path": "raw/hoopr/nba_schedule_2020.parquet",
+          "provider": "hoopr",
           "season": 2020,
-          "sha256": "cfe7e328c34cf36f160be9b8adebf16806c5c932274c0177566deb2ac2d743bf"
+          "sha256": "cfe7e328c34cf36f160be9b8adebf16806c5c932274c0177566deb2ac2d743bf",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2021.parquet",
+          "provider": "hoopr",
           "season": 2021,
-          "sha256": "7fbdfe4350da317a063dedf17ecdad0b1c0a6ebf40c605cf0131fb1b002b43c2"
+          "sha256": "7fbdfe4350da317a063dedf17ecdad0b1c0a6ebf40c605cf0131fb1b002b43c2",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2022.parquet",
+          "provider": "hoopr",
           "season": 2022,
-          "sha256": "22703c94919428bf8134533ee5f652b1d156980736ee41f14fd297fcd7bcb16d"
+          "sha256": "22703c94919428bf8134533ee5f652b1d156980736ee41f14fd297fcd7bcb16d",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2023.parquet",
+          "provider": "hoopr",
           "season": 2023,
-          "sha256": "eddbd2de64d401cc9e44b1a567f52e408f71b96bc413a9dfd22cc4ad0e404f13"
+          "sha256": "eddbd2de64d401cc9e44b1a567f52e408f71b96bc413a9dfd22cc4ad0e404f13",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2024.parquet",
+          "provider": "hoopr",
           "season": 2024,
-          "sha256": "7840d80ebb7ab34cedec77fb620519b88c282c2662b2a0f9f45d538457bbb37f"
+          "sha256": "7840d80ebb7ab34cedec77fb620519b88c282c2662b2a0f9f45d538457bbb37f",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2025.parquet",
+          "provider": "hoopr",
           "season": 2025,
-          "sha256": "157dd9c130dd7518812302e8ed50496e7c3773fbc9c7efc98c40f5ff39314355"
+          "sha256": "157dd9c130dd7518812302e8ed50496e7c3773fbc9c7efc98c40f5ff39314355",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         },
         {
           "path": "raw/hoopr/nba_schedule_2026.parquet",
+          "provider": "hoopr",
           "season": 2026,
-          "sha256": "4033bfb809a0cf60e706e733cb8b1fb561dec185055957570a8583e22258f8be"
+          "sha256": "4033bfb809a0cf60e706e733cb8b1fb561dec185055957570a8583e22258f8be",
+          "upstream_commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143"
         }
       ]
     },
@@ -473,13 +627,13 @@
       "max_season": 2026,
       "min_season": 1984,
       "rows": 49117,
-      "sha256": "5a439cda13120d22c77505d855d21dfb0dd9cc689697fbef1b9caa0fb6e4ec4a"
+      "sha256": "cbbf167aa36a7b908f59c20243ae3cf8a5b91944c53cd5539fb838674afbf8e6"
     },
     "team_games": {
       "max_season": 2026,
       "min_season": 1984,
       "rows": 98234,
-      "sha256": "2a083d5e92c0845dd2400f5fee22773e986c2b5f4276d4e235f9b6a3b1495c06"
+      "sha256": "8da6f15b126e0617d870bc65026f5096119a31abc908282dd9ac01fbdb72967d"
     },
     "venues": {
       "max_season": 2022,
