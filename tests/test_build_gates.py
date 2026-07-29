@@ -1304,7 +1304,7 @@ def test_assemble_applies_corrections_before_publication_frames(
         build, "load_game_corrections", lambda path: corrections
     )
 
-    team_games, games = build._assemble_frames(tmp_path / "raw")
+    team_games, games, _ = build._assemble_frames(tmp_path / "raw")
     corrected_team = team_games[
         team_games["game_id"].eq("0022000001")
         & team_games["franchise_id"].eq("GSW")
@@ -1378,7 +1378,7 @@ def test_assemble_uses_schedule_home_designation_for_neutral_game(
         ),
     )
 
-    team_games, games = build._assemble_frames(tmp_path / "raw")
+    team_games, games, _ = build._assemble_frames(tmp_path / "raw")
     modern_teams = team_games[team_games["season"].eq(2023)]
     modern_game = games[games["season"].eq(2023)].iloc[0]
 
@@ -1408,6 +1408,60 @@ def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
         {"game_id": "0022000001", "attendance_source": "bref"},
     ]
     assert report["totals"] == {"games": 2, "team_games": 4}
+
+
+def test_assemble_reports_deterministic_hoopr_exclusions(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch)
+    excluded = pd.DataFrame([
+        {"game_id": 401000001, "reason": "exhibition"},
+        {"game_id": 401000002, "reason": "exhibition"},
+        {"game_id": 401000003, "reason": "cup_championship"},
+    ])
+    monkeypatch.setattr(
+        build.hoopr,
+        "load_season",
+        lambda raw_dir, requested_season: (
+            one_schedule_game(season=2023),
+            excluded,
+        ),
+    )
+
+    team_games, games, report = build.assemble(tmp_path / "raw")
+
+    expected = {
+        2023: {
+            "total": 3,
+            "by_reason": {
+                "cup_championship": 1,
+                "exhibition": 2,
+            },
+            "espn_game_ids": [
+                "espn-401000001",
+                "espn-401000002",
+                "espn-401000003",
+            ],
+        }
+    }
+    assert report["schedule_exclusions"] == expected
+    seed_publication_references(tmp_path)
+    monkeypatch.setattr(
+        build,
+        "assemble",
+        lambda raw_dir: (team_games, games, report),
+    )
+
+    build.run(tmp_path)
+
+    manifest = json.loads(
+        (tmp_path / "parquet/build_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["validation"]["schedule_exclusions"] == {
+        str(season): value for season, value in expected.items()
+    }
 
 
 def test_assemble_enforces_exact_output_columns_and_dtypes(
@@ -1657,14 +1711,7 @@ def test_write_venue_inventory_reports_non_covid_observed_limits(
     }]
 
 
-def publication_fixture(monkeypatch, data_dir):
-    stub_one_game_assembly(monkeypatch)
-    team_games, games, report = build.assemble(data_dir / "raw")
-    monkeypatch.setattr(
-        build,
-        "assemble",
-        lambda raw_dir: (team_games.copy(), games.copy(), report.copy()),
-    )
+def seed_publication_references(data_dir):
     reference_dir = data_dir / "reference"
     reference_dir.mkdir(parents=True)
     (reference_dir / "franchises.csv").write_text(
@@ -1692,6 +1739,17 @@ def publication_fixture(monkeypatch, data_dir):
         }),
         encoding="utf-8",
     )
+
+
+def publication_fixture(monkeypatch, data_dir):
+    stub_one_game_assembly(monkeypatch)
+    team_games, games, report = build.assemble(data_dir / "raw")
+    monkeypatch.setattr(
+        build,
+        "assemble",
+        lambda raw_dir: (team_games.copy(), games.copy(), report.copy()),
+    )
+    seed_publication_references(data_dir)
     return team_games, games
 
 
@@ -1873,3 +1931,74 @@ def test_run_restores_prior_publication_when_directory_swap_fails(
         path.name.startswith((".parquet-stage-", ".parquet-rollback-"))
         for path in data_dir.iterdir()
     )
+
+
+def test_run_leaves_prior_publication_when_first_rename_fails(
+    monkeypatch, tmp_path
+):
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output_dir = data_dir / "parquet"
+    output_dir.mkdir()
+    sentinels = {
+        name: f"sentinel-{name}".encode()
+        for name in build.PUBLISHED_FILES
+    }
+    for name, content in sentinels.items():
+        (output_dir / name).write_bytes(content)
+    real_replace = build.os.replace
+
+    def fail_prior_move(source, destination):
+        if Path(source) == output_dir:
+            raise OSError("seeded prior move failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(build.os, "replace", fail_prior_move)
+
+    with pytest.raises(OSError, match="seeded prior move failure"):
+        build.run(data_dir)
+
+    assert {
+        path.name: path.read_bytes() for path in output_dir.iterdir()
+    } == sentinels
+    assert not any(
+        path.name.startswith((".parquet-stage-", ".parquet-rollback-"))
+        for path in data_dir.iterdir()
+    )
+
+
+def test_run_reports_success_when_post_publication_cleanup_fails(
+    monkeypatch, tmp_path
+):
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output_dir = data_dir / "parquet"
+    output_dir.mkdir()
+    sentinels = {
+        name: f"sentinel-{name}".encode()
+        for name in build.PUBLISHED_FILES
+    }
+    for name, content in sentinels.items():
+        (output_dir / name).write_bytes(content)
+    real_rmtree = build.shutil.rmtree
+
+    def fail_rollback_cleanup(path):
+        if Path(path).name.startswith(".parquet-rollback-"):
+            raise OSError("seeded rollback cleanup failure")
+        real_rmtree(path)
+
+    monkeypatch.setattr(build.shutil, "rmtree", fail_rollback_cleanup)
+
+    build.run(data_dir)
+
+    assert pd.read_parquet(output_dir / "games.parquet").shape[0] == 2
+    rollback_dirs = [
+        path
+        for path in data_dir.iterdir()
+        if path.name.startswith(".parquet-rollback-")
+    ]
+    assert len(rollback_dirs) == 1
+    assert {
+        path.name: path.read_bytes()
+        for path in rollback_dirs[0].iterdir()
+    } == sentinels

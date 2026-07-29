@@ -769,6 +769,83 @@
       "2025": 1230,
       "2026": 1230
     },
+    "schedule_exclusions": {
+      "2020": {
+        "by_reason": {
+          "exhibition": 2
+        },
+        "espn_game_ids": [
+          "espn-401197813",
+          "espn-401197814"
+        ],
+        "total": 2
+      },
+      "2021": {
+        "by_reason": {
+          "exhibition": 1
+        },
+        "espn_game_ids": [
+          "espn-401306581"
+        ],
+        "total": 1
+      },
+      "2022": {
+        "by_reason": {
+          "exhibition": 1
+        },
+        "espn_game_ids": [
+          "espn-401410564"
+        ],
+        "total": 1
+      },
+      "2023": {
+        "by_reason": {
+          "exhibition": 1
+        },
+        "espn_game_ids": [
+          "espn-401524696"
+        ],
+        "total": 1
+      },
+      "2024": {
+        "by_reason": {
+          "cup_championship": 1,
+          "exhibition": 1
+        },
+        "espn_game_ids": [
+          "espn-401607495",
+          "espn-401623259"
+        ],
+        "total": 2
+      },
+      "2025": {
+        "by_reason": {
+          "cup_championship": 1,
+          "exhibition": 3
+        },
+        "espn_game_ids": [
+          "espn-401734908",
+          "espn-401752955",
+          "espn-401752956",
+          "espn-401752957"
+        ],
+        "total": 4
+      },
+      "2026": {
+        "by_reason": {
+          "cup_championship": 1,
+          "exhibition": 4
+        },
+        "espn_game_ids": [
+          "espn-401809839",
+          "espn-401838140",
+          "espn-401838141",
+          "espn-401838142",
+          "espn-401838143"
+        ],
+        "total": 5
+      }
+    },
     "selected_attendance_coverage": {
       "2020": 1.0,
       "2021": 0.9935185185185185,

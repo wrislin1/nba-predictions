@@ -959,7 +959,9 @@ def validate(
     )
 
 
-def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _assemble_frames(
+    raw_dir: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     corrections = load_game_corrections(
         raw_dir.parent / "reference/game_corrections.csv"
     )
@@ -1008,9 +1010,28 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 
     modern_team_frames = []
     modern_game_frames = []
+    schedule_exclusions = {}
     for season in stats_nba.SEASONS:
         season_team_games = stats_nba.load_season(raw_dir, season)
-        schedule, _ = hoopr.load_season(raw_dir, season)
+        schedule, excluded = hoopr.load_season(raw_dir, season)
+        reasons = (
+            excluded["reason"].astype("string").value_counts().sort_index()
+            if len(excluded)
+            else pd.Series(dtype="int64")
+        )
+        schedule_exclusions[season] = {
+            "total": len(excluded),
+            "by_reason": {
+                str(reason): int(count)
+                for reason, count in reasons.items()
+            },
+            "espn_game_ids": sorted(
+                f"espn-{int(game_id)}"
+                for game_id in excluded.get(
+                    "game_id", pd.Series(dtype="int64")
+                )
+            ),
+        }
         scoped = team_corrections[
             team_corrections["game_id"].isin(
                 season_team_games["game_id"]
@@ -1064,12 +1085,12 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         ["season", "game_date", "game_id"],
         kind="stable",
     ).reset_index(drop=True)
-    return team_games, games
+    return team_games, games, schedule_exclusions
 
 
 def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Load, enrich, combine, and strictly validate the publication panels."""
-    team_games, games = _assemble_frames(raw_dir)
+    team_games, games, schedule_exclusions = _assemble_frames(raw_dir)
     games = attach_capacity(
         games,
         load_venue_capacities(
@@ -1087,6 +1108,7 @@ def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
         expected_counts=stats_nba.EXPECTED_GAMES,
         expected_legacy=EXPECTED_LEGACY_GAMES,
     )
+    report["schedule_exclusions"] = schedule_exclusions
     return team_games, games, report
 
 
@@ -1094,7 +1116,7 @@ def _assemble_for_venue_inventory(
     raw_dir: Path,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Assemble inventory inputs while omitting only the capacity gate."""
-    team_games, games = _assemble_frames(raw_dir)
+    team_games, games, schedule_exclusions = _assemble_frames(raw_dir)
     report = _validate(
         team_games,
         games,
@@ -1102,6 +1124,7 @@ def _assemble_for_venue_inventory(
         EXPECTED_LEGACY_GAMES,
         enforce_capacity=False,
     )
+    report["schedule_exclusions"] = schedule_exclusions
     return team_games, games, report
 
 
@@ -1349,6 +1372,7 @@ def _table_manifest(path: Path, frame: pd.DataFrame) -> dict:
 
 
 def _publish_stage(stage_dir: Path, output_dir: Path) -> None:
+    """Atomically swap the stage, restoring or retaining the prior directory."""
     rollback_dir = Path(
         tempfile.mkdtemp(
             prefix=".parquet-rollback-",
@@ -1366,7 +1390,13 @@ def _publish_stage(stage_dir: Path, output_dir: Path) -> None:
             os.replace(rollback_dir, output_dir)
         raise
     if rollback_dir.exists():
-        shutil.rmtree(rollback_dir)
+        try:
+            shutil.rmtree(rollback_dir)
+        except OSError:
+            # The atomic stage swap already committed a complete publication.
+            # Retaining a complete rollback is safer than reporting failure
+            # while the new publication is live.
+            pass
 
 
 def run(data_dir: Path) -> None:
@@ -1418,6 +1448,9 @@ def run(data_dir: Path) -> None:
             expected_counts=stats_nba.EXPECTED_GAMES,
             expected_legacy=EXPECTED_LEGACY_GAMES,
         )
+        reread_report["schedule_exclusions"] = report[
+            "schedule_exclusions"
+        ]
         if reread_report != report:
             raise ValidationError(
                 "staged validation report changed after Parquet re-read"
