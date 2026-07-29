@@ -2198,6 +2198,35 @@ def test_historical_reconciliation_requires_sidecar(tmp_path):
         build._raw_provenance(data_dir)
 
 
+@pytest.mark.parametrize("ledger_exists", [False, True])
+def test_historical_reconciliation_rejects_sidecar_without_body(
+    tmp_path,
+    ledger_exists,
+):
+    data_dir = tmp_path / "data"
+    raw_dir = data_dir / "raw/reconciliation/bref"
+    raw_dir.mkdir(parents=True)
+    sidecar = raw_dir / "198311080CHI.html.meta.json"
+    sidecar.write_text(
+        json.dumps({
+            "provider": "basketball_reference",
+            "resource": "historical_boxscore",
+            "game_id": "0028300064",
+            "url": (
+                "https://www.basketball-reference.com/boxscores/"
+                "198311080CHI.html"
+            ),
+            "sha256": "0" * 64,
+        }),
+        encoding="utf-8",
+    )
+    if ledger_exists:
+        write_historical_team_corrections(data_dir, [])
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
 @pytest.mark.parametrize(
     ("field", "bad_value", "missing"),
     [

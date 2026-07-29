@@ -1280,9 +1280,19 @@ def _relative_path(path: Path, data_dir: Path) -> str:
 def _historical_reconciliation_provenance(
     data_dir: Path,
 ) -> list[dict]:
+    raw_dir = data_dir / "raw/reconciliation/bref"
     raw_paths = sorted(
-        (data_dir / "raw/reconciliation/bref").glob("*.html")
+        raw_dir.glob("*.html")
     )
+    sidecar_paths = set(raw_dir.glob("*.html.meta.json"))
+    expected_sidecar_paths = {
+        path.with_name(path.name + ".meta.json")
+        for path in raw_paths
+    }
+    if sidecar_paths != expected_sidecar_paths:
+        raise ValidationError(
+            "incomplete historical box-score cache pair"
+        )
     correction_path = data_dir / "reference/game_corrections.csv"
     if not correction_path.exists():
         if raw_paths:
