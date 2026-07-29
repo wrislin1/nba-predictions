@@ -1,73 +1,169 @@
-# Slice 2A: Game-Data Pipeline Implementation Plan
+# Slice 2A Game-Data Pipeline Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `team_games` / `games` / `franchises` / `venues` Parquet tables covering 1983-84 → 2025-26 from three verified sources (NAS-archived legacy data, hoopR parquet dumps, basketball-reference month pages), with hard validation gates.
+**Goal:** Build validated `team_games`, `games`, `franchises`, and `venues` Parquet tables covering 1983-84 through 2025-26, using NBA Stats for canonical box scores, hoopR for schedule/venue enrichment, and basketball-reference for attendance.
 
-**Architecture:** A small `src/nba_data` package with one module per source (legacy / hoopr / bref), a franchise-resolution reference table, and a `build.py` that assembles + validates + writes Parquet. Raw inputs are cached under gitignored `data/raw/`; only tidy Parquet is committed. Rosters/leaders parsing is deferred to a separate Slice 2B plan (nothing in Slice 3 needs them).
+**Architecture:** Normalize the archived and newly fetched NBA Stats rows through one shared team-game adapter so all 43 seasons retain the same schema and canonical NBA `GAME_ID`. Enrich the seven modern seasons by joining a pinned hoopR schedule and politely cached basketball-reference pages on `season + game_date + home_franchise_id + away_franchise_id`. Raw responses are checksummed and gitignored; only validated, deterministically sorted Parquet tables, curated references, and a build manifest are committed.
 
-**Tech Stack:** Python 3.12 (`.venv` in repo), pandas 3.0.5, pyarrow, requests, lxml, pytest 9.
+**Tech Stack:** Python 3.12, pandas 3.0.5, pyarrow, requests 2.34.2, nba_api 1.11.4, lxml, pytest 9.
 
 ## Global Constraints
 
-- Repo: `/home/riz/dev/nba-predictions-revived`. All commands run from repo root. The verified test invocation is `.venv/bin/python -m pytest -q` (baseline before this plan: **15 passed**).
-- basketball-reference: ≤1 request per 12 s, browser User-Agent, cache every page + metadata to disk before parsing, **stop with diagnostics on any non-200 — never retry-hammer, never bypass** (spec constraint).
-- stats.nba.com is TLS-blocked from this network (`docs/audits/2026-07-29-slice2-source-spike.md`) — do not add nba_api calls.
-- Blank attendance is NEVER coerced to zero. `attendance_status` ∈ {`reported_zero`, `reported_positive`, `missing`}. `reported_zero` is only trusted for seasons 2020–2022 (COVID window); a zero in any other season is a validation error.
-- Season convention everywhere: **ending year** (2021 = the 2020-21 season). hoopR files use the same convention.
-- Known per-season completed regular-season game counts (hard gates): 2020 → 1,059; 2021 → 1,080; 2022–2026 → 1,230. Legacy total 1984–2019: 40,828 games / 81,656 team-rows.
-- CPU-only while the GPU training task runs. Nothing here needs GPUs.
-- Do not merge to master or push. End state: commits on branch `slice2a-game-data`, ready for the user's separate-session review.
-- pandas 3 quirks: `game_date` columns from parquet are `datetime.date` objects — compare with `datetime.date`, not strings.
+- Repository: `/home/riz/dev/nba-predictions-revived`; run every command from this root.
+- Work on branch `slice2a-game-data`; do not merge or push.
+- CPU only; no task in this plan allocates GPU memory.
+- Season is always the ending year: `2021` means 2020-21.
+- Raw provider files live under gitignored `data/raw/`; curated Parquet lives under committed `data/parquet/`.
+- NBA Stats access requires a DNS preflight. `stats.nba.com` resolving to `0.0.0.0`, loopback, or `::` is a local DNS/AdGuard failure and must stop before requesting.
+- Fetch NBA Stats once per season with `LeagueGameFinder`, wait at least 12 seconds between real requests, cache the raw JSON and metadata, and never bypass TLS or retry-hammer.
+- Pin hoopR schedules to commit `50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143`; never fetch mutable `main`.
+- basketball-reference: at most one request per 12 seconds, ordinary certificate verification, browser User-Agent, cache every page before parsing, and stop on HTTP/TLS/schema failure.
+- basketball-reference is attendance source of record. A matched blank remains missing; ESPN is used only when no b-ref row matches.
+- Known modern regular-season game counts are hard gates, including missing seasons: `{2020: 1059, 2021: 1080, 2022: 1230, 2023: 1230, 2024: 1230, 2025: 1230, 2026: 1230}`.
+- Legacy hard gates: 40,828 games and 81,656 team-game rows.
+- Complete output hard gates: 49,117 games and 98,234 team-game rows.
+- Unit tests never perform network I/O. Tests marked `integration` consume existing cache files only.
+- Output ordering is deterministic: `season, game_date, game_id`; `team_games` adds `is_home` descending.
+- Capacity must resolve for every non-neutral venue used in ending seasons 2020–2022; neutral bubble venues may remain without capacity.
+
+---
 
 ## File Structure
 
-```
-data/reference/franchises.csv        # hand-built alias → franchise_id (committed)
-data/reference/venue_exceptions.csv  # curated venue overrides, seeded header-only
-src/nba_data/franchises.py           # load + resolve(name, season)
-src/nba_data/legacy.py               # NAS-restored 1983-2019 CSVs → team_games rows
-src/nba_data/hoopr.py                # hoopR download + normalize (2020-2026)
-src/nba_data/bref.py                 # b-ref month pages: fetch + parse attendance
-src/nba_data/build.py                # assemble, validate (gates), write Parquet
-src/nba_data/__main__.py             # CLI: fetch / build
-scripts/restore_raw.sh               # NAS → data/raw/legacy restore (read-only source)
+```text
+pyproject.toml                         # installable src package + pytest marker
+data/reference/franchises.csv         # source-name era -> stable franchise
+data/reference/hoopr_snapshot.json    # pinned upstream schedule snapshot
+data/reference/venue_capacities.csv   # venue/team/season capacity provenance
+src/nba_data/cache.py                 # checksummed atomic raw cache
+src/nba_data/franchises.py            # season-aware identity resolver
+src/nba_data/team_rows.py             # shared NBA Stats row normalization
+src/nba_data/legacy.py                # archived CSV loaders
+src/nba_data/stats_nba.py             # LeagueGameFinder fetch/load
+src/nba_data/hoopr.py                 # schedule/neutral/venue enrichment
+src/nba_data/bref.py                  # attendance fetch/load
+src/nba_data/build.py                 # assemble, validate, publish
+src/nba_data/__main__.py              # fetch / inspect-venues / build CLI
+scripts/restore_raw.sh                # verified NAS restore
+scripts/archive_raw_snapshot.sh       # recoverable NAS cache snapshot
 tests/test_franchises.py
+tests/test_team_rows.py
 tests/test_legacy.py
+tests/test_cache.py
+tests/test_stats_nba.py
 tests/test_hoopr.py
 tests/test_bref.py
 tests/test_build_gates.py
-data/parquet/{team_games,games,franchises,venues}.parquet   # committed outputs
+tests/test_cli.py
+docs/data-dictionary.md
+data/parquet/team_games.parquet
+data/parquet/games.parquet
+data/parquet/franchises.parquet
+data/parquet/venues.parquet
+data/parquet/build_manifest.json
 ```
 
-**Output schemas (the contract between all tasks):**
+### Output contracts
 
-`team_games` — one row per franchise per game:
-`game_id` (str), `season` (int, ending year), `source` (`nba_stats`|`espn`), `franchise_id` (str), `opponent_franchise_id` (str), `is_home` (bool), `game_date` (date), `wl` (int 1/0), `pts, fgm, fga, fg3m, fg3a, ftm, fta, oreb, dreb, reb, ast, stl, blk, tov, pf` (nullable Int64).
+`team_games`:
 
-`games` — one row per game:
-`game_id`, `season`, `source`, `game_date`, `home_franchise_id`, `away_franchise_id`, `home_pts`, `away_pts`, `neutral_site` (bool), `venue_name` (str|NA), `venue_city` (str|NA), `attendance` (nullable Int64), `attendance_status` (str), `attendance_source` (`bref`|`espn`|`legacy`|NA).
+```text
+game_id string, season int64, source string, franchise_id string,
+opponent_franchise_id string, is_home bool, game_date date, wl int64,
+pts/fga/fgm/fg3a/fg3m/fta/ftm/oreb/dreb/reb/ast/stl/blk/tov/pf nullable Int64
+```
+
+`games`:
+
+```text
+game_id string, espn_game_id nullable string, season int64, source string,
+game_date date, home_franchise_id string, away_franchise_id string,
+home_pts int64, away_pts int64, neutral_site bool,
+neutral_site_source string, venue_id/name/city nullable string,
+venue_source string, attendance_bref/attendance_espn/attendance nullable Int64,
+bref_row_matched bool, attendance_status string, attendance_source string
+```
+
+`attendance_status` is exactly one of `reported_zero`, `reported_positive`,
+`missing`. `attendance_source` is exactly one of `bref`, `espn`, `legacy`.
+The broader design reserves `not_applicable`, but this table contains only
+completed regular-season games, so Slice 2A never emits it.
+
+Rosters and team-season leaders are independent historical-data products and
+remain deferred to Slice 2B. They are not inputs to this game-data build.
 
 ---
 
-### Task 0: Branch setup
+### Task 0: Installable package and implementation branch
 
-**Files:** none (git only)
+**Files:**
+- Create: `pyproject.toml`
+- Modify: `requirements.in`
+- Modify: `requirements.txt`
 
-- [ ] **Step 1: Confirm clean baseline**
+**Interfaces:**
+- Produces: importable `nba_data` package and registered `integration` pytest marker.
 
-Run: `git status --short && .venv/bin/python -m pytest -q`
-Expected: no unstaged changes (plan file is committed), `15 passed`
+- [ ] **Step 1: Verify the clean baseline**
 
-- [ ] **Step 2: Create the work branch**
+Run:
 
 ```bash
-git checkout -b slice2a-game-data
+git status --short
+.venv/bin/python -m pytest -q
+```
+
+Expected: clean after this plan is committed; `15 passed`.
+
+- [ ] **Step 2: Create the branch**
+
+Run: `git switch -c slice2a-game-data`
+
+- [ ] **Step 3: Add the package configuration**
+
+Add `setuptools` to `requirements.in`. Create:
+
+```toml
+[build-system]
+requires = ["setuptools>=80,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nba-data"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+markers = [
+  "integration: reads existing raw caches and never performs network I/O",
+]
+```
+
+- [ ] **Step 4: Regenerate and install**
+
+```bash
+/home/riz/.local/bin/uv pip compile --upgrade --python-version 3.12 --universal requirements.in --output-file requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+```
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+.venv/bin/python -c "import nba_data; print(nba_data.__file__)"
+.venv/bin/python -m pytest -q
+git add pyproject.toml requirements.in requirements.txt
+git commit -m "build: make nba_data an installable src package"
 ```
 
 ---
 
-### Task 1: Franchise reference table + resolver
+### Task 1: Season-aware franchise identity
 
 **Files:**
 - Create: `data/reference/franchises.csv`
@@ -75,9 +171,14 @@ git checkout -b slice2a-game-data
 - Test: `tests/test_franchises.py`
 
 **Interfaces:**
-- Produces: `franchises.load_reference() -> pd.DataFrame` (columns `alias, franchise_id, first_season, last_season`); `franchises.resolve(name: str, season: int) -> str` raising `franchises.UnknownTeamError(ValueError)`; `franchises.FRANCHISE_IDS: set[str]` (30 ids).
+- Produces: `load_reference() -> pd.DataFrame`;
+  `resolve(name: str, season: int) -> str`;
+  `UnknownTeamError`; `AmbiguousTeamError`;
+  `FRANCHISE_IDS: frozenset[str]`.
 
-- [ ] **Step 1: Write `data/reference/franchises.csv`**
+- [ ] **Step 1: Write the reference**
+
+Create the CSV with these rows:
 
 ```csv
 alias,franchise_id,first_season,last_season
@@ -85,7 +186,7 @@ Atlanta Hawks,ATL,,
 Boston Celtics,BOS,,
 New Jersey Nets,BKN,,2012
 Brooklyn Nets,BKN,2013,
-Charlotte Hornets,CHA,,2002
+Charlotte Hornets,NOP,,2002
 Charlotte Bobcats,CHA,2005,2014
 Charlotte Hornets,CHA,2015,
 Chicago Bulls,CHI,,
@@ -124,1069 +225,1313 @@ Washington Bullets,WAS,,1997
 Washington Wizards,WAS,1998,
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 2: Write the failing tests**
 
 ```python
-# tests/test_franchises.py
+import pandas as pd
 import pytest
 from nba_data import franchises
 
 
-def test_resolve_simple_and_alias():
-    assert franchises.resolve("Atlanta Hawks", 1990) == "ATL"
-    assert franchises.resolve("LA Clippers", 2022) == "LAC"
-    assert franchises.resolve("Seattle SuperSonics", 2000) == "OKC"
-
-
-def test_resolve_is_season_aware():
-    assert franchises.resolve("Charlotte Hornets", 1995) == "CHA"
-    assert franchises.resolve("New Orleans Hornets", 2010) == "NOP"
+def test_charlotte_organizational_lineage():
+    assert franchises.resolve("Charlotte Hornets", 1995) == "NOP"
+    assert franchises.resolve("Charlotte Bobcats", 2010) == "CHA"
     assert franchises.resolve("Charlotte Hornets", 2020) == "CHA"
-    assert franchises.resolve("Washington Bullets", 1990) == "WAS"
 
 
-def test_unknown_name_raises():
+def test_unknown_exhibition_team_fails():
     with pytest.raises(franchises.UnknownTeamError):
-        franchises.resolve("Team LeBron", 2021)  # All-Star entrants must NOT resolve
+        franchises.resolve("Team LeBron", 2021)
 
 
-def test_thirty_franchises():
-    assert len(franchises.FRANCHISE_IDS) == 30
+def test_all_reference_boundaries_resolve_once():
+    ref = franchises.load_reference()
+    assert len(frozenset(ref["franchise_id"])) == 30
+    for row in ref.itertuples(index=False):
+        first = 1984 if pd.isna(row.first_season) else int(row.first_season)
+        last = 2026 if pd.isna(row.last_season) else int(row.last_season)
+        assert franchises.resolve(row.alias, first) == row.franchise_id
+        assert franchises.resolve(row.alias, last) == row.franchise_id
 ```
 
-- [ ] **Step 3: Run to verify failure**
+- [ ] **Step 3: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_franchises.py -q`
-Expected: FAIL (`ModuleNotFoundError` or `ImportError`)
+Expected: FAIL importing `nba_data.franchises`.
 
-- [ ] **Step 4: Implement `src/nba_data/franchises.py`**
+- [ ] **Step 4: Implement**
 
 ```python
-"""Franchise identity: alias + season -> stable franchise_id."""
-from __future__ import annotations
-
-import functools
+"""Season-aware source team names mapped to stable franchise IDs."""
+from functools import lru_cache
 from pathlib import Path
-
 import pandas as pd
 
-_REFERENCE_CSV = Path(__file__).resolve().parents[2] / "data" / "reference" / "franchises.csv"
+REFERENCE = Path(__file__).resolve().parents[2] / "data/reference/franchises.csv"
 
 
 class UnknownTeamError(ValueError):
-    """A team name that maps to no franchise for the given season."""
+    pass
 
 
-@functools.lru_cache(maxsize=1)
+class AmbiguousTeamError(ValueError):
+    pass
+
+
+@lru_cache(maxsize=1)
 def load_reference() -> pd.DataFrame:
-    df = pd.read_csv(_REFERENCE_CSV, dtype={"alias": str, "franchise_id": str})
-    df["first_season"] = df["first_season"].astype("Int64")
-    df["last_season"] = df["last_season"].astype("Int64")
-    return df
+    frame = pd.read_csv(REFERENCE, dtype={"alias": str, "franchise_id": str})
+    frame["first_season"] = frame["first_season"].astype("Int64")
+    frame["last_season"] = frame["last_season"].astype("Int64")
+    return frame
 
 
-FRANCHISE_IDS: set[str] = set(pd.read_csv(_REFERENCE_CSV)["franchise_id"])
+FRANCHISE_IDS = frozenset(load_reference()["franchise_id"])
 
 
 def resolve(name: str, season: int) -> str:
     ref = load_reference()
-    rows = ref[ref["alias"] == name.strip()]
-    for _, row in rows.iterrows():
-        first = row["first_season"]
-        last = row["last_season"]
-        if (pd.isna(first) or season >= first) and (pd.isna(last) or season <= last):
-            return row["franchise_id"]
-    raise UnknownTeamError(f"no franchise for {name!r} in season {season}")
+    rows = ref[
+        (ref["alias"] == name.strip())
+        & (ref["first_season"].isna() | (ref["first_season"] <= season))
+        & (ref["last_season"].isna() | (ref["last_season"] >= season))
+    ]
+    if len(rows) == 1:
+        return str(rows.iloc[0]["franchise_id"])
+    if rows.empty:
+        raise UnknownTeamError(f"no franchise for {name!r} in season {season}")
+    raise AmbiguousTeamError(f"multiple franchise eras for {name!r} in {season}")
 ```
 
-- [ ] **Step 5: Run to verify pass**
-
-Run: `.venv/bin/python -m pytest tests/test_franchises.py -q`
-Expected: 4 passed
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
+.venv/bin/python -m pytest tests/test_franchises.py -q
 git add data/reference/franchises.csv src/nba_data/franchises.py tests/test_franchises.py
-git commit -m "feat: franchise reference table with season-aware resolver"
+git commit -m "feat: add season-aware franchise identity"
 ```
 
 ---
 
-### Task 2: Restore legacy raw data from NAS
+### Task 2: Shared NBA Stats row normalizer and legacy restore
 
 **Files:**
-- Create: `scripts/restore_raw.sh`
-
-**Interfaces:**
-- Produces: `data/raw/legacy/nba-teams-1984-2019-ordered.csv` (81,657 lines incl. header) and `data/raw/legacy/league_boxscores_extra.csv` (40,829 lines) for Task 3.
-
-- [ ] **Step 1: Write `scripts/restore_raw.sh`**
-
-```bash
-#!/usr/bin/env bash
-# Restore the two legacy inputs the pipeline needs from the verified NAS archive.
-# The archive is read-only source of truth; never write to it.
-set -euo pipefail
-ARCHIVE=/mnt/nas/llm/documents/nba-predictions-archive/pre-rewrite-e0f8e3a/raw/venv-static-data
-DEST="$(dirname "$0")/../data/raw/legacy"
-mkdir -p "$DEST"
-for f in nba-teams-1984-2019-ordered.csv league_boxscores_extra.csv; do
-  rsync -a --checksum "$ARCHIVE/$f" "$DEST/$f"
-done
-wc -l "$DEST"/*.csv
-```
-
-- [ ] **Step 2: Run it**
-
-Run: `bash scripts/restore_raw.sh`
-Expected: prints `81657 .../nba-teams-1984-2019-ordered.csv` and `40829 .../league_boxscores_extra.csv`
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add scripts/restore_raw.sh
-git commit -m "feat: NAS restore script for legacy raw inputs"
-```
-
----
-
-### Task 3: Legacy loader (1983-84 → 2018-19)
-
-**Files:**
+- Create: `src/nba_data/team_rows.py`
 - Create: `src/nba_data/legacy.py`
+- Create: `scripts/restore_raw.sh`
+- Test: `tests/test_team_rows.py`
 - Test: `tests/test_legacy.py`
 
 **Interfaces:**
-- Consumes: `franchises.resolve(name, season)`.
-- Produces: `legacy.load_team_games(csv_path: Path) -> pd.DataFrame` in the **team_games schema** (Global contract); `legacy.load_attendance(csv_path: Path) -> pd.DataFrame` with columns `game_id, attendance` (attendance nullable Int64, 0 mapped to NA — a pre-COVID zero means unreported).
+- Consumes: `franchises.resolve(name: str, season: int) -> str`.
+- Produces: `normalize_team_rows(raw: pd.DataFrame, source: str) -> pd.DataFrame`;
+  `legacy.load_team_games(path) -> pd.DataFrame`;
+  `legacy.load_attendance(path) -> pd.DataFrame`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing normalizer test**
 
 ```python
-# tests/test_legacy.py
-import io
-from pathlib import Path
-
 import pandas as pd
-import pytest
-
-from nba_data import legacy
-
-LEGACY_CSV = Path("data/raw/legacy/nba-teams-1984-2019-ordered.csv")
-
-SAMPLE = """,SEASON_ID,TEAM_ID,TEAM_ABBREVIATION,TEAM_NAME,GAME_ID,GAME_DATE,MATCHUP,WL,MIN,PTS,FGM,FGA,FG_PCT,FG3M,FG3A,FG3_PCT,FTM,FTA,FT_PCT,OREB,DREB,REB,AST,STL,BLK,TOV,PF,PLUS_MINUS
-0,22015,1610612748,MIA,Miami Heat,0021500008,2015-10-28,MIA vs. CHA,1,240,104,38,81,0.469,9,24,0.375,19,25,0.76,6,36,42,21,8,6,13,17,10
-1,22015,1610612766,CHA,Charlotte Hornets,0021500008,2015-10-28,CHA @ MIA,0,240,94,35,84,0.417,9,29,0.31,15,19,0.789,7,34,41,22,7,3,10,19,-10
-"""
+from nba_data.team_rows import normalize_team_rows
 
 
-def test_load_team_games_normalizes_sample():
-    df = legacy.load_team_games(io.StringIO(SAMPLE))
-    assert len(df) == 2
-    home = df[df["is_home"]].iloc[0]
-    away = df[~df["is_home"]].iloc[0]
-    assert home["franchise_id"] == "MIA" and home["opponent_franchise_id"] == "CHA"
-    assert away["franchise_id"] == "CHA" and away["opponent_franchise_id"] == "MIA"
-    assert home["season"] == 2016  # SEASON_ID 22015 = 2015-16 = ending year 2016
-    assert home["source"] == "nba_stats"
-    assert home["game_id"] == "0021500008"
-    assert home["wl"] == 1 and home["pts"] == 104 and home["pf"] == 17
-
-
-def test_load_attendance_zero_becomes_missing():
-    csv = ",GAME_ID,ATTENDANCE\n0,0021500008,19600\n1,0021500009,0\n2,0021500010,\n"
-    df = legacy.load_attendance(io.StringIO(csv))
-    by_id = df.set_index("game_id")["attendance"]
-    assert by_id["0021500008"] == 19600
-    assert pd.isna(by_id["0021500009"])
-    assert pd.isna(by_id["0021500010"])
-
-
-@pytest.mark.skipif(not LEGACY_CSV.exists(), reason="run scripts/restore_raw.sh first")
-def test_full_legacy_file_loads():
-    df = legacy.load_team_games(LEGACY_CSV)
-    assert len(df) == 81656
-    assert df["game_id"].nunique() == 40828
-    assert set(df["franchise_id"]).issubset(legacy.franchises.FRANCHISE_IDS)
+def test_normalizes_two_nba_stats_rows():
+    raw = pd.DataFrame({
+        "SEASON_ID": [22020, 22020],
+        "TEAM_NAME": ["Brooklyn Nets", "Golden State Warriors"],
+        "GAME_ID": ["0022000001", "0022000001"],
+        "GAME_DATE": ["2020-12-22", "2020-12-22"],
+        "MATCHUP": ["BKN vs. GSW", "GSW @ BKN"],
+        "WL": ["W", "L"],
+        **{name: [value, value - 1] for name, value in {
+            "PTS": 125, "FGM": 45, "FGA": 90, "FG3M": 15, "FG3A": 40,
+            "FTM": 20, "FTA": 25, "OREB": 10, "DREB": 30, "REB": 40,
+            "AST": 25, "STL": 7, "BLK": 5, "TOV": 12, "PF": 18,
+        }.items()},
+    })
+    result = normalize_team_rows(raw, source="nba_stats")
+    assert len(result) == 2
+    assert result["season"].unique().tolist() == [2021]
+    assert result[result["is_home"]].iloc[0]["franchise_id"] == "BKN"
+    assert result[~result["is_home"]].iloc[0]["opponent_franchise_id"] == "BKN"
+    assert result["wl"].tolist() == [1, 0]
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [ ] **Step 2: Verify failure**
 
-Run: `.venv/bin/python -m pytest tests/test_legacy.py -q`
-Expected: FAIL (module missing)
+Run: `.venv/bin/python -m pytest tests/test_team_rows.py -q`
+Expected: FAIL importing `nba_data.team_rows`.
 
-- [ ] **Step 3: Implement `src/nba_data/legacy.py`**
+- [ ] **Step 3: Implement the normalizer**
 
 ```python
-"""Normalize the archived stats.nba.com data (1983-84 -> 2018-19)."""
-from __future__ import annotations
-
+"""Normalize the shared archived/live NBA Stats team-game schema."""
 import pandas as pd
-
 from nba_data import franchises
 
-_STATS = ["PTS", "FGM", "FGA", "FG3M", "FG3A", "FTM", "FTA",
-          "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF"]
+STATS = ("PTS", "FGM", "FGA", "FG3M", "FG3A", "FTM", "FTA",
+         "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF")
 
 
-def load_team_games(csv_path) -> pd.DataFrame:
-    raw = pd.read_csv(csv_path, index_col=0, dtype={"GAME_ID": str})
-    season = (raw["SEASON_ID"].astype(int) % 20000) + 1  # 22015 -> ending year 2016
-    is_home = raw["MATCHUP"].str.contains(" vs")
-    fid = [franchises.resolve(n, s) for n, s in zip(raw["TEAM_NAME"], season)]
-
-    out = pd.DataFrame({
-        "game_id": raw["GAME_ID"].str.zfill(10),
-        "season": season.astype(int),
-        "source": "nba_stats",
-        "franchise_id": fid,
-        "is_home": is_home.to_numpy(),
+def normalize_team_rows(raw: pd.DataFrame, source: str) -> pd.DataFrame:
+    season = (pd.to_numeric(raw["SEASON_ID"]) % 20_000) + 1
+    output = pd.DataFrame({
+        "game_id": raw["GAME_ID"].astype(str).str.zfill(10),
+        "season": season.astype("int64"),
+        "source": source,
+        "franchise_id": [
+            franchises.resolve(name, int(year))
+            for name, year in zip(raw["TEAM_NAME"], season)
+        ],
+        "is_home": raw["MATCHUP"].str.contains(r"\svs\.\s", regex=True),
         "game_date": pd.to_datetime(raw["GAME_DATE"]).dt.date,
-        "wl": raw["WL"].astype(int),
+        "wl": raw["WL"].replace({"W": 1, "L": 0}).astype("int64"),
     })
-    for col in _STATS:
-        out[col.lower()] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+    for column in STATS:
+        output[column.lower()] = pd.to_numeric(
+            raw[column], errors="coerce"
+        ).astype("Int64")
+    counts = output.groupby("game_id").size()
+    if not counts.eq(2).all():
+        raise ValueError(f"games without two team rows: {counts[counts.ne(2)].index[:5].tolist()}")
+    opponents = output[["game_id", "franchise_id"]].rename(
+        columns={"franchise_id": "opponent_franchise_id"}
+    )
+    output = output.merge(opponents, on="game_id", how="left")
+    output = output[
+        output["franchise_id"] != output["opponent_franchise_id"]
+    ].reset_index(drop=True)
+    if len(output) != len(raw):
+        raise ValueError("opponent pairing did not preserve row count")
+    return output
+```
 
-    # opponent = the other franchise on the same game_id
-    pair = out[["game_id", "franchise_id"]].merge(
-        out[["game_id", "franchise_id"]], on="game_id", suffixes=("", "_opp"))
-    pair = pair[pair["franchise_id"] != pair["franchise_id_opp"]]
-    out = out.merge(pair.rename(columns={"franchise_id_opp": "opponent_franchise_id"}),
-                    on=["game_id", "franchise_id"], how="left")
-    return out.reset_index(drop=True)
+- [ ] **Step 4: Add the restore script**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+archive=/mnt/nas/llm/documents/nba-predictions-archive/pre-rewrite-e0f8e3a/raw/venv-static-data
+destination="$(dirname "$0")/../data/raw/legacy"
+mkdir -p "$destination"
+rsync -a --checksum "$archive/nba-teams-1984-2019-ordered.csv" "$destination/"
+rsync -a --checksum "$archive/league_boxscores_extra.csv" "$destination/"
+printf '%s  %s\n' \
+  3a71f75829452032523098280542485f2a94513facde2ea3f78b5b4c4356764c \
+  "$destination/nba-teams-1984-2019-ordered.csv" \
+  e512c1a15b5a2046c47efb86152b1087c28c8955b183fdf5c0e8151876f8b822 \
+  "$destination/league_boxscores_extra.csv" | sha256sum -c -
+```
+
+- [ ] **Step 5: Write the failing legacy tests**
+
+```python
+def test_legacy_zero_attendance_becomes_missing():
+    sample = io.StringIO(",GAME_ID,ATTENDANCE\n0,28300003,16167\n1,28300008,0\n")
+    values = legacy.load_attendance(sample).set_index("game_id")["attendance"]
+    assert values["0028300003"] == 16167
+    assert pd.isna(values["0028300008"])
 
 
-def load_attendance(csv_path) -> pd.DataFrame:
-    raw = pd.read_csv(csv_path, index_col=0, dtype={"GAME_ID": str})
-    att = pd.to_numeric(raw["ATTENDANCE"], errors="coerce")
-    att = att.mask(att <= 0)  # pre-COVID zero/blank both mean "not reported"
+@pytest.mark.integration
+@pytest.mark.skipif(not LEGACY_PATH.exists(), reason="legacy cache absent")
+def test_complete_legacy_panel():
+    result = legacy.load_team_games(LEGACY_PATH)
+    assert len(result) == 81_656
+    assert result["game_id"].nunique() == 40_828
+```
+
+- [ ] **Step 6: Implement the legacy loaders**
+
+```python
+"""Load the verified archived NBA Stats CSVs."""
+import pandas as pd
+from nba_data.team_rows import normalize_team_rows
+
+
+def load_team_games(path) -> pd.DataFrame:
+    raw = pd.read_csv(path, index_col=0, dtype={"GAME_ID": str})
+    return normalize_team_rows(raw, source="nba_stats")
+
+
+def load_attendance(path) -> pd.DataFrame:
+    raw = pd.read_csv(path, index_col=0, dtype={"GAME_ID": str})
+    attendance = pd.to_numeric(raw["ATTENDANCE"], errors="coerce").mask(
+        lambda values: values <= 0
+    )
     return pd.DataFrame({
         "game_id": raw["GAME_ID"].str.zfill(10),
-        "attendance": att.astype("Int64"),
+        "attendance": attendance.astype("Int64"),
     })
 ```
 
-- [ ] **Step 4: Run to verify pass (incl. the full-file integration test)**
-
-Run: `bash scripts/restore_raw.sh && .venv/bin/python -m pytest tests/test_legacy.py -q`
-Expected: 3 passed (or 2 passed + 1 skipped if NAS unavailable — investigate before continuing)
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Verify and commit**
 
 ```bash
-git add src/nba_data/legacy.py tests/test_legacy.py
-git commit -m "feat: legacy stats.nba.com loader with zero-attendance-as-missing rule"
+bash scripts/restore_raw.sh
+.venv/bin/python -m pytest tests/test_team_rows.py tests/test_legacy.py -q
+git add src/nba_data/team_rows.py src/nba_data/legacy.py scripts/restore_raw.sh tests/test_team_rows.py tests/test_legacy.py
+git commit -m "feat: normalize and restore archived NBA Stats rows"
 ```
 
 ---
 
-### Task 4: hoopR provider (2019-20 → 2025-26)
+### Task 3: Checksummed raw cache
 
 **Files:**
+- Create: `src/nba_data/cache.py`
+- Test: `tests/test_cache.py`
+
+**Interfaces:**
+- Produces: `CacheIntegrityError`; `SourceAccessError`;
+  `sha256_file(path: Path) -> str`;
+  `read_valid(path: Path, validator: Callable[[Path], None]) -> bytes | None`;
+  `publish_bytes(path: Path, payload: bytes, metadata: dict, validator) -> Path`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_publish_and_read_checksummed_cache(tmp_path):
+    path = tmp_path / "response.json"
+    cache.publish_bytes(path, b'{"ok": true}', {"provider": "test"}, lambda _: None)
+    assert cache.read_valid(path, lambda _: None) == b'{"ok": true}'
+    meta = json.loads((tmp_path / "response.json.meta.json").read_text())
+    assert meta["sha256"] == hashlib.sha256(b'{"ok": true}').hexdigest()
+
+
+def test_changed_cache_fails_without_repair(tmp_path):
+    path = tmp_path / "response.json"
+    cache.publish_bytes(path, b"original", {}, lambda _: None)
+    path.write_bytes(b"changed")
+    with pytest.raises(cache.CacheIntegrityError, match="SHA-256"):
+        cache.read_valid(path, lambda _: None)
+```
+
+- [ ] **Step 2: Verify failure**
+
+Run: `.venv/bin/python -m pytest tests/test_cache.py -q`
+Expected: FAIL importing `nba_data.cache`.
+
+- [ ] **Step 3: Implement**
+
+```python
+"""Atomic body/metadata cache with SHA-256 verification."""
+import hashlib
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+class CacheIntegrityError(RuntimeError):
+    pass
+
+
+class SourceAccessError(RuntimeError):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_valid(path: Path, validator) -> bytes | None:
+    sidecar = path.with_name(path.name + ".meta.json")
+    if not path.exists() and not sidecar.exists():
+        return None
+    if not path.exists() or not sidecar.exists():
+        raise CacheIntegrityError(f"incomplete cache pair for {path}")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    actual = sha256_file(path)
+    if actual != metadata.get("sha256"):
+        raise CacheIntegrityError(f"SHA-256 mismatch for {path}")
+    validator(path)
+    return path.read_bytes()
+
+
+def publish_bytes(path: Path, payload: bytes, metadata: dict, validator) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body_part = path.with_name(path.name + ".part")
+    meta_path = path.with_name(path.name + ".meta.json")
+    meta_part = meta_path.with_name(meta_path.name + ".part")
+    body_part.write_bytes(payload)
+    validator(body_part)
+    record = {
+        **metadata,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "content_length": len(payload),
+        "sha256": sha256_file(body_part),
+    }
+    meta_part.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+    os.replace(body_part, path)
+    os.replace(meta_part, meta_path)
+    return path
+```
+
+- [ ] **Step 4: Verify and commit**
+
+```bash
+.venv/bin/python -m pytest tests/test_cache.py -q
+git add src/nba_data/cache.py tests/test_cache.py
+git commit -m "feat: add checksummed raw source cache"
+```
+
+---
+
+### Task 4: NBA Stats canonical modern box scores
+
+**Files:**
+- Create: `src/nba_data/stats_nba.py`
+- Test: `tests/test_stats_nba.py`
+
+**Interfaces:**
+- Consumes: `cache.read_valid`, `cache.publish_bytes`,
+  `team_rows.normalize_team_rows`.
+- Produces: `SEASONS: dict[int, str]`;
+  `preflight_dns() -> tuple[str, ...]`;
+  `fetch(raw_dir: Path, seasons: Iterable[int], sleep_s: float = 12) -> None`;
+  `load_season(raw_dir: Path, season: int, expected_games: int | None = None) -> pd.DataFrame`.
+
+- [ ] **Step 1: Write the failing DNS test**
+
+```python
+def test_dns_preflight_rejects_adguard_sinkhole(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 443))
+    ])
+    with pytest.raises(stats_nba.SourceAccessError, match="AdGuard"):
+        stats_nba.preflight_dns()
+```
+
+- [ ] **Step 2: Write the failing payload test**
+
+```python
+def fixture_leaguegamefinder_payload():
+    headers = [
+        "SEASON_ID", "TEAM_ID", "TEAM_NAME", "GAME_ID", "GAME_DATE",
+        "MATCHUP", "WL", "PTS", "FGM", "FGA", "FG3M", "FG3A", "FTM",
+        "FTA", "OREB", "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF",
+    ]
+    home = {
+        "SEASON_ID": "22020", "TEAM_ID": 1610612751,
+        "TEAM_NAME": "Brooklyn Nets", "GAME_ID": "0022000001",
+        "GAME_DATE": "2020-12-22", "MATCHUP": "BKN vs. GSW", "WL": "W",
+        "PTS": 125, "FGM": 45, "FGA": 90, "FG3M": 15, "FG3A": 40,
+        "FTM": 20, "FTA": 25, "OREB": 10, "DREB": 30, "REB": 40,
+        "AST": 25, "STL": 7, "BLK": 5, "TOV": 12, "PF": 18,
+    }
+    away = {
+        **home, "TEAM_ID": 1610612744, "TEAM_NAME": "Golden State Warriors",
+        "MATCHUP": "GSW @ BKN", "WL": "L", "PTS": 99,
+    }
+    return {
+        "resource": "leaguegamefinder",
+        "parameters": {},
+        "resultSets": [{
+            "name": "LeagueGameFinderResults",
+            "headers": headers,
+            "rowSet": [[row[column] for column in headers] for row in [home, away]],
+        }],
+    }
+
+
+def test_load_season_normalizes_cached_leaguegamefinder(tmp_path):
+    destination = tmp_path / "stats_nba/leaguegamefinder_2021.json"
+    payload = fixture_leaguegamefinder_payload()  # two rows from Task 2 sample
+    cache.publish_bytes(
+        destination,
+        json.dumps(payload).encode(),
+        {"provider": "stats_nba", "season": 2021},
+        stats_nba.validate_payload,
+    )
+    result = stats_nba.load_season(tmp_path, 2021, expected_games=1)
+    assert len(result) == 2
+    assert result.iloc[0]["game_id"] == "0022000001"
+    assert set(result["source"]) == {"nba_stats"}
+```
+
+- [ ] **Step 3: Verify failure**
+
+Run: `.venv/bin/python -m pytest tests/test_stats_nba.py -q`
+Expected: FAIL importing `nba_data.stats_nba`.
+
+- [ ] **Step 4: Implement DNS and payload validation**
+
+```python
+SEASONS = {
+    2020: "2019-20", 2021: "2020-21", 2022: "2021-22",
+    2023: "2022-23", 2024: "2023-24", 2025: "2024-25", 2026: "2025-26",
+}
+EXPECTED_GAMES = {
+    2020: 1059, 2021: 1080, 2022: 1230, 2023: 1230,
+    2024: 1230, 2025: 1230, 2026: 1230,
+}
+REQUIRED = {
+    "SEASON_ID", "TEAM_ID", "TEAM_NAME", "GAME_ID", "GAME_DATE", "MATCHUP",
+    "WL", "PTS", "FGM", "FGA", "FG3M", "FG3A", "FTM", "FTA", "OREB",
+    "DREB", "REB", "AST", "STL", "BLK", "TOV", "PF",
+}
+
+
+def preflight_dns() -> tuple[str, ...]:
+    addresses = tuple(sorted({
+        result[4][0] for result in socket.getaddrinfo(
+            "stats.nba.com", 443, type=socket.SOCK_STREAM
+        )
+    }))
+    bad = [
+        address for address in addresses
+        if ipaddress.ip_address(address).is_unspecified
+        or ipaddress.ip_address(address).is_loopback
+    ]
+    if not addresses or bad:
+        raise cache.SourceAccessError(
+            f"stats.nba.com resolved to {addresses}; check the AdGuard query log "
+            "and allowlist @@||stats.nba.com^"
+        )
+    return addresses
+
+
+def validate_payload(path: Path) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    result = payload["resultSets"][0]
+    if result["name"] != "LeagueGameFinderResults":
+        raise ValueError(f"unexpected result set {result['name']!r}")
+    missing = REQUIRED - set(result["headers"])
+    if missing:
+        raise ValueError(f"missing LeagueGameFinder columns: {sorted(missing)}")
+```
+
+- [ ] **Step 5: Implement fetch and load**
+
+```python
+def fetch(raw_dir: Path, seasons=SEASONS, sleep_s: float = 12.0) -> None:
+    preflight_dns()
+    requested = list(seasons)
+    for index, season in enumerate(requested):
+        destination = raw_dir / "stats_nba" / f"leaguegamefinder_{season}.json"
+        if cache.read_valid(destination, validate_payload) is not None:
+            continue
+        try:
+            endpoint = LeagueGameFinder(
+                player_or_team_abbreviation="T",
+                league_id_nullable="00",
+                season_nullable=SEASONS[season],
+                season_type_nullable="Regular Season",
+                timeout=90,
+            )
+        except requests.RequestException as exc:
+            raise cache.SourceAccessError(
+                f"LeagueGameFinder {season} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        payload = endpoint.get_json().encode("utf-8")
+        cache.publish_bytes(
+            destination, payload,
+            {
+                "provider": "stats_nba",
+                "endpoint": "LeagueGameFinder",
+                "season": season,
+                "season_label": SEASONS[season],
+            },
+            validate_payload,
+        )
+        if index < len(requested) - 1:
+            time.sleep(sleep_s)
+
+
+def load_season(
+    raw_dir: Path, season: int, expected_games: int | None = None
+) -> pd.DataFrame:
+    path = raw_dir / "stats_nba" / f"leaguegamefinder_{season}.json"
+    cache.read_valid(path, validate_payload)
+    result = json.loads(path.read_text())["resultSets"][0]
+    raw = pd.DataFrame(result["rowSet"], columns=result["headers"])
+    output = normalize_team_rows(raw, source="nba_stats")
+    games = output["game_id"].nunique()
+    expected = EXPECTED_GAMES[season] if expected_games is None else expected_games
+    if games != expected:
+        raise ValueError(f"season {season}: {games} games, expected {expected}")
+    if not output["game_id"].str.startswith("002").all():
+        raise ValueError(f"season {season}: non-regular NBA GAME_ID found")
+    return output
+```
+
+- [ ] **Step 6: Add cached integration tests**
+
+```python
+@pytest.mark.integration
+@pytest.mark.parametrize("season, games", sorted(stats_nba.EXPECTED_GAMES.items()))
+def test_cached_season_counts(season, games):
+    path = RAW / "stats_nba" / f"leaguegamefinder_{season}.json"
+    if not path.exists():
+        pytest.skip("NBA Stats cache absent")
+    result = stats_nba.load_season(RAW, season)
+    assert len(result) == games * 2
+    assert result["game_id"].nunique() == games
+```
+
+- [ ] **Step 7: Verify and commit**
+
+```bash
+.venv/bin/python -m pytest tests/test_stats_nba.py -q
+git add src/nba_data/stats_nba.py tests/test_stats_nba.py
+git commit -m "feat: fetch canonical modern NBA Stats box scores"
+```
+
+---
+
+### Task 5: Pinned hoopR schedule enrichment
+
+**Files:**
+- Create: `data/reference/hoopr_snapshot.json`
 - Create: `src/nba_data/hoopr.py`
 - Test: `tests/test_hoopr.py`
 
 **Interfaces:**
-- Consumes: `franchises.resolve`, `franchises.UnknownTeamError`.
-- Produces: `hoopr.SEASONS = range(2020, 2027)`; `hoopr.fetch(raw_dir: Path, seasons=SEASONS) -> None` (downloads `team_box_{s}.parquet` + `nba_schedule_{s}.parquet` into `raw_dir/hoopr/`, skipping files already present); `hoopr.load_season(raw_dir: Path, season: int) -> tuple[pd.DataFrame, pd.DataFrame]` returning (team_games rows, schedule_games rows). `schedule_games` columns: `game_id, season, game_date, home_franchise_id, away_franchise_id, home_pts, away_pts, neutral_site, venue_name, venue_city, espn_attendance` (nullable Int64).
+- Produces: `fetch(raw_dir: Path, seasons) -> None`;
+  `load_season(raw_dir: Path, season: int, expected_games: int | None = None)
+  -> tuple[pd.DataFrame, pd.DataFrame]`
+  returning schedule rows and exclusion rows.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Create the snapshot**
 
-```python
-# tests/test_hoopr.py
-import datetime as dt
-from pathlib import Path
-
-import pandas as pd
-import pytest
-
-from nba_data import hoopr
-
-RAW = Path("data/raw")
-
-
-def _fixture_dir(tmp_path):
-    d = tmp_path / "hoopr"
-    d.mkdir()
-    team_box = pd.DataFrame({
-        "game_id": [401300001, 401300001, 401300099, 401300099],
-        "season": [2021] * 4,
-        "season_type": [2, 2, 2, 2],
-        "game_date": [dt.date(2020, 12, 22)] * 2 + [dt.date(2021, 3, 7)] * 2,
-        "team_display_name": ["Brooklyn Nets", "Golden State Warriors",
-                              "Team LeBron", "Team Durant"],
-        "team_home_away": ["home", "away", "home", "away"],
-        "team_score": [125, 99, 170, 150],
-        "team_winner": [True, False, True, False],
-        "assists": [25, 20, 40, 38], "blocks": [5, 4, 1, 1],
-        "defensive_rebounds": [30, 28, 30, 30],
-        "field_goals_made": [45, 38, 70, 60],
-        "field_goals_attempted": [90, 88, 120, 110],
-        "fouls": [18, 22, 5, 5],
-        "free_throws_made": [20, 15, 10, 12],
-        "free_throws_attempted": [25, 20, 12, 15],
-        "offensive_rebounds": [10, 9, 5, 5],
-        "steals": [7, 6, 8, 8],
-        "three_point_field_goals_made": [15, 8, 20, 18],
-        "three_point_field_goals_attempted": [40, 30, 50, 45],
-        "total_rebounds": [40, 37, 35, 35],
-        "turnovers": [12, 14, 10, 10],
-    })
-    team_box.to_parquet(d / "team_box_2021.parquet")
-    schedule = pd.DataFrame({
-        "game_id": [401300001, 401300099, 401300500],
-        "season": [2021] * 3,
-        "season_type": [2, 2, 2],
-        "game_date": [dt.date(2020, 12, 22), dt.date(2021, 3, 7), dt.date(2021, 4, 1)],
-        "status_type_completed": [True, True, False],
-        "home_display_name": ["Brooklyn Nets", "Team LeBron", "Chicago Bulls"],
-        "away_display_name": ["Golden State Warriors", "Team Durant", "Miami Heat"],
-        "home_score": [125, 170, 0], "away_score": [99, 150, 0],
-        "neutral_site": [False, True, False],
-        "attendance": [0, 1500, 0],
-        "venue_full_name": ["Barclays Center", "State Farm Arena", "United Center"],
-        "venue_address_city": ["Brooklyn", "Atlanta", "Chicago"],
-    })
-    schedule.to_parquet(d / "nba_schedule_2021.parquet")
-    return tmp_path
-
-
-def test_load_season_filters_and_normalizes(tmp_path):
-    raw = _fixture_dir(tmp_path)
-    team_games, sched = hoopr.load_season(raw, 2021)
-    # All-Star rows (unmappable names) and uncompleted games are dropped
-    assert set(sched["game_id"]) == {"espn-401300001"}
-    assert len(team_games) == 2
-    bkn = team_games[team_games["franchise_id"] == "BKN"].iloc[0]
-    assert bkn["is_home"] and bkn["wl"] == 1 and bkn["pts"] == 125
-    assert bkn["opponent_franchise_id"] == "GSW"
-    assert bkn["source"] == "espn" and bkn["season"] == 2021
-    row = sched.iloc[0]
-    assert row["home_franchise_id"] == "BKN" and row["espn_attendance"] == 0
-    assert not row["neutral_site"] and row["venue_name"] == "Barclays Center"
-
-
-def test_reb_consistency_columns_exist(tmp_path):
-    raw = _fixture_dir(tmp_path)
-    team_games, _ = hoopr.load_season(raw, 2021)
-    for col in ["fgm", "fga", "fg3m", "fg3a", "ftm", "fta",
-                "oreb", "dreb", "reb", "ast", "stl", "blk", "tov", "pf"]:
-        assert col in team_games.columns
-
-
-@pytest.mark.skipif(not (RAW / "hoopr" / "team_box_2021.parquet").exists(),
-                    reason="run `python -m nba_data fetch` first")
-def test_real_2021_season_counts():
-    team_games, sched = hoopr.load_season(RAW, 2021)
-    assert len(sched) == 1080
-    assert len(team_games) == 2160
+```json
+{
+  "repository": "sportsdataverse/hoopR-nba-data",
+  "commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143",
+  "seasons": [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+}
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [ ] **Step 2: Write the failing fixture test**
 
-Run: `.venv/bin/python -m pytest tests/test_hoopr.py -q`
-Expected: FAIL (module missing)
-
-- [ ] **Step 3: Implement `src/nba_data/hoopr.py`**
+Construct a temporary schedule parquet containing two completed NBA games, an
+All-Star row, an incomplete game, and a real-franchise row with
+`type_abbreviation="CC"`.
 
 ```python
-"""Provider adapter for sportsdataverse/hoopR-nba-data parquet dumps (ESPN)."""
-from __future__ import annotations
-
-from pathlib import Path
-
-import pandas as pd
-import requests
-
-from nba_data import franchises
-
-SEASONS = range(2020, 2027)  # ending-year convention: 2020 = 2019-20
-_BASE = "https://github.com/sportsdataverse/hoopR-nba-data/raw/main/nba"
-_FILES = {
-    "team_box": "{base}/team_box/parquet/team_box_{season}.parquet",
-    "schedule": "{base}/schedules/parquet/nba_schedule_{season}.parquet",
-}
-_STAT_MAP = {
-    "field_goals_made": "fgm", "field_goals_attempted": "fga",
-    "three_point_field_goals_made": "fg3m",
-    "three_point_field_goals_attempted": "fg3a",
-    "free_throws_made": "ftm", "free_throws_attempted": "fta",
-    "offensive_rebounds": "oreb", "defensive_rebounds": "dreb",
-    "total_rebounds": "reb", "assists": "ast", "steals": "stl",
-    "blocks": "blk", "turnovers": "tov", "fouls": "pf",
-}
-
-
-def fetch(raw_dir: Path, seasons=SEASONS) -> None:
-    dest = raw_dir / "hoopr"
-    dest.mkdir(parents=True, exist_ok=True)
-    for season in seasons:
-        for kind, pattern in _FILES.items():
-            name = pattern.format(base=_BASE, season=season).rsplit("/", 1)[-1]
-            out = dest / name
-            if out.exists():
-                continue
-            url = pattern.format(base=_BASE, season=season)
-            resp = requests.get(url, timeout=120)
-            resp.raise_for_status()
-            out.write_bytes(resp.content)
-            print(f"fetched {name} ({len(resp.content)} bytes)")
-
-
-def _resolve_or_none(name: str, season: int):
-    try:
-        return franchises.resolve(name, season)
-    except franchises.UnknownTeamError:
-        return None  # All-Star teams, exhibition entrants
-
-
-def load_season(raw_dir: Path, season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    d = raw_dir / "hoopr"
-    box = pd.read_parquet(d / f"team_box_{season}.parquet")
-    sched = pd.read_parquet(d / f"nba_schedule_{season}.parquet")
-
-    sched = sched[(sched["season_type"] == 2)
-                  & (sched["status_type_completed"] == True)].copy()  # noqa: E712
-    sched["home_franchise_id"] = [
-        _resolve_or_none(n, season) for n in sched["home_display_name"]]
-    sched["away_franchise_id"] = [
-        _resolve_or_none(n, season) for n in sched["away_display_name"]]
-    sched = sched.dropna(subset=["home_franchise_id", "away_franchise_id"])
-
-    games = pd.DataFrame({
-        "game_id": "espn-" + sched["game_id"].astype(str),
-        "season": season,
-        "source": "espn",
-        "game_date": sched["game_date"],
-        "home_franchise_id": sched["home_franchise_id"],
-        "away_franchise_id": sched["away_franchise_id"],
-        "home_pts": pd.to_numeric(sched["home_score"]).astype("Int64"),
-        "away_pts": pd.to_numeric(sched["away_score"]).astype("Int64"),
-        "neutral_site": sched["neutral_site"].astype(bool),
-        "venue_name": sched["venue_full_name"],
-        "venue_city": sched["venue_address_city"],
-        "espn_attendance": pd.to_numeric(sched["attendance"], errors="coerce").astype("Int64"),
-    }).reset_index(drop=True)
-
-    keep_ids = set(games["game_id"])
-    box = box[box["season_type"] == 2].copy()
-    box["game_id"] = "espn-" + box["game_id"].astype(str)
-    box = box[box["game_id"].isin(keep_ids)]
-    box["franchise_id"] = [
-        _resolve_or_none(n, season) for n in box["team_display_name"]]
-    box = box.dropna(subset=["franchise_id"])
-
-    team_games = pd.DataFrame({
-        "game_id": box["game_id"],
-        "season": season,
-        "source": "espn",
-        "franchise_id": box["franchise_id"],
-        "is_home": (box["team_home_away"] == "home").to_numpy(),
-        "game_date": box["game_date"],
-        "wl": box["team_winner"].astype(bool).astype(int),
-        "pts": pd.to_numeric(box["team_score"]).astype("Int64"),
-    })
-    for src, dst in _STAT_MAP.items():
-        team_games[dst] = pd.to_numeric(box[src], errors="coerce").astype("Int64")
-
-    pair = team_games[["game_id", "franchise_id"]].merge(
-        team_games[["game_id", "franchise_id"]], on="game_id", suffixes=("", "_opp"))
-    pair = pair[pair["franchise_id"] != pair["franchise_id_opp"]]
-    team_games = team_games.merge(
-        pair.rename(columns={"franchise_id_opp": "opponent_franchise_id"}),
-        on=["game_id", "franchise_id"], how="left")
-    return team_games.reset_index(drop=True), games
+schedule, excluded = hoopr.load_season(tmp_path, 2024, expected_games=2)
+assert len(schedule) == 2
+assert set(excluded["reason"]) == {"exhibition", "cup_championship"}
+assert schedule["espn_game_id"].str.startswith("espn-").all()
+assert schedule["venue_id"].str.startswith("espn-").all()
+assert schedule["espn_attendance"].dtype == "Int64"
 ```
 
-- [ ] **Step 4: Run to verify pass (fixture tests)**
+- [ ] **Step 3: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_hoopr.py -q`
-Expected: 2 passed, 1 skipped
+Expected: FAIL importing `nba_data.hoopr`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Implement fetch**
+
+Use Task 3 around a single schedule URL per season:
+
+```python
+if cache.read_valid(destination, lambda path: pq.ParquetFile(path)) is not None:
+    continue
+url = (
+    "https://raw.githubusercontent.com/sportsdataverse/hoopR-nba-data/"
+    f"{SNAPSHOT['commit']}/nba/schedules/parquet/nba_schedule_{season}.parquet"
+)
+response = session.get(url, timeout=120, verify=True)
+if response.status_code != 200:
+    raise cache.SourceAccessError(f"{url} returned HTTP {response.status_code}")
+cache.publish_bytes(
+    destination,
+    response.content,
+    {"provider": "hoopr", "upstream_commit": SNAPSHOT["commit"], "season": season},
+    lambda path: pq.ParquetFile(path),
+)
+```
+
+Catch `requests.RequestException` and wrap its exact type/URL in
+`SourceAccessError`; do not retry.
+
+- [ ] **Step 5: Implement normalization**
+
+Filter completed `season_type == 2`. Classify `ALLSTAR` and exact
+case-normalized `RISING STARS` as exhibition; classify `CC` as Cup
+championship. Resolve every remaining team name, raising on an unknown
+ordinary entrant. Exclude the classified rows and require the hard season
+count (`expected_games` overrides the production map only for fixture tests).
+Return:
+
+```python
+pd.DataFrame({
+    "espn_game_id": "espn-" + retained["game_id"].astype(str),
+    "season": season,
+    "game_date": retained["game_date"],
+    "home_franchise_id": home_ids,
+    "away_franchise_id": away_ids,
+    "neutral_site": retained["neutral_site"].astype(bool),
+    "venue_id": retained["venue_id"].map(
+        lambda value: pd.NA if pd.isna(value) else f"espn-{int(value)}"
+    ),
+    "venue_name_espn": retained["venue_full_name"].astype("string"),
+    "venue_city": retained["venue_address_city"].astype("string"),
+    "espn_attendance": pd.to_numeric(
+        retained["attendance"], errors="coerce"
+    ).astype("Int64"),
+})
+```
+
+- [ ] **Step 6: Verify and commit**
 
 ```bash
-git add src/nba_data/hoopr.py tests/test_hoopr.py
-git commit -m "feat: hoopR provider adapter with franchise filtering"
+.venv/bin/python -m pytest tests/test_hoopr.py -q
+git add data/reference/hoopr_snapshot.json src/nba_data/hoopr.py tests/test_hoopr.py
+git commit -m "feat: add pinned hoopR schedule enrichment"
 ```
 
 ---
 
-### Task 5: basketball-reference attendance provider
+### Task 6: basketball-reference attendance
 
 **Files:**
 - Create: `src/nba_data/bref.py`
 - Test: `tests/test_bref.py`
 
 **Interfaces:**
-- Consumes: `franchises.resolve`.
-- Produces: `bref.MONTHS_BY_SEASON: dict[int, list[str]]`; `bref.fetch(raw_dir: Path, seasons) -> None` (12 s spacing, UA, cache, `bref.AccessBlocked(RuntimeError)` on non-200); `bref.load_attendance(raw_dir: Path, season: int) -> pd.DataFrame` with columns `game_date, home_franchise_id, away_franchise_id, attendance` (nullable Int64 — blank stays NA, zero stays 0), `arena` (str).
+- Produces: `MONTHS_BY_SEASON`;
+  `fetch(raw_dir: Path, seasons, sleep_s=12) -> None`;
+  `load_attendance(raw_dir: Path, season: int, months=None) -> pd.DataFrame`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing parser test**
+
+Use a 12-column HTML fixture with explicit zero, positive, blank, and
+postponed rows:
 
 ```python
-# tests/test_bref.py
-from pathlib import Path
-
-import pandas as pd
-import pytest
-
-from nba_data import bref
-
-RAW = Path("data/raw")
-
-MONTH_HTML = """<html><body><table id="schedule">
-<thead><tr><th>Date</th><th>Start (ET)</th><th>Visitor/Neutral</th><th>PTS</th>
-<th>Home/Neutral</th><th>PTS</th><th></th><th></th><th>Attend.</th><th>LOG</th>
-<th>Arena</th><th>Notes</th></tr></thead>
-<tbody>
-<tr><td>Tue, Dec 22, 2020</td><td>7:00p</td><td>Golden State Warriors</td><td>99</td>
-<td>Brooklyn Nets</td><td>125</td><td></td><td></td><td>0</td><td>2:14</td>
-<td>Barclays Center</td><td></td></tr>
-<tr><td>Wed, Dec 23, 2020</td><td>7:00p</td><td>Charlotte Hornets</td><td>114</td>
-<td>Cleveland Cavaliers</td><td>121</td><td></td><td></td><td>300</td><td>2:11</td>
-<td>Rocket Mortgage Fieldhouse</td><td></td></tr>
-<tr><td>Sat, Dec 26, 2020</td><td>8:00p</td><td>Miami Heat</td><td></td>
-<td>Dallas Mavericks</td><td></td><td></td><td></td><td></td><td></td>
-<td>American Airlines Center</td><td>Postponed</td></tr>
-</tbody></table></body></html>"""
-
-
-def test_parse_month_semantics(tmp_path):
-    d = tmp_path / "bref"
-    d.mkdir(parents=True)
-    (d / "NBA_2021_games-december.html").write_text(MONTH_HTML)
-    df = bref.load_attendance(tmp_path, 2021, months=["december"])
-    assert len(df) == 2  # postponed row (no scores) dropped
-    zero = df[df["home_franchise_id"] == "BKN"].iloc[0]
-    assert zero["attendance"] == 0                      # explicit zero survives
-    pos = df[df["home_franchise_id"] == "CLE"].iloc[0]
-    assert pos["attendance"] == 300
-    assert pos["away_franchise_id"] == "CHA"
-    assert str(pos["game_date"]) == "2020-12-23"
-    assert pos["arena"] == "Rocket Mortgage Fieldhouse"
-
-
-def test_months_by_season_covers_all_seven_seasons():
-    assert set(bref.MONTHS_BY_SEASON) == set(range(2020, 2027))
-    assert "july" in bref.MONTHS_BY_SEASON[2020]        # bubble seeding games
-    assert bref.MONTHS_BY_SEASON[2021][0] == "december"  # late COVID start
-
-
-@pytest.mark.skipif(not (RAW / "spike" / "bref" / "NBA_2021_games-december.html").exists(),
-                    reason="spike cache absent")
-def test_real_december_2020_counts():
-    df = bref.load_attendance(RAW / "spike", 2021, months=["december"])
-    assert len(df) == 67
-    assert int((df["attendance"] == 0).sum()) == 56
+result = bref.load_attendance(tmp_path, 2021, months=["december"])
+assert len(result) == 3
+assert result["attendance"].tolist()[:2] == [0, 300]
+assert pd.isna(result.iloc[2]["attendance"])
+assert result["game_date"].map(type).eq(datetime.date).all()
 ```
 
-- [ ] **Step 2: Run to verify failure**
+- [ ] **Step 2: Verify failure**
 
 Run: `.venv/bin/python -m pytest tests/test_bref.py -q`
-Expected: FAIL (module missing)
+Expected: FAIL importing `nba_data.bref`.
 
-- [ ] **Step 3: Implement `src/nba_data/bref.py`**
+- [ ] **Step 3: Implement month and schema contracts**
 
 ```python
-"""basketball-reference month pages: polite cached fetch + attendance parse."""
-from __future__ import annotations
-
-import json
-import time
-from pathlib import Path
-
-import pandas as pd
-import requests
-
-from nba_data import franchises
-
-USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-_STANDARD = ["october", "november", "december", "january", "february", "march", "april"]
-MONTHS_BY_SEASON: dict[int, list[str]] = {
-    2020: ["october", "november", "december", "january", "february", "march",
-           "july", "august"],                       # suspension + Orlando bubble
-    2021: ["december", "january", "february", "march", "april", "may"],
-    **{s: list(_STANDARD) for s in range(2022, 2027)},
+STANDARD = ("october", "november", "december", "january",
+            "february", "march", "april")
+MONTHS_BY_SEASON = {
+    2020: ("october", "november", "december", "january",
+           "february", "march", "july", "august"),
+    2021: ("december", "january", "february", "march", "april", "may"),
+    **{season: STANDARD for season in range(2022, 2027)},
 }
-
-
-class AccessBlocked(RuntimeError):
-    """b-ref returned a non-200; stop, do not retry or bypass."""
-
-
-def fetch(raw_dir: Path, seasons=range(2020, 2027), sleep_s: float = 12.0) -> None:
-    dest = raw_dir / "bref"
-    dest.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT,
-                            "Accept-Language": "en-US,en;q=0.9"})
-    for season in seasons:
-        for month in MONTHS_BY_SEASON[season]:
-            out = dest / f"NBA_{season}_games-{month}.html"
-            if out.exists():
-                continue
-            url = f"https://www.basketball-reference.com/leagues/NBA_{season}_games-{month}.html"
-            resp = session.get(url, timeout=30)
-            if resp.status_code != 200:
-                raise AccessBlocked(f"{url} -> HTTP {resp.status_code}")
-            out.write_bytes(resp.content)
-            (dest / f"{out.stem}.meta.json").write_text(json.dumps({
-                "url": url, "status": resp.status_code,
-                "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "content_length": len(resp.content)}))
-            print(f"fetched {out.name}")
-            time.sleep(sleep_s)
-
-
-def load_attendance(raw_dir: Path, season: int, months=None) -> pd.DataFrame:
-    months = months or MONTHS_BY_SEASON[season]
-    frames = []
-    for month in months:
-        path = raw_dir / "bref" / f"NBA_{season}_games-{month}.html"
-        table = pd.read_html(path)[0]
-        table.columns = ["date", "start", "visitor", "away_pts", "home", "home_pts",
-                         *[f"x{i}" for i in range(len(table.columns) - 10)],
-                         "attend", "log", "arena", "notes"]
-        # rows without scores are future/postponed/cancelled listings
-        played = table[pd.to_numeric(table["home_pts"], errors="coerce").notna()
-                       & pd.to_numeric(table["away_pts"], errors="coerce").notna()].copy()
-        frames.append(pd.DataFrame({
-            "game_date": pd.to_datetime(played["date"], format="%a, %b %d, %Y").dt.date,
-            "home_franchise_id": [franchises.resolve(n, season) for n in played["home"]],
-            "away_franchise_id": [franchises.resolve(n, season) for n in played["away"]],
-            "attendance": pd.to_numeric(played["attend"], errors="coerce").astype("Int64"),
-            "arena": played["arena"].astype(str),
-        }))
-    return pd.concat(frames, ignore_index=True)
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 ```
 
-- [ ] **Step 4: Run to verify pass**
+Parse exactly one table with `id="schedule"` and exactly 12 columns. Assign
+`date,start,away,away_pts,home,home_pts,box,ot,attendance,duration,arena,notes`.
+Keep rows where both scores parse; parse attendance with `errors="coerce"` and
+never call `fillna(0)`.
 
-Run: `.venv/bin/python -m pytest tests/test_bref.py -q`
-Expected: 2 passed + 1 passed-or-skipped (the spike-cache test passes on this machine)
+- [ ] **Step 4: Implement polite fetch**
 
-- [ ] **Step 5: Commit**
+For each missing page, call `requests.Session.get(url, timeout=30,
+verify=True)`, require HTTP 200, validate the table, then publish through Task
+3. Sleep 12 seconds after a real request before another real request. A valid
+cache hit performs neither network nor sleep.
+
+- [ ] **Step 5: Verify the real spike and commit**
+
+```python
+@pytest.mark.integration
+def test_spike_december_2020_semantics():
+    result = bref.load_attendance(RAW / "spike", 2021, ["december"])
+    assert len(result) == 67
+    assert result["attendance"].eq(0).sum() == 56
+    assert result["attendance"].gt(0).sum() == 11
+```
 
 ```bash
+.venv/bin/python -m pytest tests/test_bref.py -q
 git add src/nba_data/bref.py tests/test_bref.py
-git commit -m "feat: b-ref attendance provider with explicit-zero semantics"
+git commit -m "feat: add cached basketball-reference attendance"
 ```
 
 ---
 
-### Task 6: Build + validation gates
+### Task 7: Assembly and hard validation gates
 
 **Files:**
 - Create: `src/nba_data/build.py`
-- Create: `data/reference/venue_exceptions.csv` (header only: `venue_name,venue_city,franchise_id,first_season,last_season,capacity,provenance`)
 - Test: `tests/test_build_gates.py`
 
 **Interfaces:**
-- Consumes: everything above.
-- Produces: `build.SEASON_GAME_COUNTS = {2020: 1059, 2021: 1080, 2022: 1230, 2023: 1230, 2024: 1230, 2025: 1230, 2026: 1230}`; `build.ValidationError(RuntimeError)`; `build.assemble_games(schedule_games, bref_attendance=None, legacy_games=None, legacy_attendance=None) -> pd.DataFrame` (games schema); `build.validate(team_games, games) -> list[str]` (report lines; raises `ValidationError` on gate failure); `build.run(data_dir: Path) -> None` writing the four Parquet files.
+- Consumes: all provider loaders.
+- Produces: `pair_team_games(team_games) -> pd.DataFrame`;
+  `enrich_modern_games(nba_games, schedule, bref) -> pd.DataFrame`;
+  `assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]`;
+  `validate(team_games, games, expected_counts, expected_legacy) -> dict`;
+  `write_venue_inventory(data_dir: Path) -> Path`;
+  `ValidationError`.
 
-**Attendance resolution order (encode exactly):** for post-2019 games, b-ref value (matched on `game_date + home_franchise_id + away_franchise_id`) is the source of record → `attendance_source="bref"`; unmatched games fall back to `espn_attendance` → `"espn"`; legacy games use `legacy.load_attendance` → `"legacy"`. Status: value 0 → `reported_zero` (only valid seasons 2020–2022), value > 0 → `reported_positive`, NA → `missing`.
-
-**Gates (each raises ValidationError):**
-1. No duplicate `game_id` in `games`; every game has exactly 2 `team_games` rows (one `is_home=True`, one `is_home=False` — ESPN designates a home side even for neutral-site bubble games).
-2. Per-season game counts equal `SEASON_GAME_COUNTS` for 2020–2026; legacy total == 40,828.
-3. All `franchise_id`/`opponent_franchise_id` values ∈ `franchises.FRANCHISE_IDS`.
-4. `attendance_status == "reported_zero"` only in seasons 2020–2022.
-5. Scores within 40–200; `home_pts != away_pts` (no ties in NBA).
-6. Attendance coverage (`status != "missing"`) ≥ 95% per season for 2020–2026 (report actual % per season).
-7. Cross-validation report (non-gate, printed): % of post-2019 games where b-ref and ESPN attendance disagree by > 10%.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing canonical crosswalk test**
 
 ```python
-# tests/test_build_gates.py
-import datetime as dt
-
-import pandas as pd
-import pytest
-
-from nba_data import build
-
-
-def _games(rows):
-    base = {
-        "game_id": "espn-1", "season": 2021, "source": "espn",
-        "game_date": dt.date(2021, 1, 15),
+def one_nba_game(game_id="0022000001"):
+    return pd.DataFrame([{
+        "game_id": game_id, "season": 2021, "source": "nba_stats",
+        "game_date": datetime.date(2020, 12, 22),
         "home_franchise_id": "BKN", "away_franchise_id": "GSW",
-        "home_pts": 120, "away_pts": 110, "neutral_site": False,
-        "venue_name": "Barclays Center", "venue_city": "Brooklyn",
-        "attendance": 0, "attendance_status": "reported_zero",
-        "attendance_source": "bref",
-    }
-    return pd.DataFrame([{**base, **r} for r in rows])
+        "home_pts": 125, "away_pts": 99,
+    }])
 
 
-def _team_games_for(games):
-    rows = []
-    for _, g in games.iterrows():
-        for fid, opp, home, pts in [
-            (g["home_franchise_id"], g["away_franchise_id"], True, g["home_pts"]),
-            (g["away_franchise_id"], g["home_franchise_id"], False, g["away_pts"]),
-        ]:
-            rows.append({
-                "game_id": g["game_id"], "season": g["season"], "source": g["source"],
-                "franchise_id": fid, "opponent_franchise_id": opp, "is_home": home,
-                "game_date": g["game_date"],
-                "wl": int(pts == max(g["home_pts"], g["away_pts"])), "pts": pts,
-            })
-    return pd.DataFrame(rows)
-
-
-def _passing_2021():
-    games = _games(
-        [{"game_id": f"espn-{i}"} for i in range(build.SEASON_GAME_COUNTS[2021])])
-    return _team_games_for(games), games
-
-
-def test_valid_frame_passes():
-    team_games, games = _passing_2021()
-    report = build.validate(team_games, games)
-    assert any("2021" in line for line in report)
-
-
-def test_duplicate_game_id_fails():
-    team_games, games = _passing_2021()
-    games.loc[1, "game_id"] = games.loc[0, "game_id"]
-    with pytest.raises(build.ValidationError, match="duplicate"):
-        build.validate(team_games, games)
-
-
-def test_wrong_season_count_fails():
-    team_games, games = _passing_2021()
-    games = games.iloc[:-1]
-    team_games = team_games.iloc[:-2]
-    with pytest.raises(build.ValidationError, match="1080"):
-        build.validate(team_games, games)
-
-
-def test_reported_zero_outside_covid_window_fails():
-    team_games, games = _passing_2021()
-    games["season"] = 2024
-    games["game_date"] = dt.date(2024, 1, 15)
-    team_games["season"] = 2024
-    with pytest.raises(build.ValidationError):
-        build.validate(team_games, games)
-
-
-def test_attendance_resolution_prefers_bref_and_never_coerces_blank():
-    schedule = pd.DataFrame([{
-        "game_id": "espn-1", "season": 2021, "game_date": dt.date(2021, 1, 15),
+def one_schedule_game(espn_game_id="espn-401300001", espn_attendance=0):
+    return pd.DataFrame([{
+        "espn_game_id": espn_game_id, "season": 2021,
+        "game_date": datetime.date(2020, 12, 22),
         "home_franchise_id": "BKN", "away_franchise_id": "GSW",
-        "home_pts": 120, "away_pts": 110, "neutral_site": False,
-        "venue_name": "Barclays Center", "venue_city": "Brooklyn",
-        "espn_attendance": 1500,
-    }, {
-        "game_id": "espn-2", "season": 2021, "game_date": dt.date(2021, 1, 16),
-        "home_franchise_id": "MIA", "away_franchise_id": "DAL",
-        "home_pts": 100, "away_pts": 90, "neutral_site": False,
-        "venue_name": "Kaseya Center", "venue_city": "Miami",
-        "espn_attendance": pd.NA,
+        "neutral_site": False, "venue_id": "espn-17",
+        "venue_name_espn": "Barclays Center", "venue_city": "Brooklyn",
+        "espn_attendance": espn_attendance,
     }])
-    bref_att = pd.DataFrame([{
-        "game_date": dt.date(2021, 1, 15), "home_franchise_id": "BKN",
-        "away_franchise_id": "GSW", "attendance": 0, "arena": "Barclays Center",
+
+
+def one_bref_game(attendance=0):
+    return pd.DataFrame([{
+        "season": 2021, "game_date": datetime.date(2020, 12, 22),
+        "home_franchise_id": "BKN", "away_franchise_id": "GSW",
+        "attendance": attendance, "arena": "Barclays Center",
     }])
-    games = build.assemble_games(schedule_games=schedule, bref_attendance=bref_att)
-    g1 = games[games["game_id"] == "espn-1"].iloc[0]
-    assert g1["attendance"] == 0 and g1["attendance_status"] == "reported_zero"
-    assert g1["attendance_source"] == "bref"       # b-ref beats ESPN's 1500
-    g2 = games[games["game_id"] == "espn-2"].iloc[0]
-    assert pd.isna(g2["attendance"]) and g2["attendance_status"] == "missing"
+
+
+def test_nba_id_remains_canonical_after_espn_join():
+    nba = one_nba_game(game_id="0022000001")
+    schedule = one_schedule_game(espn_game_id="espn-401300001")
+    result = build.enrich_modern_games(nba, schedule, bref=pd.DataFrame())
+    assert result.iloc[0]["game_id"] == "0022000001"
+    assert result.iloc[0]["espn_game_id"] == "espn-401300001"
 ```
 
-- [ ] **Step 2: Run to verify failure**
-
-Run: `.venv/bin/python -m pytest tests/test_build_gates.py -q`
-Expected: FAIL (module missing)
-
-- [ ] **Step 3: Implement `src/nba_data/build.py`**
+- [ ] **Step 2: Write failing attendance precedence tests**
 
 ```python
-"""Assemble, validate, and write the tidy Parquet tables."""
-from __future__ import annotations
-
-from pathlib import Path
-
-import pandas as pd
-
-from nba_data import bref, franchises, hoopr, legacy
-
-SEASON_GAME_COUNTS = {2020: 1059, 2021: 1080, 2022: 1230, 2023: 1230,
-                      2024: 1230, 2025: 1230, 2026: 1230}
-LEGACY_TOTAL_GAMES = 40828
-ZERO_OK_SEASONS = {2020, 2021, 2022}
+def test_matched_bref_blank_does_not_fall_back_to_espn():
+    nba = one_nba_game()
+    schedule = one_schedule_game(espn_attendance=1500)
+    bref = one_bref_game(attendance=pd.NA)
+    game = build.enrich_modern_games(nba, schedule, bref).iloc[0]
+    assert game["bref_row_matched"]
+    assert pd.isna(game["attendance"])
+    assert game["attendance_status"] == "missing"
+    assert game["attendance_source"] == "bref"
 
 
-class ValidationError(RuntimeError):
-    """A hard data gate failed; nothing is written."""
+def test_unmatched_bref_uses_espn():
+    game = build.enrich_modern_games(
+        one_nba_game(), one_schedule_game(espn_attendance=1500), pd.DataFrame()
+    ).iloc[0]
+    assert game["attendance"] == 1500
+    assert game["attendance_source"] == "espn"
+```
 
+- [ ] **Step 3: Write one failing test per gate**
 
-def _status(att) -> str:
-    if pd.isna(att):
-        return "missing"
-    return "reported_zero" if att == 0 else "reported_positive"
+Tests must seed and assert diagnostics for:
 
+```text
+duplicate game_id
+games/team_games ID-set mismatch
+not exactly two team rows or not one home/one away
+team IDs/scores/date/season disagree with games
+unknown franchise
+missing expected season
+wrong per-season or legacy count
+score outside 40..200 or tie
+missing box statistic
+reported_zero outside 2020..2022
+b-ref join coverage below 95% in any modern season
+selected known-attendance coverage below 95% in any modern season
+non-neutral 2020..2022 venue missing capacity
+```
 
-def assemble_games(schedule_games: pd.DataFrame,
-                   bref_attendance: pd.DataFrame | None = None,
-                   legacy_games: pd.DataFrame | None = None,
-                   legacy_attendance: pd.DataFrame | None = None) -> pd.DataFrame:
-    games = schedule_games.copy()
-    games["attendance"] = games["espn_attendance"]
-    games["attendance_source"] = "espn"
-    if bref_attendance is not None and len(bref_attendance):
-        b = bref_attendance.rename(columns={"attendance": "bref_attendance"})
-        games = games.merge(
-            b[["game_date", "home_franchise_id", "away_franchise_id", "bref_attendance"]],
-            on=["game_date", "home_franchise_id", "away_franchise_id"], how="left")
-        matched = games["bref_attendance"].notna()
-        games.loc[matched, "attendance"] = games.loc[matched, "bref_attendance"]
-        games.loc[matched, "attendance_source"] = "bref"
-        games = games.drop(columns=["bref_attendance"])
-    games["attendance"] = games["attendance"].astype("Int64")
-    games["attendance_status"] = [_status(a) for a in games["attendance"]]
-    games = games.drop(columns=["espn_attendance"])
+Each unit test passes a one-season `expected_counts` mapping and
+`expected_legacy=0`; the production call passes all seven seasons and 40,828.
 
-    if legacy_games is not None:
-        lg = legacy_games.copy()
-        if legacy_attendance is not None:
-            lg = lg.merge(legacy_attendance, on="game_id", how="left")
-        else:
-            lg["attendance"] = pd.NA
-        lg["attendance"] = lg["attendance"].astype("Int64")
-        lg["attendance_status"] = [_status(a) for a in lg["attendance"]]
-        lg["attendance_source"] = "legacy"
-        lg["neutral_site"] = False
-        lg["venue_name"] = pd.NA
-        lg["venue_city"] = pd.NA
-        games = pd.concat([lg[games.columns], games], ignore_index=True)
-    return games
+- [ ] **Step 4: Verify failure**
 
+Run: `.venv/bin/python -m pytest tests/test_build_gates.py -q`
+Expected: FAIL importing `nba_data.build`.
 
-def validate(team_games: pd.DataFrame, games: pd.DataFrame) -> list[str]:
-    errors, report = [], []
-    dup = games["game_id"].duplicated()
-    if dup.any():
-        errors.append(f"duplicate game_id(s): {sorted(games.loc[dup, 'game_id'])[:5]}")
+- [ ] **Step 5: Implement pairing and crosswalk**
 
-    per_side = team_games.groupby("game_id")["is_home"].agg(["count", "sum"])
-    bad_pairs = per_side[(per_side["count"] != 2) | (per_side["sum"] != 1)]
-    if len(bad_pairs):
-        errors.append(f"{len(bad_pairs)} game(s) without exactly one home + one away row")
+Pair home/away NBA rows by `game_id`; reject non-unique sides before
+constructing games:
 
-    for season, expected in SEASON_GAME_COUNTS.items():
-        got = int((games["season"] == season).sum())
-        if got and got != expected:
-            errors.append(f"season {season}: {got} games, expected {expected}")
-        if got:
-            cov = (games.loc[games["season"] == season, "attendance_status"]
-                   != "missing").mean()
-            report.append(f"season {season}: {got} games, attendance coverage {cov:.1%}")
-            if cov < 0.95:
-                errors.append(f"season {season}: attendance coverage {cov:.1%} < 95%")
-    legacy_n = int((games["source"] == "nba_stats").sum())
-    if legacy_n and legacy_n != LEGACY_TOTAL_GAMES:
-        errors.append(f"legacy games {legacy_n} != {LEGACY_TOTAL_GAMES}")
-
-    ids = set(team_games["franchise_id"]) | set(team_games["opponent_franchise_id"])
-    unknown = ids - franchises.FRANCHISE_IDS
-    if unknown:
-        errors.append(f"unknown franchise ids: {sorted(unknown)}")
-
-    zero_bad = games[(games["attendance_status"] == "reported_zero")
-                     & (~games["season"].isin(ZERO_OK_SEASONS))]
-    if len(zero_bad):
-        errors.append(f"reported_zero outside 2020-2022: {len(zero_bad)} game(s)")
-
-    scores = games[["home_pts", "away_pts"]].dropna()
-    if ((scores < 40) | (scores > 200)).any().any():
-        errors.append("score outside sanity range 40-200")
-    if (games["home_pts"] == games["away_pts"]).any():
-        errors.append("tie score found (impossible in NBA)")
-
-    if errors:
-        raise ValidationError("; ".join(errors))
-    return report
-
-
-def run(data_dir: Path) -> None:
-    raw = data_dir / "raw"
-    out = data_dir / "parquet"
-    out.mkdir(parents=True, exist_ok=True)
-
-    legacy_tg = legacy.load_team_games(raw / "legacy" / "nba-teams-1984-2019-ordered.csv")
-    legacy_att = legacy.load_attendance(raw / "legacy" / "league_boxscores_extra.csv")
-    legacy_games = _pair_legacy(legacy_tg)
-
-    tg_frames, sched_frames, bref_frames = [legacy_tg], [], []
-    for season in hoopr.SEASONS:
-        tg, sched = hoopr.load_season(raw, season)
-        tg_frames.append(tg)
-        sched_frames.append(sched)
-        bref_frames.append(bref.load_attendance(raw, season))
-
-    team_games = pd.concat(tg_frames, ignore_index=True)
-    games = assemble_games(
-        schedule_games=pd.concat(sched_frames, ignore_index=True),
-        bref_attendance=pd.concat(bref_frames, ignore_index=True),
-        legacy_games=legacy_games, legacy_attendance=legacy_att)
-
-    for line in validate(team_games, games):
-        print(line)
-
-    team_games.to_parquet(out / "team_games.parquet", index=False)
-    games.to_parquet(out / "games.parquet", index=False)
-    franchises.load_reference().to_parquet(out / "franchises.parquet", index=False)
-    _venues(games, data_dir).to_parquet(out / "venues.parquet", index=False)
-    print(f"wrote 4 tables to {out}")
-
-
-def _pair_legacy(team_games: pd.DataFrame) -> pd.DataFrame:
+```python
+def pair_team_games(team_games: pd.DataFrame) -> pd.DataFrame:
+    counts = team_games.groupby("game_id")["is_home"].agg(["size", "sum"])
+    bad = counts[(counts["size"] != 2) | (counts["sum"] != 1)]
+    if not bad.empty:
+        raise ValidationError(
+            f"games without one home and one away row: {bad.index[:5].tolist()}"
+        )
     home = team_games[team_games["is_home"]].set_index("game_id")
     away = team_games[~team_games["is_home"]].set_index("game_id")
+    away = away.reindex(home.index)
     return pd.DataFrame({
         "game_id": home.index,
-        "season": home["season"], "source": home["source"],
-        "game_date": home["game_date"],
-        "home_franchise_id": home["franchise_id"],
-        "away_franchise_id": home["opponent_franchise_id"],
-        "home_pts": home["pts"], "away_pts": away.loc[home.index, "pts"],
+        "season": home["season"].to_numpy(),
+        "source": home["source"].to_numpy(),
+        "game_date": home["game_date"].to_numpy(),
+        "home_franchise_id": home["franchise_id"].to_numpy(),
+        "away_franchise_id": away["franchise_id"].to_numpy(),
+        "home_pts": home["pts"].to_numpy(),
+        "away_pts": away["pts"].to_numpy(),
     }).reset_index(drop=True)
-
-
-def _venues(games: pd.DataFrame, data_dir: Path) -> pd.DataFrame:
-    post = games[games["venue_name"].notna()]
-    venues = (post.groupby(["venue_name", "venue_city", "home_franchise_id", "season"])
-              .agg(games=("game_id", "count"),
-                   max_attendance=("attendance", "max"))
-              .reset_index())
-    exceptions = pd.read_csv(data_dir / "reference" / "venue_exceptions.csv")
-    venues["provenance"] = "observed"
-    if len(exceptions):
-        venues = pd.concat([venues, exceptions.assign(games=pd.NA)], ignore_index=True)
-    return venues
 ```
 
-- [ ] **Step 4: Run to verify pass**
+Join modern games to hoopR with:
 
-Run: `.venv/bin/python -m pytest tests/test_build_gates.py -q`
-Expected: all passed
+```python
+JOIN_KEY = [
+    "season", "game_date", "home_franchise_id", "away_franchise_id"
+]
+enriched = nba_games.merge(
+    schedule,
+    on=JOIN_KEY,
+    how="left",
+    validate="one_to_one",
+    indicator="schedule_join",
+)
+missing = enriched["schedule_join"].ne("both")
+if missing.any():
+    raise ValidationError(
+        f"NBA games without hoopR schedule: "
+        f"{enriched.loc[missing, 'game_id'].head().tolist()}"
+    )
+```
 
-- [ ] **Step 5: Commit**
+If b-ref is empty, replace it with an empty frame containing `JOIN_KEY +
+["attendance", "arena"]`. Rename b-ref `attendance -> attendance_bref` and
+`arena -> venue_name_bref`, then join with the same key,
+`validate="one_to_one"`, and a second indicator.
+Select b-ref based on the indicator—not `attendance.notna()`:
+
+```python
+matched = enriched["bref_join"].eq("both")
+enriched["bref_row_matched"] = matched
+enriched["attendance"] = enriched["attendance_bref"].where(
+    matched, enriched["attendance_espn"]
+).astype("Int64")
+enriched["attendance_source"] = matched.map({True: "bref", False: "espn"})
+enriched["attendance_status"] = enriched["attendance"].map(
+    lambda value: "missing" if pd.isna(value)
+    else ("reported_zero" if value == 0 else "reported_positive")
+)
+```
+
+When b-ref matches and its arena is nonblank, use it as `venue_name` and set
+`venue_source="bref"`; retain the ESPN `venue_id` and city. Otherwise use the
+ESPN venue name and `venue_source="espn"`.
+
+For legacy games, set:
+
+```python
+legacy_games = legacy_games.assign(
+    espn_game_id=pd.NA,
+    neutral_site=False,
+    neutral_site_source="legacy_home_designation_assumed",
+    venue_id=pd.NA,
+    venue_name=pd.NA,
+    venue_city=pd.NA,
+    venue_source="legacy_unknown",
+    attendance_bref=pd.NA,
+    attendance_espn=pd.NA,
+    bref_row_matched=False,
+    attendance_source="legacy",
+)
+legacy_games["attendance_status"] = legacy_games["attendance"].map(
+    lambda value: "missing" if pd.isna(value) else "reported_positive"
+)
+```
+
+- [ ] **Step 6: Implement validation report**
+
+Accumulate every gate failure and raise one `ValidationError("; ".join(errors))`
+before writing. Return per-season counts for games/team rows, b-ref join
+coverage, zero/positive/missing attendance, selected coverage, and b-ref/ESPN
+agreement. Require full production totals 49,117 and 98,234.
+
+- [ ] **Step 7: Implement the venue inventory writer**
+
+```python
+def write_venue_inventory(data_dir: Path) -> Path:
+    _, games, _ = assemble(data_dir / "raw")
+    post = games[games["venue_id"].notna()].copy()
+    normal = post[
+        ~post["neutral_site"]
+        & ~post["season"].isin([2020, 2021])
+        & post["attendance"].gt(0)
+    ]
+    observed = normal.groupby(
+        ["venue_id", "venue_name", "venue_city", "home_franchise_id"],
+        dropna=False,
+    )["attendance"].agg(
+        observed_non_covid_max="max",
+        observed_non_covid_p99=lambda values: int(values.quantile(0.99)),
+    )
+    eras = post.groupby(
+        ["venue_id", "venue_name", "venue_city", "home_franchise_id"],
+        dropna=False,
+    )["season"].agg(first_season="min", last_season="max", games="size")
+    output = eras.join(observed, how="left").reset_index()
+    destination = data_dir / "raw/reports/venue_inventory.csv"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output.sort_values(
+        ["home_franchise_id", "first_season", "venue_id"]
+    ).to_csv(destination, index=False)
+    return destination
+```
+
+- [ ] **Step 8: Verify and commit**
 
 ```bash
-git add src/nba_data/build.py data/reference/venue_exceptions.csv tests/test_build_gates.py
-git commit -m "feat: build pipeline with hard validation gates"
+.venv/bin/python -m pytest tests/test_build_gates.py -q
+git add src/nba_data/build.py tests/test_build_gates.py
+git commit -m "feat: assemble and validate the canonical game panel"
 ```
 
 ---
 
-### Task 7: CLI
+### Task 8: CLI, live fetch, and cached integration verification
 
 **Files:**
 - Create: `src/nba_data/__main__.py`
+- Test: `tests/test_cli.py`
 
 **Interfaces:**
-- Produces: `python -m nba_data fetch` (hoopR downloads + b-ref pages, both cached/idempotent) and `python -m nba_data build` (runs `build.run`, prints the validation report).
+- Produces: `python -m nba_data fetch [--season ENDING_YEAR]` and
+  `python -m nba_data inspect-venues`. Task 10 adds `build` after publication
+  exists.
 
-- [ ] **Step 1: Implement**
+- [ ] **Step 1: Write failing CLI tests**
+
+Monkeypatch provider functions and assert `fetch` calls NBA Stats, hoopR, then
+b-ref; `inspect-venues` calls no fetch function; invalid seasons exit before
+network.
+
+- [ ] **Step 2: Implement argparse dispatch**
 
 ```python
-"""CLI: python -m nba_data {fetch,build}"""
-import argparse
-from pathlib import Path
-
-from nba_data import bref, build, hoopr
-
-RAW = Path(__file__).resolve().parents[2] / "data" / "raw"
-
-
 def main() -> None:
+    root = Path(__file__).resolve().parents[2]
+    data = root / "data"
+    raw = data / "raw"
     parser = argparse.ArgumentParser(prog="nba_data")
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("fetch", help="download hoopR parquet + b-ref month pages (cached)")
-    sub.add_parser("build", help="assemble, validate, and write data/parquet tables")
+    commands = parser.add_subparsers(dest="command", required=True)
+    fetch_parser = commands.add_parser("fetch")
+    fetch_parser.add_argument("--season", type=int, choices=range(2020, 2027))
+    commands.add_parser("inspect-venues")
     args = parser.parse_args()
+    seasons = [args.season] if getattr(args, "season", None) else range(2020, 2027)
     if args.command == "fetch":
-        hoopr.fetch(RAW)
-        bref.fetch(RAW)
-    elif args.command == "build":
-        build.run(RAW.parent)
-
-
-if __name__ == "__main__":
-    main()
+        stats_nba.fetch(raw, seasons)
+        hoopr.fetch(raw, seasons)
+        bref.fetch(raw, seasons)
+    elif args.command == "inspect-venues":
+        build.write_venue_inventory(data)
 ```
 
-- [ ] **Step 2: Smoke-test help**
-
-Run: `.venv/bin/python -m nba_data --help`
-Expected: usage text listing `fetch` and `build`
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Verify offline behavior and commit**
 
 ```bash
-git add src/nba_data/__main__.py
-git commit -m "feat: nba_data CLI (fetch/build)"
+.venv/bin/python -m pytest tests/test_cli.py -q
+.venv/bin/python -m nba_data --help
+git add src/nba_data/__main__.py tests/test_cli.py
+git commit -m "feat: add explicit fetch inspect and build commands"
 ```
 
----
-
-### Task 8: Full fetch + build + commit the Parquet tables
-
-- [ ] **Step 1: Fetch everything**
+- [ ] **Step 4: Fetch all seven seasons**
 
 Run: `.venv/bin/python -m nba_data fetch`
-Expected: 14 hoopR files (7 seasons × 2) fast; then ~49 b-ref pages at 12 s spacing (~11 min). Re-running prints nothing new (cache hit). If `AccessBlocked` is raised, STOP and report — do not work around.
 
-- [ ] **Step 2: Build**
+Expected:
 
-Run: `.venv/bin/python -m nba_data build`
-Expected: validation report printed; per-season counts exactly `1059/1080/1230×5`; legacy 40,828; attendance coverage ≥95% for every season 2020–2026; four Parquet files written to `data/parquet/`.
+```text
+7 NBA Stats JSON files
+7 pinned hoopR schedule parquet files
+49 basketball-reference HTML pages
+one .meta.json sidecar per raw body
+```
 
-If a count gate fails (e.g. the known 1,081-vs-1,080 hoopR off-by-one for 2021), diagnose the extra row (`sched[~sched.game_id.isin(...)]`), document the exclusion rule in `build.py` with a comment naming the specific game, and re-run. Do NOT loosen the gate.
+On any failure, stop and report the provider/URL/exception. Do not change
+provider, TLS settings, or request cadence.
 
-- [ ] **Step 3: Verify total sizes are git-friendly**
-
-Run: `du -sh data/parquet/ && git status --short`
-Expected: single-digit MB total
-
-- [ ] **Step 4: Run the whole suite**
-
-Run: `.venv/bin/python -m pytest -q && .venv/bin/python scripts/verify_repository.py`
-Expected: all tests pass (including the previously-skipped integration tests), verify script exits 0
-
-- [ ] **Step 5: Commit the data**
+- [ ] **Step 5: Run cached integration tests**
 
 ```bash
-git add data/parquet/
-git commit -m "data: team_games/games/franchises/venues parquet, 1983-84 through 2025-26"
+.venv/bin/python -m pytest -m integration -q -rs
+```
+
+Expected: no skipped integration tests; all seven NBA Stats counts and all
+provider fixtures pass.
+
+---
+
+### Task 9: Venue-capacity reference
+
+**Files:**
+- Create: `data/reference/venue_capacities.csv`
+- Modify: `src/nba_data/build.py`
+- Test: extend `tests/test_build_gates.py`
+
+**Interfaces:**
+- Produces: `venue_inventory(games) -> pd.DataFrame`;
+  `load_venue_capacities() -> pd.DataFrame`;
+  final `venues` contract.
+
+- [ ] **Step 1: Generate the inventory**
+
+Run: `.venv/bin/python -m nba_data inspect-venues`
+
+Expected file:
+`data/raw/reports/venue_inventory.csv` with venue ID/name/city, franchise,
+first/last season, games, non-COVID max attendance, and non-COVID p99.
+
+- [ ] **Step 2: Create the capacity reference**
+
+Use this exact header:
+
+```csv
+venue_id,franchise_id,first_season,last_season,capacity,capacity_source_url,capacity_note
+```
+
+For each non-neutral venue/team era appearing in 2020–2022, record basketball
+capacity effective for that era and a direct source URL. Split season ranges
+when configuration changed. Do not infer capacity solely from observed
+attendance. Neutral bubble venues may be absent.
+
+- [ ] **Step 3: Add the failing coverage test**
+
+```python
+def test_primary_window_non_neutral_venues_have_capacity():
+    primary = pd.DataFrame([{
+        "game_id": "0022000001", "season": 2021, "venue_id": "espn-17",
+        "home_franchise_id": "BKN", "neutral_site": False,
+        "attendance": 0,
+    }])
+    venues = pd.DataFrame([{
+        "venue_id": "espn-17", "franchise_id": "BKN",
+        "first_season": 2020, "last_season": 2022, "capacity": 17732,
+        "capacity_source_url": "https://example.test/barclays-capacity",
+        "capacity_note": pd.NA,
+    }])
+    joined = build.attach_capacity(primary, venues)
+    assert joined["capacity"].notna().all()
+    assert joined["capacity_source_url"].str.startswith(("http://", "https://")).all()
+    assert (joined["capacity"] > 0).all()
+```
+
+- [ ] **Step 4: Implement the season-aware join**
+
+Join on `venue_id + home_franchise_id`, then filter inclusive
+`first_season <= season <= last_season`. Raise if a game resolves zero or
+multiple capacity rows. Report positive attendance above 105% of capacity;
+allow it only when `capacity_note` documents the configuration exception.
+
+- [ ] **Step 5: Verify and commit**
+
+```bash
+.venv/bin/python -m pytest tests/test_build_gates.py -q
+git add data/reference/venue_capacities.csv src/nba_data/build.py tests/test_build_gates.py
+git commit -m "data: add provenance-backed venue capacities"
 ```
 
 ---
 
-### Task 9: README data dictionary + wrap-up
+### Task 10: Staged Parquet publication and build manifest
 
-- [ ] **Step 1: Update README** — add a "Data tables" section documenting the four Parquet tables' schemas (copy the Global contract schemas), the attendance_status semantics, the season ending-year convention, and `python -m nba_data fetch/build` usage.
+**Files:**
+- Modify: `src/nba_data/build.py`
+- Modify: `src/nba_data/__main__.py`
+- Create: `data/parquet/team_games.parquet`
+- Create: `data/parquet/games.parquet`
+- Create: `data/parquet/franchises.parquet`
+- Create: `data/parquet/venues.parquet`
+- Create: `data/parquet/build_manifest.json`
+- Test: extend `tests/test_build_gates.py`
+- Test: extend `tests/test_cli.py`
 
-- [ ] **Step 2: Full verification**
+**Interfaces:**
+- Produces: `run(data_dir: Path) -> None`; deterministic five-file publication.
 
-Run: `.venv/bin/python -m pytest -q && .venv/bin/python scripts/verify_repository.py && git log --oneline master..HEAD`
-Expected: all green; commit list shows one commit per task
+- [ ] **Step 1: Write the failing publication test**
 
-- [ ] **Step 3: Commit**
+In a temporary data tree, retain sentinel output files, seed a validation
+failure, call `run`, and assert the sentinels remain byte-identical. Then seed
+passing fixtures and assert four parquet files plus the manifest are created.
 
-```bash
-git add README.md
-git commit -m "docs: data dictionary for the game-data pipeline"
+- [ ] **Step 2: Implement staging**
+
+Build frames in memory, coerce exact column order/dtypes, sort deterministically,
+and call the full validator. Write to a temporary sibling directory, re-read
+all Parquet files, and repeat schema/row-count checks before replacing final
+files. Preserve prior final files in a rollback directory until all five new
+files are published.
+
+- [ ] **Step 3: Implement the deterministic manifest**
+
+Write sorted-key JSON with:
+
+```text
+schema_version
+NBA Stats endpoint/season labels and raw SHA-256 values
+hoopR repository/commit and raw SHA-256 values
+b-ref page paths/URLs and raw SHA-256 values
+reference-file SHA-256 values
+Python/direct dependency versions
+table row counts and season bounds
+validation/coverage/exclusion report
+Parquet SHA-256 values
 ```
 
-**End state:** branch `slice2a-game-data` ready for the user's separate-session review. Do not merge or push.
+Exclude build time, absolute paths, random IDs, and cache fetch timestamps.
+
+- [ ] **Step 4: Build and verify determinism**
+
+Before running the build, add the final parser branch:
+
+```python
+commands.add_parser("build")
+# after parsing:
+elif args.command == "build":
+    build.run(data)
+```
+
+```bash
+.venv/bin/python -m nba_data build
+du -sh data/parquet
+sha256sum data/parquet/* > /tmp/nba-parquet-before.sha256
+.venv/bin/python -m nba_data build
+sha256sum data/parquet/* > /tmp/nba-parquet-after.sha256
+cmp /tmp/nba-parquet-before.sha256 /tmp/nba-parquet-after.sha256
+```
+
+Expected: 49,117 games, 98,234 team rows, single-digit MiB, identical hashes.
+
+- [ ] **Step 5: Run all verification and commit**
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/verify_repository.py
+git add src/nba_data/build.py src/nba_data/__main__.py tests/test_build_gates.py tests/test_cli.py data/parquet
+git commit -m "data: publish validated NBA game panel through 2025-26"
+```
+
+---
+
+### Task 11: Data dictionary and recoverable raw snapshot
+
+**Files:**
+- Modify: `README.md`
+- Create: `docs/data-dictionary.md`
+- Create: `scripts/archive_raw_snapshot.sh`
+- Modify: `tests/test_repository_layout.py`
+
+**Interfaces:**
+- Produces: user-facing source/field documentation and verified NAS recovery copy.
+
+- [ ] **Step 1: Document the final contract**
+
+Document every table/column/type, ending-year seasons, canonical NBA versus
+ESPN IDs, franchise lineage, neutral-site semantics, attendance precedence,
+blank-versus-zero behavior, capacity provenance, all source pins/hashes, and
+all three CLI commands. Link the design, corrected source audit, and manifest.
+State that the original failure was an AdGuard DNS sinkhole and document the
+preflight diagnostic without suggesting TLS bypass.
+
+- [ ] **Step 2: Write the raw archive script**
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+manifest="$root/data/parquet/build_manifest.json"
+test -f "$manifest" || {
+  printf 'missing build manifest: %s\n' "$manifest" >&2
+  exit 1
+}
+ending_season="$(jq -er '.tables.games.max_season' "$manifest")"
+manifest_sha="$(sha256sum "$manifest" | cut -d' ' -f1)"
+archive_root=/mnt/nas/llm/documents/nba-predictions-archive
+destination="$archive_root/slice2a-raw-${ending_season}-${manifest_sha:0:12}"
+test ! -e "$destination" || {
+  printf 'refusing to overwrite existing snapshot: %s\n' "$destination" >&2
+  exit 1
+}
+
+mkdir -p "$destination/raw"
+cp "$manifest" "$destination/build_manifest.json"
+rsync -a --checksum "$root/data/raw/" "$destination/raw/"
+(
+  cd "$destination"
+  find raw -type f -print0 \
+    | LC_ALL=C sort -z \
+    | xargs -0 sha256sum > SHA256SUMS
+  sha256sum -c SHA256SUMS
+)
+
+changes="$(
+  rsync -a --checksum --dry-run --itemize-changes \
+    "$root/data/raw/" "$destination/raw/"
+)"
+test -z "$changes" || {
+  printf 'archive differs from source:\n%s\n' "$changes" >&2
+  exit 1
+}
+printf 'verified raw snapshot: %s\n' "$destination"
+```
+
+- [ ] **Step 3: Add layout assertions**
+
+Assert the data dictionary, manifest, four Parquet files, and archive script
+exist; assert no path under `data/raw/` is tracked; assert the manifest has no
+absolute `/home/` paths or `/main/` hoopR URL.
+
+- [ ] **Step 4: Verify, archive, and commit**
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/verify_repository.py
+bash scripts/archive_raw_snapshot.sh
+git add README.md docs/data-dictionary.md scripts/archive_raw_snapshot.sh tests/test_repository_layout.py
+git commit -m "docs: document and preserve the game-data pipeline"
+```
+
+---
+
+## Final Verification
+
+- [ ] `git status --short` is clean.
+- [ ] `.venv/bin/python -m pytest -q` passes with no skipped integration tests.
+- [ ] `.venv/bin/python scripts/verify_repository.py` exits zero.
+- [ ] `games` has 49,117 rows and `team_games` has 98,234.
+- [ ] Each modern season has its exact required game count and every game has two team rows.
+- [ ] Every modern NBA game joins exactly one hoopR schedule row.
+- [ ] b-ref join and selected known-attendance coverage are each at least 95% per modern season.
+- [ ] Blank b-ref attendance remains missing and explicit zero is never inferred.
+- [ ] Every non-neutral primary-window venue resolves one provenance-backed capacity.
+- [ ] The manifest and second build have identical hashes.
+- [ ] No raw file, absolute workstation path, mutable hoopR URL, or TLS bypass is tracked.
+- [ ] The verified raw-cache snapshot exists on NAS.
+- [ ] Branch `slice2a-game-data` is ready for separate-session review and has not been merged or pushed.

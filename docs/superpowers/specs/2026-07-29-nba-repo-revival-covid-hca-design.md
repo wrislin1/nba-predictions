@@ -1,7 +1,8 @@
 # NBA Repo Revival + COVID Home-Court Advantage Analysis — Design
 
-*Approved 2026-07-29 and revised after the repository/data audit. Brainstormed
-from `PROJECT_REVIEW.md` and `PROJECT_DATA_FINDINGS.md`.*
+*Approved 2026-07-29 and revised after the repository/data audit and AdGuard
+source-access correction. Brainstormed from `PROJECT_REVIEW.md` and
+`PROJECT_DATA_FINDINGS.md`.*
 
 ## Goal
 
@@ -17,7 +18,7 @@ crowd, using the COVID era as a natural experiment.
 | Repo identity | Analysis-first; Flask dashboard archived, not maintained |
 | Git history | Rewrite with `git filter-repo` to purge `venv/`; force-push to `wrislin1/nba-predictions` |
 | Data storage | Tidy Parquet tables committed to git (no LFS); raw originals cold-archived to NAS; DuckDB generated locally, gitignored |
-| Data sources | Legacy 1983–2019 box scores from the archived stats.nba.com data; 2019-20 → 2025-26 box scores/schedules from the sportsdataverse hoopR parquet dumps (stats.nba.com is TLS-blocked from this network — see `docs/audits/2026-07-29-slice2-source-spike.md`); attendance source of record: basketball-reference month pages, with hoopR attendance as cross-validation |
+| Data sources | Legacy 1983–2019 box scores from the archived stats.nba.com data; 2019-20 → 2025-26 box scores from stats.nba.com via `nba_api` after correcting an AdGuard DNS block; schedules/neutral-site/venue enrichment from a pinned sportsdataverse hoopR snapshot; attendance source of record: basketball-reference month pages, with hoopR attendance as cross-validation |
 | Analysis deliverable | Markdown report + reproducible notebook, figures committed as PNG |
 | Methodology | Descriptive layer + explicitly scoped quasi-experimental fixed-effects models with cluster-bootstrap CIs |
 
@@ -129,12 +130,14 @@ joblib models exist only in the NAS archive afterward.
 
 ### Scraper package (`src/nba_data/`)
 
-- `hoopr.py` — provider adapter over the sportsdataverse hoopR-nba-data
-  GitHub parquet files (team box scores + schedules, seasons 2019-20 →
-  2025-26), downloaded once and cached under `data/raw/`; normalizes ESPN
-  identifiers to `franchise_id` via a date+team mapping and filters to
-  completed regular-season games between mapped franchises (excludes
-  All-Star and play-in rows).
+- `stats_nba.py` — seven season-level `LeagueGameFinder` requests for
+  2019-20 → 2025-26, cached as raw JSON with SHA-256 metadata; preserves the
+  archived NBA Stats schema and canonical `GAME_ID`.
+- `hoopr.py` — provider adapter over pinned sportsdataverse hoopR schedule
+  parquet files for neutral-site, venue, and ESPN attendance enrichment;
+  normalizes ESPN identifiers to `franchise_id` via a date+team mapping and
+  filters to completed regular-season games between mapped franchises
+  (excluding exhibitions, play-in rows, and the non-standings NBA Cup final).
 - `fetch_attendance.py` — b-ref month pages (~7/season), `requests` with real
   UA, 12 s spacing, HTML and request metadata cached to disk before parsing.
   A failed access check stops with diagnostics; it does not silently switch
@@ -144,7 +147,9 @@ joblib models exist only in the NAS archive afterward.
   for 2019-20; 1,080 for 2020-21); attendance join coverage ≥95% per season
   (reported); score sanity ranges. Build fails loudly rather than writing bad
   tables.
-- CLI: `python -m nba_data update --season 2025-26`.
+- CLI: `python -m nba_data fetch --season 2026` followed by
+  `python -m nba_data build`; separating network fetch from offline build
+  keeps tests and rebuilds deterministic.
 
 Before the ingestion plan is written, run one-season online smoke tests against
 both providers and save representative cached responses. In particular,
