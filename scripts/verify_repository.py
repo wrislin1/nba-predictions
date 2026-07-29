@@ -19,6 +19,29 @@ REQUIRED_ARCHIVE_FILES = {
     "PROJECT_DATA_FINDINGS.md",
 }
 
+REQUIRED_DASHBOARD_IMAGES = {
+    f"archive/dashboard/static/img/{name}_era_averages.png"
+    for name in (
+        "ATTENDANCE",
+        "AWAY_FG3A",
+        "AWAY_FG3M",
+        "AWAY_FGA",
+        "AWAY_FGM",
+        "AWAY_FTA",
+        "AWAY_FTM",
+        "AWAY_PF",
+        "AWAY_PTS",
+        "HOME_FG3A",
+        "HOME_FG3M",
+        "HOME_FGA",
+        "HOME_FGM",
+        "HOME_FTA",
+        "HOME_FTM",
+        "HOME_PF",
+        "HOME_PTS",
+    )
+}
+
 REQUIRED_GITIGNORE_RULES = {
     ".venv/",
     "venv/",
@@ -65,7 +88,8 @@ def main() -> int:
                     "remove venv/ from the index and history"
                 )
 
-    for relative_path in sorted(REQUIRED_ARCHIVE_FILES):
+    required_artifacts = REQUIRED_ARCHIVE_FILES | REQUIRED_DASHBOARD_IMAGES
+    for relative_path in sorted(required_artifacts):
         if not (root / relative_path).is_file():
             errors.append(
                 f"missing required preserved artifact: {relative_path}; "
@@ -100,7 +124,28 @@ def main() -> int:
                 f"missing required .gitignore rule: {rule}; add the rule before committing"
             )
 
-    git_bytes = sum(path.stat().st_size for path in (root / ".git").rglob("*") if path.is_file())
+    git_common = subprocess.run(
+        [
+            "git",
+            "-C",
+            root,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if git_common.returncode != 0:
+        detail = git_common.stderr.strip() or "no diagnostic output"
+        errors.append(f"cannot resolve the Git common directory: {detail}")
+        git_bytes = 0
+    else:
+        git_common_dir = Path(git_common.stdout.strip())
+        git_bytes = sum(
+            path.stat().st_size for path in git_common_dir.rglob("*") if path.is_file()
+        )
     max_git_bytes = args.max_git_mib * 1024 * 1024
     if git_bytes > max_git_bytes:
         errors.append(

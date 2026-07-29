@@ -16,6 +16,29 @@ REQUIRED_ARCHIVE_FILES = {
     "PROJECT_DATA_FINDINGS.md",
 }
 
+REQUIRED_DASHBOARD_IMAGES = {
+    f"archive/dashboard/static/img/{name}_era_averages.png"
+    for name in (
+        "ATTENDANCE",
+        "AWAY_FG3A",
+        "AWAY_FG3M",
+        "AWAY_FGA",
+        "AWAY_FGM",
+        "AWAY_FTA",
+        "AWAY_FTM",
+        "AWAY_PF",
+        "AWAY_PTS",
+        "HOME_FG3A",
+        "HOME_FG3M",
+        "HOME_FGA",
+        "HOME_FGM",
+        "HOME_FTA",
+        "HOME_FTM",
+        "HOME_PF",
+        "HOME_PTS",
+    )
+}
+
 REQUIRED_GITIGNORE_RULES = {
     ".venv/",
     "venv/",
@@ -37,7 +60,7 @@ def valid_repository(tmp_path: Path) -> Path:
     (root / "scripts").mkdir(parents=True)
     shutil.copy2(SCRIPT, root / "scripts/verify_repository.py")
 
-    for relative_path in REQUIRED_ARCHIVE_FILES:
+    for relative_path in REQUIRED_ARCHIVE_FILES | REQUIRED_DASHBOARD_IMAGES:
         path = root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("preserved\n", encoding="utf-8")
@@ -112,6 +135,16 @@ def test_missing_archive_artifact_is_reported(valid_repository: Path) -> None:
     assert "missing required preserved artifact: archive/dashboard/start.py" in result.stderr
 
 
+def test_missing_dashboard_image_is_reported(valid_repository: Path) -> None:
+    relative_path = "archive/dashboard/static/img/ATTENDANCE_era_averages.png"
+    (valid_repository / relative_path).unlink()
+
+    result = run_verifier(valid_repository)
+
+    assert result.returncode == 1
+    assert f"missing required preserved artifact: {relative_path}" in result.stderr
+
+
 def test_nul_byte_in_requirements_is_rejected(valid_repository: Path) -> None:
     (valid_repository / "requirements.txt").write_bytes(b"pytest==9.1.1\x00\n")
 
@@ -136,6 +169,47 @@ def test_missing_gitignore_rule_is_reported(valid_repository: Path) -> None:
 
 def test_git_size_limit_is_enforced(valid_repository: Path) -> None:
     result = run_verifier(valid_repository, max_git_mib=0)
+
+    assert result.returncode == 1
+    assert ".git exceeds 0 MiB" in result.stderr
+
+
+def test_linked_worktree_enforces_common_git_directory_size(
+    valid_repository: Path,
+    tmp_path: Path,
+) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            valid_repository,
+            "-c",
+            "user.name=Repository Test",
+            "-c",
+            "user.email=repository-test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    linked_worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            valid_repository,
+            "worktree",
+            "add",
+            "--detach",
+            linked_worktree,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = run_verifier(linked_worktree, max_git_mib=0)
 
     assert result.returncode == 1
     assert ".git exceeds 0 MiB" in result.stderr

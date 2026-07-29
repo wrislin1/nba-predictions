@@ -13,6 +13,29 @@ REQUIRED_ARCHIVE_FILES = {
     "PROJECT_DATA_FINDINGS.md",
 }
 
+REQUIRED_DASHBOARD_IMAGES = {
+    f"archive/dashboard/static/img/{name}_era_averages.png"
+    for name in (
+        "ATTENDANCE",
+        "AWAY_FG3A",
+        "AWAY_FG3M",
+        "AWAY_FGA",
+        "AWAY_FGM",
+        "AWAY_FTA",
+        "AWAY_FTM",
+        "AWAY_PF",
+        "AWAY_PTS",
+        "HOME_FG3A",
+        "HOME_FG3M",
+        "HOME_FGA",
+        "HOME_FGM",
+        "HOME_FTA",
+        "HOME_FTM",
+        "HOME_PF",
+        "HOME_PTS",
+    )
+}
+
 REQUIRED_REQUIREMENTS = {
     "beautifulsoup4",
     "duckdb",
@@ -40,7 +63,8 @@ def test_generated_environment_is_absent() -> None:
 
 
 def test_authored_artifacts_are_preserved() -> None:
-    missing = [path for path in REQUIRED_ARCHIVE_FILES if not (ROOT / path).is_file()]
+    required = REQUIRED_ARCHIVE_FILES | REQUIRED_DASHBOARD_IMAGES
+    missing = [path for path in required if not (ROOT / path).is_file()]
     assert missing == []
 
 
