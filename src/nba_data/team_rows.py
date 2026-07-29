@@ -42,4 +42,8 @@ def normalize_team_rows(raw: pd.DataFrame, source: str) -> pd.DataFrame:
     ].reset_index(drop=True)
     if len(output) != len(raw):
         raise ValueError("opponent pairing did not preserve row count")
-    return output
+    return output.sort_values(
+        ["season", "game_date", "game_id", "is_home"],
+        ascending=[True, True, True, False],
+        kind="stable",
+    ).reset_index(drop=True)
