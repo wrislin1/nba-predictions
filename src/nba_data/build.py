@@ -1449,6 +1449,44 @@ def _historical_reconciliation_provenance(
     return historical_boxscores
 
 
+def _require_packaged_reference_match(
+    checkout_path: Path,
+    packaged_reference,
+    label: str,
+) -> bytes:
+    try:
+        checkout_bytes = checkout_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ValidationError(
+            f"{label} is missing: {checkout_path}"
+        ) from exc
+    except OSError as exc:
+        raise ValidationError(
+            f"{label} is unreadable: {checkout_path}: {exc}"
+        ) from exc
+
+    packaged_bytes = packaged_reference.read_bytes()
+    if checkout_bytes != packaged_bytes:
+        raise ValidationError(
+            f"{label} differs from the packaged runtime reference"
+        )
+    return checkout_bytes
+
+
+def _validate_runtime_reference_copies(data_dir: Path) -> None:
+    reference_dir = data_dir / "reference"
+    _require_packaged_reference_match(
+        reference_dir / "franchises.csv",
+        franchises.REFERENCE,
+        "franchise reference",
+    )
+    _require_packaged_reference_match(
+        reference_dir / "hoopr_snapshot.json",
+        hoopr.SNAPSHOT_PATH,
+        "hoopR snapshot reference",
+    )
+
+
 def _raw_provenance(data_dir: Path) -> dict:
     raw_dir = data_dir / "raw"
     stats = []
@@ -1470,11 +1508,13 @@ def _raw_provenance(data_dir: Path) -> dict:
         })
 
     snapshot_path = data_dir / "reference/hoopr_snapshot.json"
-    snapshot = (
-        json.loads(snapshot_path.read_text(encoding="utf-8"))
-        if snapshot_path.exists()
-        else {}
-    )
+    if snapshot_path.exists():
+        _require_packaged_reference_match(
+            snapshot_path,
+            hoopr.SNAPSHOT_PATH,
+            "hoopR snapshot reference",
+        )
+    snapshot = hoopr.SNAPSHOT
     hoopr_seasons = []
     hoopr_paths = _paired_raw_paths(
         raw_dir / "hoopr",
@@ -1677,6 +1717,7 @@ def _publish_stage(stage_dir: Path, output_dir: Path) -> None:
 def run(data_dir: Path) -> None:
     """Build, validate, stage, and publish all deterministic data products."""
     team_games, games, report = assemble(data_dir / "raw")
+    _validate_runtime_reference_copies(data_dir)
     franchises_frame = _load_franchise_dimension(
         data_dir / "reference/franchises.csv"
     )

@@ -149,7 +149,10 @@ inputs. hoopR is pinned to repository
 Each cached hoopR body must also have checksum-valid sidecar metadata with
 exact provider `hoopr`, its exact integer ending season, and that exact
 upstream commit. The manifest records the verified binding on every season
-entry rather than relying only on the global pin.
+entry rather than relying only on the global pin. Before a full build, the
+checkout copies of `franchises.csv` and `hoopr_snapshot.json` must match the
+runtime package assets byte for byte, so normalization, publication, and
+manifest attestation cannot use divergent reference data.
 
 | Source | Ending season(s) / path | SHA-256 |
 |---|---|---|

@@ -31,10 +31,14 @@ def install_fetch_recorders(monkeypatch, cli):
     return recorder
 
 
-def test_fetch_calls_providers_in_order_for_all_seasons(monkeypatch):
+def test_fetch_calls_providers_in_order_for_all_seasons(
+    monkeypatch,
+    tmp_path,
+):
     cli = load_cli()
     recorder = install_fetch_recorders(monkeypatch, cli)
     raw_dir = Path(__file__).resolve().parents[1] / "data/raw"
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["nba_data", "fetch"])
 
     cli.main()
@@ -46,10 +50,11 @@ def test_fetch_calls_providers_in_order_for_all_seasons(monkeypatch):
     ]
 
 
-def test_fetch_forwards_one_requested_season(monkeypatch):
+def test_fetch_forwards_one_requested_season(monkeypatch, tmp_path):
     cli = load_cli()
     recorder = install_fetch_recorders(monkeypatch, cli)
     raw_dir = Path(__file__).resolve().parents[1] / "data/raw"
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -65,10 +70,14 @@ def test_fetch_forwards_one_requested_season(monkeypatch):
     ]
 
 
-def test_inspect_venues_writes_inventory_without_fetching(monkeypatch):
+def test_inspect_venues_writes_inventory_without_fetching(
+    monkeypatch,
+    tmp_path,
+):
     cli = load_cli()
     recorder = install_fetch_recorders(monkeypatch, cli)
     data_dir = Path(__file__).resolve().parents[1] / "data"
+    monkeypatch.chdir(tmp_path)
     inventory_calls = []
     monkeypatch.setattr(
         cli.build,
@@ -83,10 +92,14 @@ def test_inspect_venues_writes_inventory_without_fetching(monkeypatch):
     assert recorder.calls == []
 
 
-def test_build_publishes_from_repository_data_directory(monkeypatch):
+def test_build_publishes_from_repository_data_directory(
+    monkeypatch,
+    tmp_path,
+):
     cli = load_cli()
     recorder = install_fetch_recorders(monkeypatch, cli)
     data_dir = Path(__file__).resolve().parents[1] / "data"
+    monkeypatch.chdir(tmp_path)
     build_calls = []
     monkeypatch.setattr(cli.build, "run", build_calls.append, raising=False)
     monkeypatch.setattr(sys, "argv", ["nba_data", "build"])
@@ -122,6 +135,28 @@ def test_build_accepts_explicit_data_directory(
 
     assert build_calls == [data_dir.resolve()]
     assert recorder.calls == []
+
+
+def test_installed_cli_requires_explicit_data_directory(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    cli = load_cli()
+    monkeypatch.setattr(
+        cli,
+        "__file__",
+        str(tmp_path / "site-packages/nba_data/__main__.py"),
+    )
+    monkeypatch.setattr(cli.build, "run", lambda data_dir: None)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["nba_data", "build"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 2
+    assert "--data-dir" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("season", [2019, 2027])

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from nba_data import build
+from nba_data import build, franchises, hoopr
 
 
 CORRECTION_COLUMNS = [
@@ -1937,11 +1937,8 @@ def test_write_venue_inventory_reports_non_covid_observed_limits(
 def seed_publication_references(data_dir):
     reference_dir = data_dir / "reference"
     reference_dir.mkdir(parents=True)
-    (reference_dir / "franchises.csv").write_text(
-        "alias,franchise_id,first_season,last_season\n"
-        "Atlanta Hawks,ATL,,\n"
-        "Boston Celtics,BOS,,\n",
-        encoding="utf-8",
+    (reference_dir / "franchises.csv").write_bytes(
+        franchises.REFERENCE.read_bytes()
     )
     (reference_dir / "venue_capacities.csv").write_text(
         "venue_id,franchise_id,first_season,last_season,capacity,"
@@ -1954,13 +1951,8 @@ def seed_publication_references(data_dir):
         ",".join(CORRECTION_COLUMNS) + "\n",
         encoding="utf-8",
     )
-    (reference_dir / "hoopr_snapshot.json").write_text(
-        json.dumps({
-            "repository": "sportsdataverse/hoopR-nba-data",
-            "commit": "fixture-commit",
-            "seasons": [2023],
-        }),
-        encoding="utf-8",
+    (reference_dir / "hoopr_snapshot.json").write_bytes(
+        hoopr.SNAPSHOT_PATH.read_bytes()
     )
 
 
@@ -1974,6 +1966,63 @@ def publication_fixture(monkeypatch, data_dir):
     )
     seed_publication_references(data_dir)
     return team_games, games
+
+
+def test_run_requires_checkout_hoopr_pin(monkeypatch, tmp_path):
+    """Would fail if a build could attest a pin absent from its data tree."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    (data_dir / "reference/hoopr_snapshot.json").unlink()
+
+    with pytest.raises(
+        build.ValidationError,
+        match="hoopR snapshot reference is missing",
+    ):
+        build.run(data_dir)
+
+
+def test_raw_provenance_rejects_checkout_hoopr_pin_divergence(tmp_path):
+    """Would fail if the manifest pin could differ from cache validation."""
+    data_dir = tmp_path / "data"
+    reference_dir = data_dir / "reference"
+    reference_dir.mkdir(parents=True)
+    (reference_dir / "hoopr_snapshot.json").write_text(
+        json.dumps({
+            "repository": "sportsdataverse/hoopR-nba-data",
+            "commit": "different-commit",
+            "seasons": [2020, 2021, 2022, 2023, 2024, 2025, 2026],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match="hoopR snapshot reference differs",
+    ):
+        build._raw_provenance(data_dir)
+
+
+def test_run_rejects_checkout_franchise_reference_divergence(
+    monkeypatch,
+    tmp_path,
+):
+    """Would fail if normalization and publication could use different aliases."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    reference = data_dir / "reference/franchises.csv"
+    reference.write_text(
+        reference.read_text(encoding="utf-8").replace(
+            "Atlanta Hawks",
+            "Atlanta Hawks Edited",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match="franchise reference differs from the packaged runtime reference",
+    ):
+        build.run(data_dir)
 
 
 def test_run_preserves_prior_publication_when_validation_fails(

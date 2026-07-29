@@ -49,8 +49,9 @@ python3 -m venv .venv
 fully pinned, UTF-8 environment compiled from it. The wheel metadata also
 declares the pipeline's runtime dependencies and ships the franchise and
 hoopR pin reference assets needed to import `nba_data` outside this checkout.
-CLI commands default to `./data`; pass `--data-dir /path/to/data` before the
-subcommand when running against another restored data directory.
+Within a source checkout, CLI commands locate the repository's `data/`
+directory regardless of the current working directory. An installed CLI
+requires `--data-dir /path/to/data` before the subcommand.
 
 Regenerate the lock with an explicit upgrade so uv does not preserve stale
 preferences from an existing output file:
