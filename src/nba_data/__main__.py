@@ -5,16 +5,20 @@ from nba_data import bref, build, hoopr, stats_nba
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[2]
-    data = root / "data"
-    raw = data / "raw"
     parser = argparse.ArgumentParser(prog="nba_data")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path.cwd() / "data",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     fetch_parser = commands.add_parser("fetch")
     fetch_parser.add_argument("--season", type=int, choices=range(2020, 2027))
     commands.add_parser("inspect-venues")
     commands.add_parser("build")
     args = parser.parse_args()
+    data = args.data_dir.expanduser().resolve()
+    raw = data / "raw"
     seasons = [args.season] if getattr(args, "season", None) else range(2020, 2027)
     if args.command == "fetch":
         stats_nba.fetch(raw, seasons)

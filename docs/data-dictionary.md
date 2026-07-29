@@ -107,17 +107,23 @@ For a matched basketball-reference row, `attendance` is its value, including a
 blank/null. ESPN is used only when no b-ref row matches. Thus a b-ref blank is
 `missing`, never an ESPN fallback or zero; an explicit source zero is
 `reported_zero`, never missing. Positive values are `reported_positive`.
-Legacy attendance retains its historical selected value and source. The build
-enforces at least 95% b-ref join and selected known-attendance coverage per
-modern season; the manifest records the small audited no-fan-bubble exemption.
+Legacy attendance retains its historical selected value and source. For each
+modern season, the build enforces at least 95% b-ref row-join coverage. It
+also enforces at least 95% known attendance after removing only the 87
+explicitly enumerated 2020 no-fan bubble games whose matched b-ref attendance
+is blank. The manifest separately records raw numeric coverage, the eligible
+denominator, and the exemption count. Consequently, 2020 raw numeric coverage
+is 91.7847%, while its exception-aware validation coverage is 100%.
 
 The build rejects a game unless it has exactly two team rows, one winner, and
-`wl` agrees with the final score. Box-score values may be null when the source
-is blank, but a non-null value must be nonnegative. Makes may not exceed
-attempts, `oreb + dreb` must equal `reb`, and
+`wl` agrees with the final score. Every published box-score statistic is
+non-null and nonnegative. If a legacy source is blank or contradictory, the
+build requires an exact provenance-backed correction; it does not publish the
+blank and never converts it to zero merely to satisfy a gate. Makes may not
+exceed attempts, `oreb + dreb` must equal `reb`, and
 `2 * fgm + fg3m + ftm` must equal `pts`. Corrections never convert a blank
-legacy statistic to zero merely to satisfy an identity. A field is populated
-only when a historical box score supplies an exact value.
+legacy statistic to zero merely to satisfy an identity. A corrected field is
+populated only when a historical box score supplies an exact value.
 
 `reference/game_corrections.csv` has a deliberately narrow scalar grammar.
 Team box values are canonical unsigned base-10 integers (`0`, or a nonzero
@@ -129,8 +135,11 @@ the canonical NBA game page used to identify the game.
 
 ## Sources, pins, and hashes
 
-All raw responses are gitignored under `data/raw/`; the manifest records their
-relative cache paths and SHA-256 values. The source roles are NBA Stats
+All raw responses are gitignored under `data/raw/`. Every NBA Stats, hoopR,
+and b-ref schedule body must have exactly one metadata sidecar containing the
+matching SHA-256; orphan bodies, orphan sidecars, and metadata without a
+matching SHA are rejected before publication. The manifest records only these
+verified relative cache paths and hashes. The source roles are NBA Stats
 `LeagueGameFinder` (canonical modern box scores), pinned hoopR (schedule,
 neutral/venue/ESPN enrichment), basketball-reference (attendance/arena and
 secondary exact historical reconciliation), and the two restored legacy
@@ -178,7 +187,9 @@ ledger is:
 The 23 checksum-verified historical reconciliation pages are under
 `raw/reconciliation/bref/`. Their game ID, direct immutable URL, relative
 path, and SHA-256 are recorded in
-`sources.basketball_reference.historical_boxscores` in the manifest.
+`sources.basketball_reference.historical_boxscores` in the manifest. They are
+preserved and recovered through the verified raw snapshot; the normal
+season-fetch command does not re-download these one-off audit pages.
 
 Curated-reference hashes: `reference/franchises.csv`
 `aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb`;
@@ -227,5 +238,8 @@ The script derives a unique NAS destination from `games.max_season` and the
 first 12 hex characters of the manifest SHA-256, refuses if that path already
 exists, copies the manifest and raw tree, writes and verifies `SHA256SUMS`,
 then uses checksum-based rsync dry-run comparison. It never overwrites a prior
-snapshot. Restore only through the repository's `scripts/restore_raw.sh` after
-verifying the snapshot manifest/checksums.
+snapshot. If `data/raw/` is lost, run `bash scripts/restore_raw.sh`. The
+restore command derives the exact snapshot from the committed manifest,
+verifies that the snapshot manifest and complete `SHA256SUMS` inventory match,
+stages all raw sources (including legacy inputs and reconciliation pages), and
+refuses to replace an existing raw directory.

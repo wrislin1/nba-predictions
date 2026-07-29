@@ -855,6 +855,53 @@ def test_unique_next_day_hoopr_game_reconciles_to_nba_date():
     }
 
 
+def test_next_day_reconciliation_preserves_back_to_back_exact_game():
+    """Would fail if duplicate exact keys claimed every schedule row."""
+    nba_games = pd.concat([
+        one_nba_game(game_id="0022000001"),
+        one_nba_game(game_id="0022000002").assign(
+            game_date=datetime.date(2022, 10, 19)
+        ),
+    ], ignore_index=True)
+    schedule = pd.concat([
+        one_schedule_game(espn_game_id="espn-401300001").assign(
+            game_date=datetime.date(2022, 10, 19)
+        ),
+        one_schedule_game(espn_game_id="espn-401300002").assign(
+            game_date=datetime.date(2022, 10, 19)
+        ),
+    ], ignore_index=True)
+    bref = pd.concat([
+        one_bref_game(),
+        one_bref_game().assign(
+            game_date=datetime.date(2022, 10, 19)
+        ),
+    ], ignore_index=True)
+
+    enriched = build.enrich_modern_games(
+        nba_games,
+        schedule,
+        bref,
+    )
+
+    assert enriched[[
+        "game_id",
+        "espn_game_id",
+        "game_date",
+    ]].to_dict("records") == [
+        {
+            "game_id": "0022000001",
+            "espn_game_id": "espn-401300001",
+            "game_date": datetime.date(2022, 10, 18),
+        },
+        {
+            "game_id": "0022000002",
+            "espn_game_id": "espn-401300002",
+            "game_date": datetime.date(2022, 10, 19),
+        },
+    ]
+
+
 @pytest.mark.parametrize(
     "team_games",
     [
@@ -2070,6 +2117,88 @@ def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
         "season_label": "2025-26",
         "sha256": digest,
     }]
+
+
+@pytest.mark.parametrize(
+    ("relative_body", "orphan"),
+    [
+        pytest.param(
+            "stats_nba/leaguegamefinder_2026.json",
+            "body",
+            id="stats-body",
+        ),
+        pytest.param(
+            "stats_nba/leaguegamefinder_2026.json",
+            "sidecar",
+            id="stats-sidecar",
+        ),
+        pytest.param(
+            "hoopr/nba_schedule_2026.parquet",
+            "body",
+            id="hoopr-body",
+        ),
+        pytest.param(
+            "hoopr/nba_schedule_2026.parquet",
+            "sidecar",
+            id="hoopr-sidecar",
+        ),
+        pytest.param(
+            "bref/NBA_2026_games-april.html",
+            "body",
+            id="bref-body",
+        ),
+        pytest.param(
+            "bref/NBA_2026_games-april.html",
+            "sidecar",
+            id="bref-sidecar",
+        ),
+    ],
+)
+def test_raw_provenance_rejects_incomplete_cache_pairs(
+    tmp_path,
+    relative_body,
+    orphan,
+):
+    """Would fail if a body or sidecar could be attested without its pair."""
+    data_dir = tmp_path / "data"
+    body = data_dir / "raw" / relative_body
+    body.parent.mkdir(parents=True)
+    sidecar = body.with_name(body.name + ".meta.json")
+    if orphan == "body":
+        body.write_bytes(b"unverified")
+    else:
+        sidecar.write_text(
+            json.dumps({"sha256": "0" * 64}),
+            encoding="utf-8",
+        )
+
+    with pytest.raises(
+        build.ValidationError,
+        match="incomplete raw cache pair",
+    ):
+        build._raw_provenance(data_dir)
+
+
+def test_raw_provenance_requires_sidecar_sha256(tmp_path):
+    """Would fail if a sidecar-less checksum were freshly invented."""
+    data_dir = tmp_path / "data"
+    body = data_dir / "raw/stats_nba/leaguegamefinder_2026.json"
+    body.parent.mkdir(parents=True)
+    body.write_bytes(b'{"resultSets":[]}')
+    body.with_name(body.name + ".meta.json").write_text(
+        json.dumps({
+            "endpoint": "LeagueGameFinder",
+            "season": 2026,
+            "season_label": "2025-26",
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match="missing SHA-256",
+    ):
+        build._raw_provenance(data_dir)
 
 
 def test_raw_provenance_records_verified_hoopr_pin_per_season(tmp_path):

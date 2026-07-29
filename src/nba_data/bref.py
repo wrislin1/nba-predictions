@@ -102,8 +102,8 @@ def load_attendance(
     frames = []
     for month in selected_months:
         path = raw_dir / "bref" / f"NBA_{season}_games-{month}.html"
-        cache.read_valid(path, validate_payload)
-        raw = _read_schedule(path)
+        payload = cache.require_valid(path, validate_payload)
+        raw = _read_schedule(payload)
         away_pts = pd.to_numeric(raw["away_pts"], errors="coerce")
         home_pts = pd.to_numeric(raw["home_pts"], errors="coerce")
         retained = raw.loc[away_pts.notna() & home_pts.notna()].copy()

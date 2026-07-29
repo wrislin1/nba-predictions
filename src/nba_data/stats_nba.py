@@ -106,8 +106,8 @@ def load_season(
 ) -> pd.DataFrame:
     """Load a verified cached season and require its full regular-season panel."""
     path = raw_dir / "stats_nba" / f"leaguegamefinder_{season}.json"
-    cache.read_valid(path, validate_payload)
-    result = json.loads(path.read_text())["resultSets"][0]
+    payload = cache.require_valid(path, validate_payload)
+    result = json.loads(payload.decode("utf-8"))["resultSets"][0]
     raw = pd.DataFrame(result["rowSet"], columns=result["headers"])
     output = normalize_team_rows(raw, source="nba_stats")
     actual_seasons = sorted(output["season"].unique().tolist())

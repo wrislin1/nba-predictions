@@ -144,12 +144,16 @@ joblib models exist only in the NAS archive afterward.
   sources or bypass the block.
 - `build.py` — raw → Parquet with hard validation gates: no duplicate
   `GAME_ID`s; per-season game counts match known values (1,230 normal; 1,059
-  for 2019-20; 1,080 for 2020-21); attendance join coverage ≥95% per season
-  (reported); score sanity ranges. Build fails loudly rather than writing bad
-  tables.
+  for 2019-20; 1,080 for 2020-21); b-ref row-join coverage ≥95% per season;
+  and known-attendance coverage ≥95% after excluding only the 87 enumerated
+  missing-attendance no-fan bubble games. Raw numeric coverage and the
+  exception-aware denominator are reported separately. Score sanity ranges
+  also fail loudly rather than writing bad tables.
 - CLI: `python -m nba_data fetch --season 2026` followed by
   `python -m nba_data build`; separating network fetch from offline build
-  keeps tests and rebuilds deterministic.
+  keeps tests and rebuilds deterministic. An installed CLI accepts
+  `--data-dir /path/to/data` before the subcommand instead of resolving data
+  relative to `site-packages`.
 
 Before the ingestion plan is written, run one-season online smoke tests against
 both providers and save representative cached responses. In particular,

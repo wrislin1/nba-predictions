@@ -1,6 +1,8 @@
 """Fetch and normalize pinned hoopR NBA schedule enrichment rows."""
 
 import json
+from io import BytesIO
+from importlib import resources
 from pathlib import Path
 from typing import Iterable
 
@@ -12,7 +14,9 @@ from nba_data import cache, franchises
 from nba_data.stats_nba import EXPECTED_GAMES
 
 
-SNAPSHOT_PATH = Path(__file__).resolve().parents[2] / "data/reference/hoopr_snapshot.json"
+SNAPSHOT_PATH = resources.files("nba_data.reference").joinpath(
+    "hoopr_snapshot.json"
+)
 SNAPSHOT = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
 
@@ -76,13 +80,24 @@ def fetch(raw_dir: Path, seasons: Iterable[int] = SNAPSHOT["seasons"]) -> None:
         )
 
 
+def _normalize_game_ids(values: pd.Series) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    invalid = numeric.isna() | numeric.le(0) | numeric.mod(1).ne(0)
+    if invalid.any():
+        examples = values.loc[invalid].head().tolist()
+        raise ValueError(f"invalid hoopR game_id values: {examples}")
+    return numeric.astype("int64").astype("string")
+
+
 def load_season(
     raw_dir: Path, season: int, expected_games: int | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load completed regular-season rows and explicit schedule exclusions."""
     path = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
-    _read_pinned_cache(path, season)
-    raw = pd.read_parquet(path)
+    payload = _read_pinned_cache(path, season)
+    if payload is None:
+        raise cache.CacheIntegrityError(f"missing cache entry for {path}")
+    raw = pd.read_parquet(BytesIO(payload))
     completed = raw.loc[
         (raw["season_type"] == 2) & raw["status_type_completed"].astype(bool)
     ].copy()
@@ -106,8 +121,9 @@ def load_season(
     if len(retained) != expected:
         raise ValueError(f"season {season}: {len(retained)} games, expected {expected}")
 
+    espn_game_ids = _normalize_game_ids(retained["game_id"])
     schedule = pd.DataFrame({
-        "espn_game_id": "espn-" + retained["game_id"].astype(str),
+        "espn_game_id": "espn-" + espn_game_ids,
         "season": season,
         "game_date": retained["game_date"],
         "home_franchise_id": home_ids,

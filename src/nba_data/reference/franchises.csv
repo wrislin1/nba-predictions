@@ -1,0 +1,42 @@
+alias,franchise_id,first_season,last_season
+Atlanta Hawks,ATL,,
+Boston Celtics,BOS,,
+New Jersey Nets,BKN,,2012
+Brooklyn Nets,BKN,2013,
+Charlotte Hornets,NOP,,2002
+Charlotte Bobcats,CHA,2005,2014
+Charlotte Hornets,CHA,2015,
+Chicago Bulls,CHI,,
+Cleveland Cavaliers,CLE,,
+Dallas Mavericks,DAL,,
+Denver Nuggets,DEN,,
+Detroit Pistons,DET,,
+Golden State Warriors,GSW,,
+Houston Rockets,HOU,,
+Indiana Pacers,IND,,
+San Diego Clippers,LAC,,1984
+Los Angeles Clippers,LAC,1985,
+LA Clippers,LAC,1985,
+Los Angeles Lakers,LAL,,
+Vancouver Grizzlies,MEM,,2001
+Memphis Grizzlies,MEM,2002,
+Miami Heat,MIA,,
+Milwaukee Bucks,MIL,,
+Minnesota Timberwolves,MIN,,
+New Orleans Hornets,NOP,2003,2013
+New Orleans/Oklahoma City Hornets,NOP,2006,2007
+New Orleans Pelicans,NOP,2014,
+New York Knicks,NYK,,
+Seattle SuperSonics,OKC,,2008
+Oklahoma City Thunder,OKC,2009,
+Orlando Magic,ORL,,
+Philadelphia 76ers,PHI,,
+Phoenix Suns,PHX,,
+Portland Trail Blazers,POR,,
+Kansas City Kings,SAC,,1985
+Sacramento Kings,SAC,1986,
+San Antonio Spurs,SAS,,
+Toronto Raptors,TOR,,
+Utah Jazz,UTA,,
+Washington Bullets,WAS,,1997
+Washington Wizards,WAS,1998,

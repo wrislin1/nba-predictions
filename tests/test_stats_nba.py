@@ -1,5 +1,8 @@
 import json
+import os
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -68,6 +71,50 @@ def test_load_season_normalizes_cached_leaguegamefinder(tmp_path):
     assert len(result) == 2
     assert result.iloc[0]["game_id"] == "0022000001"
     assert set(result["source"]) == {"nba_stats"}
+
+
+def test_load_season_reports_missing_cache_entry(tmp_path):
+    """Would fail if an absent cache leaked a pathlib FileNotFoundError."""
+    with pytest.raises(
+        cache.CacheIntegrityError,
+        match="missing cache entry",
+    ):
+        stats_nba.load_season(tmp_path, 2021, expected_games=1)
+
+
+def test_load_season_decodes_cached_json_as_utf8(tmp_path):
+    """Would fail if locale-default ASCII decoded a valid UTF-8 cache."""
+    payload = fixture_leaguegamefinder_payload()
+    payload["parameters"] = {"source_note": "café"}
+    destination = tmp_path / "stats_nba/leaguegamefinder_2021.json"
+    cache.publish_bytes(
+        destination,
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        {"provider": "stats_nba", "season": 2021},
+        stats_nba.validate_payload,
+    )
+    environment = {
+        **os.environ,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PYTHONCOERCECLOCALE": "0",
+        "PYTHONUTF8": "0",
+    }
+    command = (
+        "from pathlib import Path; "
+        "from nba_data import stats_nba; "
+        f"stats_nba.load_season(Path({str(tmp_path)!r}), 2021, "
+        "expected_games=1)"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", command],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_load_season_rejects_cache_with_another_season(tmp_path):

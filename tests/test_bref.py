@@ -49,6 +49,15 @@ def test_load_attendance_preserves_reported_zero_positive_and_blank(tmp_path):
     assert result["game_date"].map(type).eq(datetime.date).all()
 
 
+def test_load_attendance_reports_missing_cache_entry(tmp_path):
+    """Would fail if an absent cache leaked a pandas FileNotFoundError."""
+    with pytest.raises(
+        cache.CacheIntegrityError,
+        match="missing cache entry",
+    ):
+        bref.load_attendance(tmp_path, 2021, months=["december"])
+
+
 class FakeResponse:
     def __init__(self, content, status_code=200):
         self.content = content

@@ -37,6 +37,13 @@ def read_valid(path: Path, validator) -> bytes | None:
     return path.read_bytes()
 
 
+def require_valid(path: Path, validator) -> bytes:
+    payload = read_valid(path, validator)
+    if payload is None:
+        raise CacheIntegrityError(f"missing cache entry for {path}")
+    return payload
+
+
 def publish_bytes(path: Path, payload: bytes, metadata: dict, validator) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     body_part = path.with_name(path.name + ".part")

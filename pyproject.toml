@@ -6,9 +6,22 @@ build-backend = "setuptools.build_meta"
 name = "nba-data"
 version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+  "lxml",
+  "nba-api",
+  "pandas",
+  "pyarrow",
+  "requests",
+]
+
+[project.scripts]
+nba-data = "nba_data.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"nba_data.reference" = ["*.csv", "*.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

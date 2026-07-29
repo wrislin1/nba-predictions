@@ -406,22 +406,15 @@ def normalize_team_rows(raw: pd.DataFrame, source: str) -> pd.DataFrame:
     return output
 ```
 
-- [ ] **Step 4: Add the restore script**
+- [ ] **Step 4: Add the exact raw-snapshot restore**
 
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-archive=/mnt/nas/llm/documents/nba-predictions-archive/pre-rewrite-e0f8e3a/raw/venv-static-data
-destination="$(dirname "$0")/../data/raw/legacy"
-mkdir -p "$destination"
-rsync -a --checksum "$archive/nba-teams-1984-2019-ordered.csv" "$destination/"
-rsync -a --checksum "$archive/league_boxscores_extra.csv" "$destination/"
-printf '%s  %s\n' \
-  3a71f75829452032523098280542485f2a94513facde2ea3f78b5b4c4356764c \
-  "$destination/nba-teams-1984-2019-ordered.csv" \
-  e512c1a15b5a2046c47efb86152b1087c28c8955b183fdf5c0e8151876f8b822 \
-  "$destination/league_boxscores_extra.csv" | sha256sum -c -
-```
+The shipped `scripts/restore_raw.sh` is the inverse of
+`scripts/archive_raw_snapshot.sh`, not a legacy-only bootstrap. It derives the
+snapshot name from the committed manifest's ending season and SHA-256,
+requires the archived manifest to match, verifies the complete `SHA256SUMS`
+inventory, stages the whole raw tree, and refuses to replace an existing
+`data/raw/`. This restores NBA Stats, hoopR, b-ref schedules, the two legacy
+CSVs, and all 23 historical reconciliation body/sidecar pairs.
 
 - [ ] **Step 5: Write the failing legacy tests**
 
@@ -468,10 +461,14 @@ def load_attendance(path) -> pd.DataFrame:
 - [ ] **Step 7: Verify and commit**
 
 ```bash
-bash scripts/restore_raw.sh
-.venv/bin/python -m pytest tests/test_team_rows.py tests/test_legacy.py -q
-git add src/nba_data/team_rows.py src/nba_data/legacy.py scripts/restore_raw.sh tests/test_team_rows.py tests/test_legacy.py
-git commit -m "feat: normalize and restore archived NBA Stats rows"
+.venv/bin/python -m pytest \
+  tests/test_team_rows.py \
+  tests/test_legacy.py \
+  tests/test_repository_layout.py -q
+git add src/nba_data/team_rows.py src/nba_data/legacy.py \
+  scripts/restore_raw.sh tests/test_team_rows.py tests/test_legacy.py \
+  tests/test_repository_layout.py
+git commit -m "feat: normalize and restore verified NBA data"
 ```
 
 ---
@@ -1528,7 +1525,11 @@ git commit -m "docs: document and preserve the game-data pipeline"
 - [ ] `games` has 49,117 rows and `team_games` has 98,234.
 - [ ] Each modern season has its exact required game count and every game has two team rows.
 - [ ] Every modern NBA game joins exactly one hoopR schedule row.
-- [ ] b-ref join and selected known-attendance coverage are each at least 95% per modern season.
+- [ ] b-ref row-join coverage is at least 95% per modern season.
+- [ ] Selected known-attendance coverage is at least 95% after removing only
+  the 87 enumerated missing-attendance 2020 no-fan bubble games; raw numeric
+  coverage, eligible denominator, and exemption count remain separately
+  reported in the manifest.
 - [ ] Blank b-ref attendance remains missing and explicit zero is never inferred.
 - [ ] Every non-neutral primary-window venue resolves one provenance-backed capacity.
 - [ ] The manifest and second build have identical hashes.

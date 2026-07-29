@@ -1,12 +1,14 @@
 """Season-aware source team names mapped to stable franchise IDs."""
 
 from functools import lru_cache
-from pathlib import Path
+from importlib import resources
 
 import pandas as pd
 
 
-REFERENCE = Path(__file__).resolve().parents[2] / "data/reference/franchises.csv"
+REFERENCE = resources.files("nba_data.reference").joinpath(
+    "franchises.csv"
+)
 
 
 class UnknownTeamError(ValueError):
@@ -19,7 +21,11 @@ class AmbiguousTeamError(ValueError):
 
 @lru_cache(maxsize=1)
 def load_reference() -> pd.DataFrame:
-    frame = pd.read_csv(REFERENCE, dtype={"alias": str, "franchise_id": str})
+    with resources.as_file(REFERENCE) as path:
+        frame = pd.read_csv(
+            path,
+            dtype={"alias": str, "franchise_id": str},
+        )
     frame["first_season"] = frame["first_season"].astype("Int64")
     frame["last_season"] = frame["last_season"].astype("Int64")
     return frame

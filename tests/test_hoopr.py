@@ -150,6 +150,43 @@ def test_load_season_filters_exhibitions_cup_and_incomplete_rows(tmp_path):
     assert schedule["espn_attendance"].dtype == "Int64"
 
 
+def test_load_season_normalizes_float_backed_game_ids(tmp_path):
+    """Would fail if a nullable source column published ``espn-*.0`` IDs."""
+    frame = schedule_fixture()
+    frame.loc[4, "game_id"] = None
+    publish_schedule_fixture(tmp_path, frame=frame)
+
+    schedule, _ = hoopr.load_season(
+        tmp_path,
+        2024,
+        expected_games=2,
+    )
+
+    assert schedule["espn_game_id"].tolist() == [
+        "espn-401000001",
+        "espn-401000002",
+    ]
+
+
+def test_load_season_rejects_missing_retained_game_id(tmp_path):
+    """Would fail if a completed game could publish a missing ESPN ID."""
+    frame = schedule_fixture()
+    frame.loc[0, "game_id"] = None
+    publish_schedule_fixture(tmp_path, frame=frame)
+
+    with pytest.raises(ValueError, match="game_id"):
+        hoopr.load_season(tmp_path, 2024, expected_games=2)
+
+
+def test_load_season_reports_missing_cache_entry(tmp_path):
+    """Would fail if an absent cache leaked a pyarrow FileNotFoundError."""
+    with pytest.raises(
+        cache.CacheIntegrityError,
+        match="missing cache entry",
+    ):
+        hoopr.load_season(tmp_path, 2024, expected_games=2)
+
+
 def test_load_season_rejects_unknown_ordinary_entrants(tmp_path):
     """Would fail if an unrecognized non-exhibition team were retained."""
     frame = schedule_fixture()

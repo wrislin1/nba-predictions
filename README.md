@@ -41,11 +41,16 @@ Python 3.12 is the supported development runtime.
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pip install --no-deps --no-build-isolation -e .
 .venv/bin/python -m pytest -q
 ```
 
 `requirements.in` records direct dependencies; `requirements.txt` is the
-fully pinned, UTF-8 environment compiled from it.
+fully pinned, UTF-8 environment compiled from it. The wheel metadata also
+declares the pipeline's runtime dependencies and ships the franchise and
+hoopR pin reference assets needed to import `nba_data` outside this checkout.
+CLI commands default to `./data`; pass `--data-dir /path/to/data` before the
+subcommand when running against another restored data directory.
 
 Regenerate the lock with an explicit upgrade so uv does not preserve stale
 preferences from an existing output file:

@@ -97,6 +97,33 @@ def test_build_publishes_from_repository_data_directory(monkeypatch):
     assert recorder.calls == []
 
 
+def test_build_accepts_explicit_data_directory(
+    tmp_path,
+    monkeypatch,
+):
+    """Would fail if an installed CLI derived data from site-packages."""
+    cli = load_cli()
+    recorder = install_fetch_recorders(monkeypatch, cli)
+    data_dir = tmp_path / "data"
+    build_calls = []
+    monkeypatch.setattr(cli.build, "run", build_calls.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(data_dir),
+            "build",
+        ],
+    )
+
+    cli.main()
+
+    assert build_calls == [data_dir.resolve()]
+    assert recorder.calls == []
+
+
 @pytest.mark.parametrize("season", [2019, 2027])
 def test_invalid_season_exits_before_fetching(monkeypatch, season):
     cli = load_cli()

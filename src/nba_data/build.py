@@ -525,14 +525,33 @@ def _reconcile_next_day_schedule_dates(
 ) -> pd.DataFrame:
     """Align uniquely identifiable next-day ESPN dates to NBA game dates."""
     aligned = schedule.copy()
-    claimed = set(
-        aligned.reset_index(names="_schedule_index")
-        .merge(nba_games[JOIN_KEY], on=JOIN_KEY, how="inner")[
-            "_schedule_index"
-        ]
-        .tolist()
+    nba_key_counts = (
+        nba_games.groupby(JOIN_KEY, dropna=False)
+        .size()
+        .rename("_nba_key_count")
+        .reset_index()
     )
-    for game in nba_games.itertuples(index=False):
+    exact_candidates = (
+        aligned.reset_index(names="_schedule_index")
+        .merge(nba_key_counts, on=JOIN_KEY, how="inner")
+        .sort_values(
+            JOIN_KEY + ["espn_game_id"],
+            ascending=[True] * len(JOIN_KEY) + [False],
+            kind="stable",
+        )
+    )
+    reserved = (
+        exact_candidates.groupby(JOIN_KEY, dropna=False).cumcount()
+        < exact_candidates["_nba_key_count"]
+    )
+    claimed = set(
+        exact_candidates.loc[reserved, "_schedule_index"].tolist()
+    )
+    ordered_games = nba_games.sort_values(
+        JOIN_KEY + ["game_id"],
+        kind="stable",
+    )
+    for game in ordered_games.itertuples(index=False):
         exact = pd.Series(True, index=aligned.index)
         for column in JOIN_KEY:
             exact &= aligned[column].eq(getattr(game, column))
@@ -1260,17 +1279,58 @@ def _sha256(path: Path) -> str:
 
 
 def _load_metadata(path: Path, content_path: Path) -> dict:
-    metadata = (
-        json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    )
+    if not path.is_file():
+        raise ValidationError(
+            f"missing raw cache metadata for {content_path}"
+        )
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValidationError(
+            f"invalid raw cache metadata for {content_path}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise ValidationError(
+            f"invalid raw cache metadata for {content_path}"
+        )
     digest = _sha256(content_path)
     expected = metadata.get("sha256")
-    if expected is not None and expected != digest:
+    if not isinstance(expected, str):
+        raise ValidationError(
+            f"missing SHA-256 in raw cache metadata for {content_path}"
+        )
+    if expected != digest:
         raise ValidationError(
             f"raw SHA-256 mismatch for {content_path.name}: "
             f"{digest}, expected {expected}"
         )
     return metadata
+
+
+def _paired_raw_paths(
+    directory: Path,
+    body_pattern: str,
+    sidecar_pattern: str,
+) -> list[Path]:
+    bodies = {
+        path
+        for path in directory.glob(body_pattern)
+        if path.is_file() and not path.name.endswith(".meta.json")
+    }
+    sidecars = {
+        path
+        for path in directory.glob(sidecar_pattern)
+        if path.is_file()
+    }
+    expected_sidecars = {
+        path.with_name(path.name + ".meta.json")
+        for path in bodies
+    }
+    if sidecars != expected_sidecars:
+        raise ValidationError(
+            f"incomplete raw cache pair in {directory}"
+        )
+    return sorted(bodies)
 
 
 def _relative_path(path: Path, data_dir: Path) -> str:
@@ -1392,14 +1452,12 @@ def _historical_reconciliation_provenance(
 def _raw_provenance(data_dir: Path) -> dict:
     raw_dir = data_dir / "raw"
     stats = []
-    stats_paths = (
-        path
-        for path in (raw_dir / "stats_nba").glob(
-            "leaguegamefinder_*.json"
-        )
-        if not path.name.endswith(".meta.json")
+    stats_paths = _paired_raw_paths(
+        raw_dir / "stats_nba",
+        "leaguegamefinder_*.json",
+        "leaguegamefinder_*.json.meta.json",
     )
-    for path in sorted(stats_paths):
+    for path in stats_paths:
         metadata = _load_metadata(
             path.with_name(path.name + ".meta.json"), path
         )
@@ -1418,7 +1476,12 @@ def _raw_provenance(data_dir: Path) -> dict:
         else {}
     )
     hoopr_seasons = []
-    for path in sorted((raw_dir / "hoopr").glob("nba_schedule_*.parquet")):
+    hoopr_paths = _paired_raw_paths(
+        raw_dir / "hoopr",
+        "nba_schedule_*.parquet",
+        "nba_schedule_*.parquet.meta.json",
+    )
+    for path in hoopr_paths:
         season = int(path.stem.removeprefix("nba_schedule_"))
         hoopr._read_pinned_cache(path, season)
         metadata = _load_metadata(
@@ -1433,7 +1496,12 @@ def _raw_provenance(data_dir: Path) -> dict:
         })
 
     bref_pages = []
-    for path in sorted((raw_dir / "bref").glob("NBA_*_games-*.html")):
+    bref_paths = _paired_raw_paths(
+        raw_dir / "bref",
+        "NBA_*_games-*.html",
+        "NBA_*_games-*.html.meta.json",
+    )
+    for path in bref_paths:
         metadata = _load_metadata(
             path.with_name(path.name + ".meta.json"), path
         )

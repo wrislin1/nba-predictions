@@ -1,0 +1,5 @@
+{
+  "repository": "sportsdataverse/hoopR-nba-data",
+  "commit": "50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143",
+  "seasons": [2020, 2021, 2022, 2023, 2024, 2025, 2026]
+}
