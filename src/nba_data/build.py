@@ -138,6 +138,11 @@ CAPACITY_EXCEPTION_PREFIX = "ATTENDANCE_EXCEPTION: "
 ATTENDANCE_COVERAGE_EXEMPTION_REASON = (
     "no_fan_bubble_missing_attendance"
 )
+ATTENDANCE_COVERAGE_EXEMPT_GAME_IDS = frozenset(
+    f"002190{sequence:04d}"
+    for sequence in range(1231, 1319)
+    if sequence != 1233
+)
 
 
 class ValidationError(ValueError):
@@ -188,6 +193,9 @@ def load_game_corrections(path: Path) -> pd.DataFrame:
         & ~team_scope
         & corrections["field"].eq("neutral_site")
         & corrections["corrected_value"].str.lower().eq("true")
+        & corrections["game_id"].isin(
+            ATTENDANCE_COVERAGE_EXEMPT_GAME_IDS
+        )
     )
     if (has_exemption & ~valid_exemption).any():
         raise ValidationError(
@@ -604,6 +612,9 @@ def _validate(
             exemption_reason.eq(
                 ATTENDANCE_COVERAGE_EXEMPTION_REASON
             ).fillna(False)
+            & modern["game_id"].isin(
+                ATTENDANCE_COVERAGE_EXEMPT_GAME_IDS
+            )
             & modern["attendance_source"].eq("bref")
             & modern["attendance"].isna()
         )

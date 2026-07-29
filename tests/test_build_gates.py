@@ -263,6 +263,29 @@ def test_load_game_corrections_rejects_invalid_exemption_assignment(
         build.load_game_corrections(path)
 
 
+def test_load_game_corrections_rejects_unapproved_exemption_game(
+    tmp_path,
+):
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0021900002",
+        "franchise_id": pd.NA,
+        "field": "neutral_site",
+        "corrected_value": "true",
+        "source_url": "https://www.nba.com/news/neutral-game",
+        "note": "Official unrelated neutral-site game.",
+        "attendance_coverage_exemption_reason": (
+            "no_fan_bubble_missing_attendance"
+        ),
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="invalid attendance coverage exemption assignment",
+    ):
+        build.load_game_corrections(path)
+
+
 def test_apply_game_corrections_is_keyed_and_preserves_inputs():
     team_games = one_team_game_panel()
     games = one_valid_game()
@@ -1022,7 +1045,9 @@ def test_unrelated_neutral_correction_is_not_coverage_exempt():
         "corrected_value": "true",
         "source_url": "https://www.nba.com/news/neutral-game",
         "note": "Official neutral-site game unrelated to the no-fan bubble.",
-        "attendance_coverage_exemption_reason": pd.NA,
+        "attendance_coverage_exemption_reason": (
+            "no_fan_bubble_missing_attendance"
+        ),
     }])
     games = build.apply_game_corrections(
         pd.concat([known, missing], ignore_index=True),
