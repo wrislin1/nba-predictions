@@ -27,7 +27,7 @@ rows, one `is_home=true` row and one `false` row.
 |---|---|---|
 | game_id | large_string | Canonical NBA Stats `GAME_ID` |
 | season | int64 | Ending season |
-| source | large_string | `legacy` or `nba_stats` |
+| source | large_string | `nba_stats` |
 | franchise_id, opponent_franchise_id | large_string | Stable franchise codes |
 | is_home | bool | NBA/schedule home designation |
 | game_date | date32[day] | Game date |
@@ -43,7 +43,7 @@ One paired game row, with final attendance, venue, and capacity enrichment.
 | game_id | large_string | Canonical NBA Stats `GAME_ID` |
 | espn_game_id | large_string nullable | hoopR/ESPN ID prefixed `espn-`; absent for legacy |
 | season | int64 | Ending season |
-| source | large_string | `legacy` or `nba_stats` |
+| source | large_string | `nba_stats` |
 | game_date | date32[day] | Canonical game date |
 | home_franchise_id, away_franchise_id | large_string | Stable franchise codes |
 | home_pts, away_pts | int64 | Final points |
@@ -91,9 +91,13 @@ attendance. Attendance more than 105% of capacity requires an explicit
 ## IDs, enrichment, and missingness
 
 NBA Stats supplies canonical modern box scores and `GAME_ID`; legacy rows keep
-their canonical NBA IDs. hoopR is schedule enrichment only: its ESPN game and
-venue IDs are distinct, prefixed `espn-`, and join through ending season, date,
-home franchise, and away franchise (with audited next-day reconciliation).
+their canonical NBA IDs. `source` identifies the statistical provider, so it
+is `nba_stats` for every published row. It does not identify the ingestion
+path: ending seasons 1984–2019 come through restored archived NBA Stats CSVs,
+while ending seasons 2020–2026 come through cached `LeagueGameFinder` JSON.
+hoopR is schedule enrichment only: its ESPN game and venue IDs are distinct,
+prefixed `espn-`, and join through ending season, date, home franchise, and
+away franchise (with audited next-day reconciliation).
 Every retained modern NBA game joins one hoopR schedule row. hoopR supplies
 `neutral_site`, venue ID/city, and ESPN attendance; basketball-reference is
 the attendance and arena source of record. Its arena wins when a matching,
@@ -107,15 +111,36 @@ Legacy attendance retains its historical selected value and source. The build
 enforces at least 95% b-ref join and selected known-attendance coverage per
 modern season; the manifest records the small audited no-fan-bubble exemption.
 
+The build rejects a game unless it has exactly two team rows, one winner, and
+`wl` agrees with the final score. Box-score values may be null when the source
+is blank, but a non-null value must be nonnegative. Makes may not exceed
+attempts, `oreb + dreb` must equal `reb`, and
+`2 * fgm + fg3m + ftm` must equal `pts`. Corrections never convert a blank
+legacy statistic to zero merely to satisfy an identity. A field is populated
+only when a historical box score supplies an exact value.
+
+`reference/game_corrections.csv` has a deliberately narrow scalar grammar.
+Team box values are canonical unsigned base-10 integers (`0`, or a nonzero
+digit followed by digits): signs, decimal points, leading zeroes, and
+whitespace are invalid. An attendance correction must be exactly blank, and a
+neutral-site correction must be exactly lowercase `true` or `false`. Every
+team-field correction carries its direct historical box-score URL and notes
+the canonical NBA game page used to identify the game.
+
 ## Sources, pins, and hashes
 
 All raw responses are gitignored under `data/raw/`; the manifest records their
 relative cache paths and SHA-256 values. The source roles are NBA Stats
 `LeagueGameFinder` (canonical modern box scores), pinned hoopR (schedule,
-neutral/venue/ESPN enrichment), basketball-reference (attendance/arena), and
-the two restored legacy inputs. hoopR is pinned to repository
+neutral/venue/ESPN enrichment), basketball-reference (attendance/arena and
+secondary exact historical reconciliation), and the two restored legacy
+inputs. hoopR is pinned to repository
 `sportsdataverse/hoopR-nba-data` commit
 `50fe7e429c6b5bcbe62e7a56d19afe5a80e6e143`, never a mutable branch.
+Each cached hoopR body must also have checksum-valid sidecar metadata with
+exact provider `hoopr`, its exact integer ending season, and that exact
+upstream commit. The manifest records the verified binding on every season
+entry rather than relying only on the global pin.
 
 | Source | Ending season(s) / path | SHA-256 |
 |---|---|---|
@@ -150,10 +175,15 @@ ledger is:
 2026 april:486496f9f87c557e055184495624ad5be3585f3bb1e9642cc231a55cfbff1531 december:10cdb78803185010746a929c58ea8929b914f74e42ac1b0566fbbf0f976cac5d february:9ce90ce8173c1008bccf1180f721fdc21268297407568620b7df2feb9057f190 january:b09ba48c4e1a30439c7f6133ce4d06651c937ce20b25509a56320844259634a0 march:49ecc2eef0db978dacc9df4760689fe09e9e608ae32aa0ed9a1cfbf5543da1c7 november:e66964624aebbc8b02cb401f1c1b30bf6b9f3400ce68adacdcf57a8555183ca0 october:5e19280b0f68153fee40315f8071a1115278ca15a369de8c61d07abbf4655a65
 ```
 
+The 23 checksum-verified historical reconciliation pages are under
+`raw/reconciliation/bref/`. Their game ID, direct immutable URL, relative
+path, and SHA-256 are recorded in
+`sources.basketball_reference.historical_boxscores` in the manifest.
+
 Curated-reference hashes: `reference/franchises.csv`
 `aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb`;
 `reference/game_corrections.csv`
-`cb685a049ecdda635011bdc4e737a213dcd8337a9d708de0e8c2d2e0410cd3be`;
+`4fe5af540239bb1dfb1b08b99e256dfd88a8fe05531c092256a633a19c84e6e4`;
 `reference/hoopr_snapshot.json`
 `167dfaa6e1d949e9f4812687ff74f2316610b1f016b070fd5bb4151e857ff1dc`;
 and `reference/venue_capacities.csv`
@@ -162,7 +192,7 @@ The manifest also supplies every b-ref page's immutable URL. Print its
 complete machine-readable ledger without touching the raw cache with:
 
 ```bash
-jq '.sources.basketball_reference.pages, .references' data/parquet/build_manifest.json
+jq '.sources.basketball_reference, .references' data/parquet/build_manifest.json
 ```
 
 ## Commands and safe source access
