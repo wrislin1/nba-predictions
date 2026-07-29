@@ -1,5 +1,8 @@
 import datetime
+import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -10,6 +13,14 @@ from nba_data import cache, historical_bref
 
 
 FIXTURES = Path(__file__).parent / "fixtures/historical_bref"
+_AUDIT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts/audit_historical_source.py"
+)
+_AUDIT_SPEC = importlib.util.spec_from_file_location(
+    "audit_historical_source", _AUDIT_PATH
+)
+audit_historical_source = importlib.util.module_from_spec(_AUDIT_SPEC)
+_AUDIT_SPEC.loader.exec_module(audit_historical_source)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +232,167 @@ def publish_season(tmp_path, season, *, omit_month=False):
             {},
             lambda path: historical_bref.validate_month(path, season, page.url),
         )
+
+
+FIXTURE_SPIKE_MONTH = {1947: "november", 1960: "october", 1983: "october"}
+
+
+def publish_historical_fixture_season(raw_dir, *, season):
+    league = historical_bref.league_for_season(season)
+    month = FIXTURE_SPIKE_MONTH[season]
+    cache_dir = raw_dir / "historical_bref"
+    month_name = f"{league}_{season}_games-{month}.html"
+    index_payload = (
+        f'<html><body><a href="/leagues/{month_name}">'
+        f"{month.title()}</a></body></html>"
+    ).encode()
+    cache.publish_bytes(
+        cache_dir / historical_bref.index_filename(season),
+        index_payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_index",
+            "league": league,
+            "season": season,
+            "url": historical_bref.index_url(season),
+        },
+        lambda path: historical_bref.validate_index(path, season),
+    )
+    month_url = f"{historical_bref.BASE_URL}/leagues/{month_name}"
+    month_payload = (FIXTURES / month_name).read_bytes().replace(
+        b"</tbody>",
+        b"<tr class='thead'><th>Playoffs</th></tr></tbody>",
+    )
+    cache.publish_bytes(
+        cache_dir / month_name,
+        month_payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": league,
+            "season": season,
+            "month": month,
+            "url": month_url,
+        },
+        lambda path: historical_bref.validate_month(path, season, month_url),
+    )
+
+
+def test_audit_reports_source_shape_and_ambiguities(tmp_path):
+    publish_historical_fixture_season(tmp_path, season=1947)
+
+    audit = audit_historical_source.audit_season(tmp_path, 1947)
+
+    assert audit["season"] == 1947
+    assert audit["league"] == "BAA"
+    assert audit["games"] == 3
+    assert audit["boxscore_links"] == 2
+    assert audit["attendance"]["missing"] == 1
+    assert audit["site_status"]["unknown"] == 1
+    assert audit["teams"] == sorted(audit["teams"])
+
+
+def test_audit_renderer_documents_source_boundaries_and_missingness():
+    audits = [{
+        "season": 1947,
+        "league": "BAA",
+        "games": 331,
+        "date_min": "1946-11-01",
+        "date_max": "1947-04-01",
+        "teams": ["Boston Celtics", "New York Knicks"],
+        "boxscore_links": 330,
+        "venue_reported": 0,
+        "attendance": {"missing": 331},
+        "site_status": {"home": 331},
+        "overtime_markers": {"": 300, "OT": 31},
+        "nonblank_remarks": [],
+        "schedule_urls": [
+            "https://www.basketball-reference.com/leagues/BAA_1947_games-november.html"
+        ],
+    }]
+
+    rendered = audit_historical_source.render_markdown(audits)
+
+    assert "games-playoffs.html` is excluded" in rendered
+    assert "exact `Playoffs` separator" in rendered
+    assert "1947 uses a documented first-playoff-game fallback" in rendered
+    assert "### 1947 BAA" in rendered
+    assert "- Games: 331" in rendered
+    assert "## Schema and statistic keys" in rendered
+    assert "blank attendance | null + `missing`" in rendered
+    assert "other remarks | `home` / `neutral` / `unknown`" in rendered
+
+
+def test_audit_cli_renders_the_cached_spike_without_network(tmp_path):
+    for season in (1947, 1960, 1983):
+        publish_historical_fixture_season(tmp_path, season=season)
+    output = tmp_path / "audit.md"
+
+    subprocess.run([
+        sys.executable,
+        str(_AUDIT_PATH),
+        "--raw-dir",
+        str(tmp_path),
+        "--output",
+        str(output),
+    ], check=True)
+
+    rendered = output.read_text(encoding="utf-8")
+    assert "### 1947 BAA" in rendered
+    assert "### 1960 NBA" in rendered
+    assert "### 1983 NBA" in rendered
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("season", "expected_games", "expected_teams"),
+    [
+        (
+            1947,
+            331,
+            [
+                "Boston Celtics", "Chicago Stags", "Cleveland Rebels",
+                "Detroit Falcons", "New York Knicks", "Philadelphia Warriors",
+                "Pittsburgh Ironmen", "Providence Steamrollers",
+                "St. Louis Bombers", "Toronto Huskies", "Washington Capitols",
+            ],
+        ),
+        (
+            1960,
+            300,
+            [
+                "Boston Celtics", "Cincinnati Royals", "Detroit Pistons",
+                "Minneapolis Lakers", "New York Knicks", "Philadelphia Warriors",
+                "St. Louis Hawks", "Syracuse Nationals",
+            ],
+        ),
+        (
+            1983,
+            943,
+            [
+                "Atlanta Hawks", "Boston Celtics", "Chicago Bulls",
+                "Cleveland Cavaliers", "Dallas Mavericks", "Denver Nuggets",
+                "Detroit Pistons", "Golden State Warriors", "Houston Rockets",
+                "Indiana Pacers", "Kansas City Kings", "Los Angeles Lakers",
+                "Milwaukee Bucks", "New Jersey Nets", "New York Knicks",
+                "Philadelphia 76ers", "Phoenix Suns", "Portland Trail Blazers",
+                "San Antonio Spurs", "San Diego Clippers", "Seattle SuperSonics",
+                "Utah Jazz", "Washington Bullets",
+            ],
+        ),
+    ],
+)
+def test_spike_season_game_counts_and_source_team_names(
+    season, expected_games, expected_teams
+):
+    frame = historical_bref.load_season(Path("data/raw"), season)
+
+    assert len(frame) == expected_games
+    assert frame["season"].eq(season).all()
+    assert frame["game_id"].is_unique
+    assert sorted(
+        set(frame["away_team_name"]) | set(frame["home_team_name"])
+    ) == expected_teams
 
 
 def test_load_season_rejects_missing_month_pair(tmp_path):
