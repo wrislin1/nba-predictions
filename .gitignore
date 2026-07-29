@@ -1,0 +1,14 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.serena/
+.DS_Store
+desktop.ini
+
+data/raw/
+nba-stats/
+*.duckdb
