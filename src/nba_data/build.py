@@ -14,14 +14,22 @@ JOIN_KEY = [
     "away_franchise_id",
 ]
 EXPECTED_LEGACY_GAMES = 40_828
-BOX_STATS = [
+TEAM_GAME_COLUMNS = [
+    "game_id",
+    "season",
+    "source",
+    "franchise_id",
+    "opponent_franchise_id",
+    "is_home",
+    "game_date",
+    "wl",
     "pts",
-    "fgm",
     "fga",
-    "fg3m",
+    "fgm",
     "fg3a",
-    "ftm",
+    "fg3m",
     "fta",
+    "ftm",
     "oreb",
     "dreb",
     "reb",
@@ -31,6 +39,7 @@ BOX_STATS = [
     "tov",
     "pf",
 ]
+BOX_STATS = TEAM_GAME_COLUMNS[8:]
 GAME_COLUMNS = [
     "game_id",
     "espn_game_id",
@@ -54,10 +63,62 @@ GAME_COLUMNS = [
     "attendance_status",
     "attendance_source",
 ]
+TEAM_GAME_DTYPES = {
+    "game_id": "string",
+    "season": "int64",
+    "source": "string",
+    "franchise_id": "string",
+    "opponent_franchise_id": "string",
+    "is_home": "bool",
+    "wl": "int64",
+    **{column: "Int64" for column in BOX_STATS},
+}
+GAME_DTYPES = {
+    "game_id": "string",
+    "espn_game_id": "string",
+    "season": "int64",
+    "source": "string",
+    "home_franchise_id": "string",
+    "away_franchise_id": "string",
+    "home_pts": "int64",
+    "away_pts": "int64",
+    "neutral_site": "bool",
+    "neutral_site_source": "string",
+    "venue_id": "string",
+    "venue_name": "string",
+    "venue_city": "string",
+    "venue_source": "string",
+    "attendance_bref": "Int64",
+    "attendance_espn": "Int64",
+    "attendance": "Int64",
+    "bref_row_matched": "bool",
+    "attendance_status": "string",
+    "attendance_source": "string",
+}
+ATTENDANCE_STATUSES = {
+    "reported_zero",
+    "reported_positive",
+    "missing",
+}
+ATTENDANCE_SOURCES = {"bref", "espn", "legacy"}
 
 
 class ValidationError(ValueError):
     """The assembled panel failed one or more publication gates."""
+
+
+def _enforce_schema(
+    frame: pd.DataFrame,
+    columns: list[str],
+    dtypes: dict[str, str],
+) -> pd.DataFrame:
+    output = frame.loc[:, columns].copy()
+    output["game_date"] = pd.to_datetime(
+        output["game_date"], errors="raise"
+    ).dt.date
+    for column, dtype in dtypes.items():
+        output[column] = output[column].astype(dtype)
+    return output
 
 
 def pair_team_games(team_games: pd.DataFrame) -> pd.DataFrame:
@@ -378,6 +439,48 @@ def validate(
             f"{games.loc[bad_zero, 'game_id'].head().tolist()}"
         )
 
+    unsupported_status = ~games["attendance_status"].isin(
+        ATTENDANCE_STATUSES
+    )
+    if unsupported_status.any():
+        values = sorted(
+            games.loc[unsupported_status, "attendance_status"]
+            .astype("string")
+            .fillna("<missing>")
+            .unique()
+            .tolist()
+        )
+        errors.append(f"unsupported attendance_status: {values}")
+
+    unsupported_source = ~games["attendance_source"].isin(
+        ATTENDANCE_SOURCES
+    )
+    if unsupported_source.any():
+        values = sorted(
+            games.loc[unsupported_source, "attendance_source"]
+            .astype("string")
+            .fillna("<missing>")
+            .unique()
+            .tolist()
+        )
+        errors.append(f"unsupported attendance_source: {values}")
+
+    expected_status = games["attendance"].map(
+        lambda value: (
+            "missing"
+            if pd.isna(value)
+            else ("reported_zero" if value == 0 else "reported_positive")
+        )
+    )
+    inconsistent_status = games["attendance_status"].ne(
+        expected_status
+    ).fillna(True)
+    if inconsistent_status.any():
+        errors.append(
+            "attendance status/value disagreement: "
+            f"{games.loc[inconsistent_status, 'game_id'].head().tolist()}"
+        )
+
     low_bref = {
         season: coverage
         for season, coverage in bref_join_coverage.items()
@@ -397,17 +500,18 @@ def validate(
             f"{low_selected}"
         )
 
+    primary_non_neutral = (
+        games["season"].between(2020, 2022)
+        & ~games["neutral_site"]
+    )
+    missing_capacity = primary_non_neutral
     if "capacity" in games:
-        missing_capacity = (
-            games["season"].between(2020, 2022)
-            & ~games["neutral_site"]
-            & games["capacity"].isna()
+        missing_capacity &= games["capacity"].isna()
+    if missing_capacity.any():
+        errors.append(
+            "non-neutral 2020..2022 venue missing capacity: "
+            f"{games.loc[missing_capacity, 'game_id'].head().tolist()}"
         )
-        if missing_capacity.any():
-            errors.append(
-                "non-neutral 2020..2022 venue missing capacity: "
-                f"{games.loc[missing_capacity, 'game_id'].head().tolist()}"
-            )
 
     if errors:
         raise ValidationError("; ".join(errors))
@@ -460,18 +564,26 @@ def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
             )
         )
 
-    team_games = pd.concat(
-        [legacy_team_games, *modern_team_frames],
-        ignore_index=True,
+    team_games = _enforce_schema(
+        pd.concat(
+            [legacy_team_games, *modern_team_frames],
+            ignore_index=True,
+        ),
+        TEAM_GAME_COLUMNS,
+        TEAM_GAME_DTYPES,
     ).sort_values(
         ["season", "game_date", "game_id", "is_home"],
         ascending=[True, True, True, False],
         kind="stable",
     ).reset_index(drop=True)
-    games = pd.concat(
-        [legacy_games, *modern_game_frames],
-        ignore_index=True,
-    )[GAME_COLUMNS].sort_values(
+    games = _enforce_schema(
+        pd.concat(
+            [legacy_games, *modern_game_frames],
+            ignore_index=True,
+        ),
+        GAME_COLUMNS,
+        GAME_DTYPES,
+    ).sort_values(
         ["season", "game_date", "game_id"],
         kind="stable",
     ).reset_index(drop=True)

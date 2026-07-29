@@ -419,6 +419,69 @@ def test_validation_rejects_non_neutral_primary_venue_without_capacity():
     )
 
 
+def test_validation_rejects_primary_venue_when_capacity_column_is_absent():
+    team_games = one_team_game_panel(season=2021)
+    games = one_valid_game(season=2021).drop(columns="capacity")
+    team_games.loc[:, "game_date"] = datetime.date(2020, 12, 22)
+    games.loc[0, "game_date"] = datetime.date(2020, 12, 22)
+
+    assert_invalid(
+        team_games,
+        games,
+        {2021: 1},
+        "non-neutral 2020..2022 venue missing capacity",
+    )
+
+
+def test_validation_rejects_unknown_attendance_status():
+    games = one_valid_game()
+    games.loc[0, "attendance_status"] = "bogus"
+
+    assert_invalid(
+        one_team_game_panel(),
+        games,
+        {2023: 1},
+        "unsupported attendance_status",
+    )
+
+
+def test_validation_rejects_unknown_attendance_source():
+    games = one_valid_game()
+    games.loc[0, "attendance_source"] = "bogus"
+
+    assert_invalid(
+        one_team_game_panel(),
+        games,
+        {2023: 1},
+        "unsupported attendance_source",
+    )
+
+
+@pytest.mark.parametrize(
+    ("attendance", "status"),
+    [
+        pytest.param(0, "reported_positive", id="zero-as-positive"),
+        pytest.param(100, "reported_zero", id="positive-as-zero"),
+        pytest.param(pd.NA, "reported_positive", id="missing-as-positive"),
+        pytest.param(100, "missing", id="positive-as-missing"),
+    ],
+)
+def test_validation_rejects_attendance_status_value_disagreement(
+    attendance, status
+):
+    team_games = one_team_game_panel(season=2021)
+    games = one_valid_game(season=2021)
+    games.loc[0, "attendance"] = attendance
+    games.loc[0, "attendance_status"] = status
+
+    assert_invalid(
+        team_games,
+        games,
+        {2021: 1},
+        "attendance status/value disagreement",
+    )
+
+
 def test_validation_accumulates_all_diagnostics_before_raising():
     games = pd.concat([one_valid_game(), one_valid_game()], ignore_index=True)
     games.loc[:, ["home_pts", "away_pts"]] = [99, 99]
@@ -462,7 +525,7 @@ def test_validation_returns_literal_coverage_report():
     }
 
 
-def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
+def stub_one_game_assembly(monkeypatch):
     legacy_team_games = one_team_game_panel(
         game_id="0021800001", season=2019
     )
@@ -496,6 +559,10 @@ def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
         lambda raw_dir, season: one_bref_game(),
     )
 
+
+def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
+    stub_one_game_assembly(monkeypatch)
+
     team_games, games, report = build.assemble(tmp_path)
 
     assert team_games["game_id"].tolist() == [
@@ -509,6 +576,118 @@ def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
         {"game_id": "0022000001", "attendance_source": "bref"},
     ]
     assert report["totals"] == {"games": 2, "team_games": 4}
+
+
+def test_assemble_enforces_exact_output_columns_and_dtypes(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch)
+
+    team_games, games, _ = build.assemble(tmp_path)
+
+    assert team_games.columns.tolist() == [
+        "game_id",
+        "season",
+        "source",
+        "franchise_id",
+        "opponent_franchise_id",
+        "is_home",
+        "game_date",
+        "wl",
+        "pts",
+        "fga",
+        "fgm",
+        "fg3a",
+        "fg3m",
+        "fta",
+        "ftm",
+        "oreb",
+        "dreb",
+        "reb",
+        "ast",
+        "stl",
+        "blk",
+        "tov",
+        "pf",
+    ]
+    assert team_games.dtypes.astype(str).to_dict() == {
+        "game_id": "string",
+        "season": "int64",
+        "source": "string",
+        "franchise_id": "string",
+        "opponent_franchise_id": "string",
+        "is_home": "bool",
+        "game_date": "object",
+        "wl": "int64",
+        "pts": "Int64",
+        "fga": "Int64",
+        "fgm": "Int64",
+        "fg3a": "Int64",
+        "fg3m": "Int64",
+        "fta": "Int64",
+        "ftm": "Int64",
+        "oreb": "Int64",
+        "dreb": "Int64",
+        "reb": "Int64",
+        "ast": "Int64",
+        "stl": "Int64",
+        "blk": "Int64",
+        "tov": "Int64",
+        "pf": "Int64",
+    }
+    assert games.columns.tolist() == [
+        "game_id",
+        "espn_game_id",
+        "season",
+        "source",
+        "game_date",
+        "home_franchise_id",
+        "away_franchise_id",
+        "home_pts",
+        "away_pts",
+        "neutral_site",
+        "neutral_site_source",
+        "venue_id",
+        "venue_name",
+        "venue_city",
+        "venue_source",
+        "attendance_bref",
+        "attendance_espn",
+        "attendance",
+        "bref_row_matched",
+        "attendance_status",
+        "attendance_source",
+    ]
+    assert games.dtypes.astype(str).to_dict() == {
+        "game_id": "string",
+        "espn_game_id": "string",
+        "season": "int64",
+        "source": "string",
+        "game_date": "object",
+        "home_franchise_id": "string",
+        "away_franchise_id": "string",
+        "home_pts": "int64",
+        "away_pts": "int64",
+        "neutral_site": "bool",
+        "neutral_site_source": "string",
+        "venue_id": "string",
+        "venue_name": "string",
+        "venue_city": "string",
+        "venue_source": "string",
+        "attendance_bref": "Int64",
+        "attendance_espn": "Int64",
+        "attendance": "Int64",
+        "bref_row_matched": "bool",
+        "attendance_status": "string",
+        "attendance_source": "string",
+    }
+    assert all(
+        isinstance(value, datetime.date)
+        for value in team_games["game_date"]
+    )
+    assert all(
+        isinstance(value, datetime.date) for value in games["game_date"]
+    )
 
 
 def test_write_venue_inventory_reports_non_covid_observed_limits(
