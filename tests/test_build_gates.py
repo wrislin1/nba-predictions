@@ -1,4 +1,5 @@
 import datetime
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -13,6 +14,7 @@ CORRECTION_COLUMNS = [
     "corrected_value",
     "source_url",
     "note",
+    "attendance_coverage_exemption_reason",
 ]
 CAPACITY_COLUMNS = [
     "venue_id",
@@ -194,6 +196,73 @@ def test_load_game_corrections_requires_unique_provenance_backed_rows(
         build.load_game_corrections(path)
 
 
+def test_load_game_corrections_accepts_explicit_no_fan_exemption_reason(
+    tmp_path,
+):
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0021901231",
+        "franchise_id": pd.NA,
+        "field": "neutral_site",
+        "corrected_value": "true",
+        "source_url": "https://www.nba.com/news/restart",
+        "note": "Official no-fan single-site bubble game.",
+        "attendance_coverage_exemption_reason": (
+            "no_fan_bubble_missing_attendance"
+        ),
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    loaded = build.load_game_corrections(path)
+
+    assert loaded.iloc[0][
+        "attendance_coverage_exemption_reason"
+    ] == "no_fan_bubble_missing_attendance"
+
+
+@pytest.mark.parametrize(
+    ("field", "corrected_value", "reason"),
+    [
+        pytest.param(
+            "neutral_site",
+            "true",
+            "weather_delay",
+            id="unsupported-reason",
+        ),
+        pytest.param(
+            "attendance",
+            pd.NA,
+            "no_fan_bubble_missing_attendance",
+            id="wrong-field",
+        ),
+        pytest.param(
+            "neutral_site",
+            "false",
+            "no_fan_bubble_missing_attendance",
+            id="non-neutral-value",
+        ),
+    ],
+)
+def test_load_game_corrections_rejects_invalid_exemption_assignment(
+    tmp_path, field, corrected_value, reason
+):
+    path = tmp_path / "game_corrections.csv"
+    pd.DataFrame([{
+        "game_id": "0021901231",
+        "franchise_id": pd.NA,
+        "field": field,
+        "corrected_value": corrected_value,
+        "source_url": "https://www.nba.com/news/restart",
+        "note": "Source-backed correction.",
+        "attendance_coverage_exemption_reason": reason,
+    }], columns=CORRECTION_COLUMNS).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="invalid attendance coverage exemption assignment",
+    ):
+        build.load_game_corrections(path)
+
+
 def test_apply_game_corrections_is_keyed_and_preserves_inputs():
     team_games = one_team_game_panel()
     games = one_valid_game()
@@ -223,6 +292,9 @@ def test_apply_game_corrections_is_keyed_and_preserves_inputs():
             "corrected_value": "true",
             "source_url": "https://www.nba.com/news/restart",
             "note": "Official no-fan single-site bubble game.",
+            "attendance_coverage_exemption_reason": (
+                "no_fan_bubble_missing_attendance"
+            ),
         },
     ], columns=CORRECTION_COLUMNS)
 
@@ -240,7 +312,12 @@ def test_apply_game_corrections_is_keyed_and_preserves_inputs():
     assert corrected_game["attendance_status"] == "missing"
     assert corrected_game["neutral_site"] == True
     assert corrected_game["neutral_site_source"] == (
-        "game_correction:no_fan_bubble"
+        "game_correction:neutral_site"
+    )
+    assert corrected_game[
+        "attendance_coverage_exemption_reason"
+    ] == (
+        "no_fan_bubble_missing_attendance"
     )
     pd.testing.assert_frame_equal(team_games, original_team_games)
     pd.testing.assert_frame_equal(games, original_games)
@@ -496,14 +573,78 @@ def test_over_capacity_requires_documented_configuration_exception():
 
     documented = venue | {
         "capacity_note": (
-            "Standing-room configuration documented for this game era."
+            "ATTENDANCE_EXCEPTION: Standing-room configuration "
+            "documented for this game era."
         )
     }
     attached = build.attach_capacity(
         game, pd.DataFrame([documented])
     )
     assert attached.iloc[0]["capacity_note"] == (
-        "Standing-room configuration documented for this game era."
+        "ATTENDANCE_EXCEPTION: Standing-room configuration "
+        "documented for this game era."
+    )
+
+
+def test_over_capacity_rejects_unrelated_nonblank_note():
+    game = pd.DataFrame([{
+        "game_id": "0022000001",
+        "season": 2021,
+        "venue_id": "espn-17",
+        "home_franchise_id": "BKN",
+        "neutral_site": False,
+        "attendance": 18_000,
+    }])
+    venue = pd.DataFrame([{
+        "venue_id": "espn-17",
+        "franchise_id": "BKN",
+        "first_season": 2020,
+        "last_season": 2022,
+        "capacity": 17_000,
+        "capacity_source_url": "https://example.test/barclays",
+        "capacity_note": "NBA.com basketball seating capacity.",
+    }])
+
+    with pytest.raises(
+        build.ValidationError,
+        match="explicit configuration exception",
+    ):
+        build.attach_capacity(game, venue)
+
+
+@pytest.mark.integration
+def test_real_primary_capacity_exceptions_are_explicit():
+    data = Path(__file__).resolve().parents[1] / "data"
+    _, attached, report = build.assemble(data / "raw")
+    primary = (
+        attached["season"].between(2020, 2022)
+        & ~attached["neutral_site"]
+    )
+    over = (
+        primary
+        & attached["attendance"].notna()
+        & attached["attendance"].gt(attached["capacity"] * 1.05)
+    )
+
+    assert int(over.sum()) == 61
+    assert attached.loc[over, "capacity_note"].str.startswith(
+        "ATTENDANCE_EXCEPTION: "
+    ).all()
+    bubble = attached[
+        attached["game_id"].between("0021901231", "0021901318")
+    ]
+    explicit_zero = bubble[bubble["game_id"].eq("0021901233")].iloc[0]
+    assert len(bubble) == 88
+    assert bubble["neutral_site"].all()
+    assert (
+        bubble["attendance_coverage_exemption_reason"].notna().sum()
+        == 87
+    )
+    assert report["selected_attendance_exemptions"][2020] == 87
+    assert report["selected_attendance_eligible_denominator"][2020] == 972
+    assert explicit_zero["attendance"] == 0
+    assert pd.isna(
+        explicit_zero["attendance_coverage_exemption_reason"]
     )
 
 
@@ -808,13 +949,15 @@ def test_validation_exempts_only_missing_no_fan_bubble_attendance():
     missing.loc[0, [
         "neutral_site",
         "neutral_site_source",
+        "attendance_coverage_exemption_reason",
         "attendance_bref",
         "attendance_espn",
         "attendance",
         "attendance_status",
     ]] = [
         True,
-        "game_correction:no_fan_bubble",
+        "game_correction:neutral_site",
+        "no_fan_bubble_missing_attendance",
         pd.NA,
         0,
         pd.NA,
@@ -824,13 +967,15 @@ def test_validation_exempts_only_missing_no_fan_bubble_attendance():
     explicit_zero.loc[0, [
         "neutral_site",
         "neutral_site_source",
+        "attendance_coverage_exemption_reason",
         "attendance_bref",
         "attendance_espn",
         "attendance",
         "attendance_status",
     ]] = [
         True,
-        "game_correction:no_fan_bubble",
+        "game_correction:neutral_site",
+        pd.NA,
         0,
         0,
         0,
@@ -854,6 +999,46 @@ def test_validation_exempts_only_missing_no_fan_bubble_attendance():
     assert report["selected_attendance_eligible_denominator"][2020] == 1
     assert report["selected_attendance_exemptions"][2020] == 1
     assert report["selected_attendance_coverage"][2020] == 1.0
+
+
+def test_unrelated_neutral_correction_is_not_coverage_exempt():
+    known_id = "0021900001"
+    neutral_id = "0021900002"
+    team_games = pd.concat([
+        one_team_game_panel(game_id=known_id, season=2020),
+        one_team_game_panel(game_id=neutral_id, season=2020),
+    ], ignore_index=True)
+    known = one_valid_game(game_id=known_id, season=2020)
+    missing = one_valid_game(game_id=neutral_id, season=2020)
+    missing.loc[0, [
+        "attendance_bref",
+        "attendance",
+        "attendance_status",
+    ]] = [pd.NA, pd.NA, "missing"]
+    corrections = pd.DataFrame([{
+        "game_id": neutral_id,
+        "franchise_id": pd.NA,
+        "field": "neutral_site",
+        "corrected_value": "true",
+        "source_url": "https://www.nba.com/news/neutral-game",
+        "note": "Official neutral-site game unrelated to the no-fan bubble.",
+        "attendance_coverage_exemption_reason": pd.NA,
+    }])
+    games = build.apply_game_corrections(
+        pd.concat([known, missing], ignore_index=True),
+        corrections,
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match="selected known-attendance coverage below 95%",
+    ):
+        build.validate(
+            team_games,
+            games,
+            expected_counts={2020: 2},
+            expected_legacy=0,
+        )
 
 
 def test_validation_rejects_non_neutral_primary_venue_without_capacity():
@@ -1277,6 +1462,7 @@ def test_assemble_enforces_exact_output_columns_and_dtypes(
         "bref_row_matched",
         "attendance_status",
         "attendance_source",
+        "attendance_coverage_exemption_reason",
         "capacity",
         "capacity_source_url",
         "capacity_note",
@@ -1303,6 +1489,7 @@ def test_assemble_enforces_exact_output_columns_and_dtypes(
         "bref_row_matched": "bool",
         "attendance_status": "string",
         "attendance_source": "string",
+        "attendance_coverage_exemption_reason": "string",
         "capacity": "Int64",
         "capacity_source_url": "string",
         "capacity_note": "string",

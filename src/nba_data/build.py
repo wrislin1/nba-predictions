@@ -62,6 +62,7 @@ GAME_COLUMNS = [
     "bref_row_matched",
     "attendance_status",
     "attendance_source",
+    "attendance_coverage_exemption_reason",
 ]
 TEAM_GAME_DTYPES = {
     "game_id": "string",
@@ -94,6 +95,7 @@ GAME_DTYPES = {
     "bref_row_matched": "bool",
     "attendance_status": "string",
     "attendance_source": "string",
+    "attendance_coverage_exemption_reason": "string",
 }
 PUBLISHED_GAME_COLUMNS = GAME_COLUMNS + [
     "capacity",
@@ -119,6 +121,7 @@ CORRECTION_COLUMNS = [
     "corrected_value",
     "source_url",
     "note",
+    "attendance_coverage_exemption_reason",
 ]
 TEAM_CORRECTION_FIELDS = set(BOX_STATS) | {"pts"}
 GAME_CORRECTION_FIELDS = {"attendance", "neutral_site"}
@@ -131,6 +134,10 @@ CAPACITY_COLUMNS = [
     "capacity_source_url",
     "capacity_note",
 ]
+CAPACITY_EXCEPTION_PREFIX = "ATTENDANCE_EXCEPTION: "
+ATTENDANCE_COVERAGE_EXEMPTION_REASON = (
+    "no_fan_bubble_missing_attendance"
+)
 
 
 class ValidationError(ValueError):
@@ -170,6 +177,22 @@ def load_game_corrections(path: Path) -> pd.DataFrame:
     )
     if (invalid_team | invalid_game).any():
         raise ValidationError("invalid game correction field or scope")
+    exemption_reason = corrections[
+        "attendance_coverage_exemption_reason"
+    ]
+    has_exemption = exemption_reason.notna()
+    valid_exemption = (
+        exemption_reason.eq(
+            ATTENDANCE_COVERAGE_EXEMPTION_REASON
+        ).fillna(False)
+        & ~team_scope
+        & corrections["field"].eq("neutral_site")
+        & corrections["corrected_value"].str.lower().eq("true")
+    )
+    if (has_exemption & ~valid_exemption).any():
+        raise ValidationError(
+            "invalid attendance coverage exemption assignment"
+        )
     return corrections
 
 
@@ -284,13 +307,14 @@ def attach_capacity(
         & attached["attendance"].notna()
         & attached["attendance"].gt(attached["capacity"] * 1.05)
     )
-    undocumented = over & (
-        attached["capacity_note"].isna()
-        | attached["capacity_note"].str.strip().eq("").fillna(True)
+    undocumented = over & ~attached["capacity_note"].str.startswith(
+        CAPACITY_EXCEPTION_PREFIX,
+        na=False,
     )
     if undocumented.any():
         raise ValidationError(
-            "attendance above 105% of capacity without exception note: "
+            "attendance above 105% of capacity without explicit "
+            "configuration exception: "
             f"{attached.loc[undocumented, 'game_id'].head().tolist()}"
         )
     return attached
@@ -326,6 +350,9 @@ def apply_game_corrections(
 ) -> pd.DataFrame:
     """Apply exact game-scoped corrections without mutating inputs."""
     corrected = games.copy()
+    exemption_column = "attendance_coverage_exemption_reason"
+    if exemption_column not in corrected:
+        corrected[exemption_column] = pd.NA
     scoped = corrections[corrections["franchise_id"].isna()]
     for correction in scoped.itertuples(index=False):
         match = corrected["game_id"].eq(correction.game_id)
@@ -354,8 +381,14 @@ def apply_game_corrections(
             value = str(correction.corrected_value).lower() == "true"
             corrected.loc[match, "neutral_site"] = value
             corrected.loc[match, "neutral_site_source"] = (
-                "game_correction:no_fan_bubble"
+                "game_correction:neutral_site"
             )
+            corrected.loc[match, exemption_column] = getattr(
+                correction,
+                exemption_column,
+                pd.NA,
+            )
+    corrected[exemption_column] = corrected[exemption_column].astype("string")
     return corrected
 
 
@@ -563,10 +596,14 @@ def _validate(
         raw_selected_coverage[season] = (
             float(modern["attendance"].notna().mean()) if len(modern) else 0.0
         )
+        exemption_reason = modern.get(
+            "attendance_coverage_exemption_reason",
+            pd.Series(pd.NA, index=modern.index, dtype="string"),
+        )
         exempt = (
-            modern["neutral_site_source"].eq(
-                "game_correction:no_fan_bubble"
-            )
+            exemption_reason.eq(
+                ATTENDANCE_COVERAGE_EXEMPTION_REASON
+            ).fillna(False)
             & modern["attendance_source"].eq("bref")
             & modern["attendance"].isna()
         )

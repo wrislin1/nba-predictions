@@ -4,23 +4,23 @@ espn-1394,HOU,2020,2022,18055,https://www.nba.com/news/all-30-nba-arenas-by-team
 espn-1396,TOR,2021,2021,20500,https://en.wikipedia.org/wiki/Amalie_Arena,Historical secondary source used because the official venue page does not publish the 2021 basketball configuration; Raptors played at Amalie Arena in Tampa.
 espn-1823,WAS,2020,2022,20362,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity for Capital One Arena.
 espn-1824,BOS,2020,2022,18624,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity for TD Garden.
-espn-1827,ATL,2020,2022,16888,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 regular basketball capacity for State Farm Arena; reported attendance can include standing-room inventory.
+espn-1827,ATL,2020,2022,16888,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,ATTENDANCE_EXCEPTION: NBA.com 2021 regular basketball capacity for State Farm Arena; reported attendance can include standing-room inventory.
 espn-1830,NYK,2020,2022,19812,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity for Madison Square Garden.
 espn-1838,TOR,2020,2020,19800,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Scotiabank Arena.
 espn-1838,TOR,2021,2021,20500,https://en.wikipedia.org/wiki/Amalie_Arena,Historical secondary source used because the official venue page does not publish the 2021 basketball configuration; the ESPN venue identifier is stale for this Tampa home game.
 espn-1838,TOR,2022,2022,19800,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Scotiabank Arena after Toronto returned from Tampa.
 espn-1841,LAC,2020,2022,19068,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 Clippers basketball capacity at Staples Center.
 espn-1841,LAL,2020,2022,18977,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 Lakers basketball capacity at Staples Center.
-espn-1845,PHI,2020,2022,20155,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball seating capacity for Wells Fargo Center; reported attendance can include suite and standing-room inventory.
+espn-1845,PHI,2020,2022,20155,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,ATTENDANCE_EXCEPTION: NBA.com 2021 basketball seating capacity for Wells Fargo Center; reported attendance can include suite and standing-room inventory.
 espn-1847,CHI,2020,2022,20917,https://www.nba.com/bulls/tickets/seating?vm=r,Official Bulls seating page basketball capacity for United Center.
 espn-1847,MEM,2020,2020,17794,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com capacity for FedExForum; the single ESPN venue identifier is a source crosswalk anomaly.
 espn-1847,POR,2020,2020,19441,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 capacity for Moda Center; the single ESPN venue identifier is a source crosswalk anomaly.
 espn-1893,CHA,2020,2022,19077,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Spectrum Center.
 espn-1949,PHX,2020,2021,18055,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity before the later Footprint Center seating reconfiguration.
 espn-1949,PHX,2022,2022,17071,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity after the Footprint Center seating reconfiguration.
-espn-2029,MIN,2020,2022,18024,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball seating capacity for Target Center; reported attendance can include suite and standing-room inventory.
+espn-2029,MIN,2020,2022,18024,https://www.nba.com/news/all-30-nba-arenas-by-team,ATTENDANCE_EXCEPTION: NBA.com basketball seating capacity for Target Center; reported attendance can include suite and standing-room inventory.
 espn-2183,IND,2020,2022,17923,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Gainbridge Fieldhouse.
-espn-2559,ATL,2020,2020,16888,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com capacity for State Farm Arena; the single ESPN venue identifier is a source crosswalk anomaly and attendance can include standing room.
+espn-2559,ATL,2020,2020,16888,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,ATTENDANCE_EXCEPTION: NBA.com capacity for State Farm Arena; this one-game ESPN venue identifier is a source crosswalk alias and attendance can include standing room.
 espn-2559,LAC,2020,2020,19068,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com Clippers capacity at Staples Center; the single ESPN venue identifier is a source crosswalk anomaly.
 espn-2559,OKC,2020,2022,18203,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Paycom Center.
 espn-2559,PHX,2020,2020,18055,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com capacity for the Suns arena; the single ESPN venue identifier is a source crosswalk anomaly.
@@ -30,12 +30,12 @@ espn-3423,POR,2020,2022,19441,https://www.nba.com/news/where-nba-teams-stand-on-
 espn-3432,ORL,2020,2022,18846,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Amway Center now Kia Center.
 espn-3438,MIA,2020,2022,19600,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity for AmericanAirlines Arena.
 espn-3559,BKN,2020,2022,17732,https://www.nba.com/nets/news/feature/2021/05/18/nets-notes-brooklyn-tips-off-playoff-week-practices,Official Nets 2021 statement of Barclays Center basketball capacity.
-espn-516,DAL,2020,2022,19200,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball seating capacity for American Airlines Center; reported attendance can include suite and standing-room inventory.
+espn-516,DAL,2020,2022,19200,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,ATTENDANCE_EXCEPTION: NBA.com 2021 basketball seating capacity for American Airlines Center; reported attendance can include suite and standing-room inventory.
 espn-5310,SAC,2020,2022,17611,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Golden 1 Center.
-espn-5404,DET,2020,2022,20332,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball seating capacity for Little Caesars Arena; reported attendance can include suite and standing-room inventory.
-espn-5777,MIL,2020,2022,17341,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball seating capacity for Fiserv Forum; reported attendance can include suite and standing-room inventory.
+espn-5404,DET,2020,2022,20332,https://www.nba.com/news/all-30-nba-arenas-by-team,ATTENDANCE_EXCEPTION: NBA.com basketball seating capacity for Little Caesars Arena; reported attendance can include suite and standing-room inventory.
+espn-5777,MIL,2020,2022,17341,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,ATTENDANCE_EXCEPTION: NBA.com 2021 basketball seating capacity for Fiserv Forum; reported attendance can include suite and standing-room inventory.
 espn-6270,GSW,2020,2022,18064,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for Chase Center.
 espn-780,SAS,2020,2022,18354,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com basketball capacity for AT&T Center now Frost Bank Center.
 espn-892,DEN,2020,2022,19520,https://www.nba.com/news/where-nba-teams-stand-on-in-arena-attendance,NBA.com 2021 basketball capacity for Ball Arena.
 espn-985,GSW,2020,2020,18064,https://www.nba.com/news/all-30-nba-arenas-by-team,NBA.com capacity for Chase Center; the single ESPN venue identifier is a source crosswalk anomaly.
-espn-985,NOP,2020,2022,16867,https://cdn.nba.com/teams/uploads/sites/1610612740/2023/10/Pelicans-2324-Media-Guide.pdf,Official Pelicans media guide specifies the Pelicans seating configuration at Smoothie King Center; reported attendance can include suite and standing-room inventory.
+espn-985,NOP,2020,2022,16867,https://cdn.nba.com/teams/uploads/sites/1610612740/2023/10/Pelicans-2324-Media-Guide.pdf,ATTENDANCE_EXCEPTION: Official Pelicans media guide specifies the Pelicans seating configuration at Smoothie King Center; reported attendance can include suite and standing-room inventory.
