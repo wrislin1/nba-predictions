@@ -95,16 +95,268 @@ GAME_DTYPES = {
     "attendance_status": "string",
     "attendance_source": "string",
 }
+PUBLISHED_GAME_COLUMNS = GAME_COLUMNS + [
+    "capacity",
+    "capacity_source_url",
+    "capacity_note",
+]
+PUBLISHED_GAME_DTYPES = {
+    **GAME_DTYPES,
+    "capacity": "Int64",
+    "capacity_source_url": "string",
+    "capacity_note": "string",
+}
 ATTENDANCE_STATUSES = {
     "reported_zero",
     "reported_positive",
     "missing",
 }
 ATTENDANCE_SOURCES = {"bref", "espn", "legacy"}
+CORRECTION_COLUMNS = [
+    "game_id",
+    "franchise_id",
+    "field",
+    "corrected_value",
+    "source_url",
+    "note",
+]
+TEAM_CORRECTION_FIELDS = set(BOX_STATS) | {"pts"}
+GAME_CORRECTION_FIELDS = {"attendance", "neutral_site"}
+CAPACITY_COLUMNS = [
+    "venue_id",
+    "franchise_id",
+    "first_season",
+    "last_season",
+    "capacity",
+    "capacity_source_url",
+    "capacity_note",
+]
 
 
 class ValidationError(ValueError):
     """The assembled panel failed one or more publication gates."""
+
+
+def load_game_corrections(path: Path) -> pd.DataFrame:
+    """Load and validate auditable source-backed game corrections."""
+    corrections = pd.read_csv(path, dtype="string")
+    if corrections.columns.tolist() != CORRECTION_COLUMNS:
+        raise ValidationError(
+            "game correction columns must be "
+            f"{CORRECTION_COLUMNS}"
+        )
+    duplicate = corrections.duplicated(
+        ["game_id", "franchise_id", "field"], keep=False
+    )
+    if duplicate.any():
+        raise ValidationError(
+            "duplicate game correction: "
+            f"{corrections.loc[duplicate, 'game_id'].head().tolist()}"
+        )
+    valid_url = corrections["source_url"].str.startswith(
+        ("http://", "https://"), na=False
+    )
+    if not valid_url.all():
+        raise ValidationError("invalid correction source URL")
+    valid_note = corrections["note"].str.strip().ne("").fillna(False)
+    if not valid_note.all():
+        raise ValidationError("missing game correction note")
+    team_scope = corrections["franchise_id"].notna()
+    invalid_team = team_scope & ~corrections["field"].isin(
+        TEAM_CORRECTION_FIELDS
+    )
+    invalid_game = ~team_scope & ~corrections["field"].isin(
+        GAME_CORRECTION_FIELDS
+    )
+    if (invalid_team | invalid_game).any():
+        raise ValidationError("invalid game correction field or scope")
+    return corrections
+
+
+def load_venue_capacities(path: Path | None = None) -> pd.DataFrame:
+    """Load the curated season-aware basketball capacity reference."""
+    if path is None:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "data/reference/venue_capacities.csv"
+        )
+    venues = pd.read_csv(
+        path,
+        dtype={
+            "venue_id": "string",
+            "franchise_id": "string",
+            "capacity_source_url": "string",
+            "capacity_note": "string",
+        },
+    )
+    if venues.columns.tolist() != CAPACITY_COLUMNS:
+        raise ValidationError(
+            f"venue capacity columns must be {CAPACITY_COLUMNS}"
+        )
+    for column in ("first_season", "last_season", "capacity"):
+        venues[column] = pd.to_numeric(
+            venues[column], errors="raise"
+        ).astype("int64")
+    valid_url = venues["capacity_source_url"].str.startswith(
+        ("http://", "https://"), na=False
+    )
+    valid = (
+        venues["venue_id"].notna()
+        & venues["franchise_id"].notna()
+        & venues["capacity"].gt(0)
+        & venues["first_season"].le(venues["last_season"])
+        & valid_url
+    )
+    if not valid.all():
+        raise ValidationError(
+            "venue rows require positive capacity and direct source URL"
+        )
+    return venues
+
+
+def attach_capacity(
+    games: pd.DataFrame,
+    venues: pd.DataFrame,
+) -> pd.DataFrame:
+    """Attach exactly one inclusive season-aware capacity to primary games."""
+    attached = games.copy()
+    for column in (
+        "capacity",
+        "capacity_source_url",
+        "capacity_note",
+    ):
+        attached[column] = pd.NA
+    primary = (
+        attached["season"].between(2020, 2022)
+        & ~attached["neutral_site"]
+    )
+    targets = (
+        attached.loc[primary]
+        .drop(
+            columns=[
+                "capacity",
+                "capacity_source_url",
+                "capacity_note",
+            ]
+        )
+        .reset_index(names="_capacity_game_index")
+    )
+    candidates = targets.merge(
+        venues,
+        left_on=["venue_id", "home_franchise_id"],
+        right_on=["venue_id", "franchise_id"],
+        how="left",
+    )
+    in_era = (
+        candidates["first_season"].notna()
+        & candidates["season"].ge(candidates["first_season"])
+        & candidates["season"].le(candidates["last_season"])
+    )
+    resolved = candidates[in_era]
+    counts = (
+        resolved.groupby("_capacity_game_index")
+        .size()
+        .reindex(targets["_capacity_game_index"], fill_value=0)
+    )
+    bad = counts[counts.ne(1)]
+    if not bad.empty:
+        count = int(bad.iloc[0])
+        game_index = bad.index[0]
+        game_id = attached.loc[game_index, "game_id"]
+        raise ValidationError(
+            f"capacity reference resolved {count} rows: {game_id}"
+        )
+    selected = resolved.set_index("_capacity_game_index")
+    for column in (
+        "capacity",
+        "capacity_source_url",
+        "capacity_note",
+    ):
+        attached.loc[selected.index, column] = selected[column]
+    attached["capacity"] = attached["capacity"].astype("Int64")
+    attached["capacity_source_url"] = attached[
+        "capacity_source_url"
+    ].astype("string")
+    attached["capacity_note"] = attached["capacity_note"].astype("string")
+
+    over = (
+        primary
+        & attached["attendance"].notna()
+        & attached["attendance"].gt(attached["capacity"] * 1.05)
+    )
+    undocumented = over & (
+        attached["capacity_note"].isna()
+        | attached["capacity_note"].str.strip().eq("").fillna(True)
+    )
+    if undocumented.any():
+        raise ValidationError(
+            "attendance above 105% of capacity without exception note: "
+            f"{attached.loc[undocumented, 'game_id'].head().tolist()}"
+        )
+    return attached
+
+
+def apply_team_game_corrections(
+    team_games: pd.DataFrame,
+    corrections: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply exact franchise-scoped corrections without mutating inputs."""
+    corrected = team_games.copy()
+    scoped = corrections[corrections["franchise_id"].notna()]
+    for correction in scoped.itertuples(index=False):
+        match = (
+            corrected["game_id"].eq(correction.game_id)
+            & corrected["franchise_id"].eq(correction.franchise_id)
+        )
+        if int(match.sum()) != 1:
+            raise ValidationError(
+                "team game correction resolved "
+                f"{int(match.sum())} rows: "
+                f"{correction.game_id}/{correction.franchise_id}"
+            )
+        corrected.loc[match, correction.field] = int(
+            correction.corrected_value
+        )
+    return corrected
+
+
+def apply_game_corrections(
+    games: pd.DataFrame,
+    corrections: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply exact game-scoped corrections without mutating inputs."""
+    corrected = games.copy()
+    scoped = corrections[corrections["franchise_id"].isna()]
+    for correction in scoped.itertuples(index=False):
+        match = corrected["game_id"].eq(correction.game_id)
+        if int(match.sum()) != 1:
+            raise ValidationError(
+                "game correction resolved "
+                f"{int(match.sum())} rows: {correction.game_id}"
+            )
+        if correction.field == "attendance":
+            value = (
+                pd.NA
+                if pd.isna(correction.corrected_value)
+                else int(correction.corrected_value)
+            )
+            corrected.loc[match, "attendance"] = value
+            corrected.loc[match, "attendance_status"] = (
+                "missing"
+                if pd.isna(value)
+                else (
+                    "reported_zero"
+                    if value == 0
+                    else "reported_positive"
+                )
+            )
+        else:
+            value = str(correction.corrected_value).lower() == "true"
+            corrected.loc[match, "neutral_site"] = value
+            corrected.loc[match, "neutral_site_source"] = (
+                "game_correction:no_fan_bubble"
+            )
+    return corrected
 
 
 def _enforce_schema(
@@ -144,12 +396,76 @@ def pair_team_games(team_games: pd.DataFrame) -> pd.DataFrame:
     }).reset_index(drop=True)
 
 
+def _apply_schedule_home_designations(
+    team_games: pd.DataFrame,
+    schedule: pd.DataFrame,
+) -> pd.DataFrame:
+    """Repair neutral games whose NBA rows omit a home designation."""
+    corrected = team_games.copy()
+    counts = corrected.groupby("game_id")["is_home"].agg(["size", "sum"])
+    invalid_ids = counts[
+        (counts["size"] == 2) & (counts["sum"] != 1)
+    ].index
+    for game_id in invalid_ids:
+        rows = corrected[corrected["game_id"].eq(game_id)]
+        first = rows.iloc[0]
+        franchises = set(rows["franchise_id"])
+        candidates = schedule[
+            schedule["season"].eq(first["season"])
+            & schedule["game_date"].eq(first["game_date"])
+            & schedule["home_franchise_id"].isin(franchises)
+            & schedule["away_franchise_id"].isin(franchises)
+        ]
+        if len(candidates) == 1:
+            home = candidates.iloc[0]["home_franchise_id"]
+            corrected.loc[rows.index, "is_home"] = rows[
+                "franchise_id"
+            ].eq(home)
+    return corrected
+
+
+def _reconcile_next_day_schedule_dates(
+    nba_games: pd.DataFrame,
+    schedule: pd.DataFrame,
+) -> pd.DataFrame:
+    """Align uniquely identifiable next-day ESPN dates to NBA game dates."""
+    aligned = schedule.copy()
+    claimed = set(
+        aligned.reset_index(names="_schedule_index")
+        .merge(nba_games[JOIN_KEY], on=JOIN_KEY, how="inner")[
+            "_schedule_index"
+        ]
+        .tolist()
+    )
+    for game in nba_games.itertuples(index=False):
+        exact = pd.Series(True, index=aligned.index)
+        for column in JOIN_KEY:
+            exact &= aligned[column].eq(getattr(game, column))
+        if exact.any():
+            continue
+        candidate = (
+            aligned["season"].eq(game.season)
+            & aligned["home_franchise_id"].eq(game.home_franchise_id)
+            & aligned["away_franchise_id"].eq(game.away_franchise_id)
+            & pd.to_datetime(aligned["game_date"]).eq(
+                pd.Timestamp(game.game_date) + pd.Timedelta(days=1)
+            )
+            & ~aligned.index.isin(claimed)
+        )
+        matches = aligned.index[candidate]
+        if len(matches) == 1:
+            aligned.loc[matches[0], "game_date"] = game.game_date
+            claimed.add(matches[0])
+    return aligned
+
+
 def enrich_modern_games(
     nba_games: pd.DataFrame,
     schedule: pd.DataFrame,
     bref: pd.DataFrame,
 ) -> pd.DataFrame:
     """Add hoopR venue metadata and b-ref-first attendance to NBA games."""
+    schedule = _reconcile_next_day_schedule_dates(nba_games, schedule)
     enriched = nba_games.merge(
         schedule.rename(columns={"espn_attendance": "attendance_espn"}),
         on=JOIN_KEY,
@@ -235,14 +551,32 @@ def _validate(
     }
     bref_join_coverage = {}
     selected_coverage = {}
+    raw_selected_coverage = {}
+    selected_eligible_denominator = {}
+    selected_exemptions = {}
     agreement = {}
     for season in expected_counts:
         modern = games[games["season"].eq(season)]
         bref_join_coverage[season] = (
             float(modern["bref_row_matched"].mean()) if len(modern) else 0.0
         )
-        selected_coverage[season] = (
+        raw_selected_coverage[season] = (
             float(modern["attendance"].notna().mean()) if len(modern) else 0.0
+        )
+        exempt = (
+            modern["neutral_site_source"].eq(
+                "game_correction:no_fan_bubble"
+            )
+            & modern["attendance_source"].eq("bref")
+            & modern["attendance"].isna()
+        )
+        eligible = modern[~exempt]
+        selected_eligible_denominator[season] = len(eligible)
+        selected_exemptions[season] = int(exempt.sum())
+        selected_coverage[season] = (
+            float(eligible["attendance"].notna().mean())
+            if len(eligible)
+            else 0.0
         )
         compared = modern[
             modern["attendance_bref"].notna()
@@ -274,6 +608,11 @@ def _validate(
         "team_games_by_season": team_games_by_season,
         "bref_join_coverage": bref_join_coverage,
         "attendance_counts": attendance_counts,
+        "selected_attendance_raw_coverage": raw_selected_coverage,
+        "selected_attendance_eligible_denominator": (
+            selected_eligible_denominator
+        ),
+        "selected_attendance_exemptions": selected_exemptions,
         "selected_attendance_coverage": selected_coverage,
         "bref_espn_agreement": agreement,
     }
@@ -537,12 +876,29 @@ def validate(
 
 
 def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    corrections = load_game_corrections(
+        raw_dir.parent / "reference/game_corrections.csv"
+    )
+    team_corrections = corrections[
+        corrections["franchise_id"].notna()
+    ]
+    applied_team_corrections = 0
     legacy_path = (
         raw_dir / "legacy" / "nba-teams-1984-2019-ordered.csv"
     )
+    legacy_attendance_path = (
+        raw_dir / "legacy" / "league_boxscores_extra.csv"
+    )
     legacy_team_games = legacy.load_team_games(legacy_path)
+    scoped = team_corrections[
+        team_corrections["game_id"].isin(legacy_team_games["game_id"])
+    ]
+    legacy_team_games = apply_team_game_corrections(
+        legacy_team_games, scoped
+    )
+    applied_team_corrections += len(scoped)
     legacy_games = pair_team_games(legacy_team_games).merge(
-        legacy.load_attendance(legacy_path),
+        legacy.load_attendance(legacy_attendance_path),
         on="game_id",
         how="left",
         validate="one_to_one",
@@ -571,6 +927,18 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     for season in stats_nba.SEASONS:
         season_team_games = stats_nba.load_season(raw_dir, season)
         schedule, _ = hoopr.load_season(raw_dir, season)
+        scoped = team_corrections[
+            team_corrections["game_id"].isin(
+                season_team_games["game_id"]
+            )
+        ]
+        season_team_games = apply_team_game_corrections(
+            season_team_games, scoped
+        )
+        applied_team_corrections += len(scoped)
+        season_team_games = _apply_schedule_home_designations(
+            season_team_games, schedule
+        )
         attendance = bref.load_attendance(raw_dir, season)
         modern_team_frames.append(season_team_games)
         modern_game_frames.append(
@@ -581,6 +949,11 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
             )
         )
 
+    if applied_team_corrections != len(team_corrections):
+        raise ValidationError(
+            "team game correction resolved 0 rows: "
+            "one or more reference targets are absent"
+        )
     team_games = _enforce_schema(
         pd.concat(
             [legacy_team_games, *modern_team_frames],
@@ -593,11 +966,14 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         ascending=[True, True, True, False],
         kind="stable",
     ).reset_index(drop=True)
-    games = _enforce_schema(
+    combined_games = apply_game_corrections(
         pd.concat(
-            [legacy_games, *modern_game_frames],
-            ignore_index=True,
+            [legacy_games, *modern_game_frames], ignore_index=True
         ),
+        corrections[corrections["franchise_id"].isna()],
+    )
+    games = _enforce_schema(
+        combined_games,
         GAME_COLUMNS,
         GAME_DTYPES,
     ).sort_values(
@@ -610,6 +986,17 @@ def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
 def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Load, enrich, combine, and strictly validate the publication panels."""
     team_games, games = _assemble_frames(raw_dir)
+    games = attach_capacity(
+        games,
+        load_venue_capacities(
+            raw_dir.parent / "reference/venue_capacities.csv"
+        ),
+    )
+    games = _enforce_schema(
+        games,
+        PUBLISHED_GAME_COLUMNS,
+        PUBLISHED_GAME_DTYPES,
+    )
     report = validate(
         team_games,
         games,
@@ -634,9 +1021,8 @@ def _assemble_for_venue_inventory(
     return team_games, games, report
 
 
-def write_venue_inventory(data_dir: Path) -> Path:
-    """Write the venue-era observations needed to curate capacity data."""
-    _, games, _ = _assemble_for_venue_inventory(data_dir / "raw")
+def venue_inventory(games: pd.DataFrame) -> pd.DataFrame:
+    """Summarize observed venue eras without treating attendance as capacity."""
     post = games[games["venue_id"].notna()].copy()
     normal = post[
         ~post["neutral_site"]
@@ -659,9 +1045,16 @@ def write_venue_inventory(data_dir: Path) -> Path:
         games="size",
     )
     output = eras.join(observed, how="left").reset_index()
+    return output.sort_values(
+        ["home_franchise_id", "first_season", "venue_id"]
+    ).reset_index(drop=True)
+
+
+def write_venue_inventory(data_dir: Path) -> Path:
+    """Write the venue-era observations needed to curate capacity data."""
+    _, games, _ = _assemble_for_venue_inventory(data_dir / "raw")
+    output = venue_inventory(games)
     destination = data_dir / "raw/reports/venue_inventory.csv"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    output.sort_values(
-        ["home_franchise_id", "first_season", "venue_id"]
-    ).to_csv(destination, index=False)
+    output.to_csv(destination, index=False)
     return destination

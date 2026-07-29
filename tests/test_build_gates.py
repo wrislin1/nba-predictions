@@ -6,6 +6,25 @@ import pytest
 from nba_data import build
 
 
+CORRECTION_COLUMNS = [
+    "game_id",
+    "franchise_id",
+    "field",
+    "corrected_value",
+    "source_url",
+    "note",
+]
+CAPACITY_COLUMNS = [
+    "venue_id",
+    "franchise_id",
+    "first_season",
+    "last_season",
+    "capacity",
+    "capacity_source_url",
+    "capacity_note",
+]
+
+
 def one_nba_game(game_id="0022000001", season=2023):
     return pd.DataFrame([{
         "game_id": game_id,
@@ -140,6 +159,354 @@ def assert_invalid(team_games, games, expected, diagnostic, expected_legacy=0):
     assert diagnostic in str(caught.value)
 
 
+def test_load_game_corrections_requires_unique_provenance_backed_rows(
+    tmp_path,
+):
+    path = tmp_path / "game_corrections.csv"
+    duplicate = {
+        "game_id": "0028300493",
+        "franchise_id": "BKN",
+        "field": "pts",
+        "corrected_value": "115",
+        "source_url": (
+            "https://www.nba.com/game/njn-vs-uth-0028300493/box-score"
+        ),
+        "note": "Correct archived Nets score from official NBA box score.",
+    }
+    pd.DataFrame(
+        [duplicate, duplicate], columns=CORRECTION_COLUMNS
+    ).to_csv(path, index=False)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="duplicate game correction",
+    ):
+        build.load_game_corrections(path)
+
+    no_provenance = duplicate | {"source_url": "nba.example/game"}
+    pd.DataFrame(
+        [no_provenance], columns=CORRECTION_COLUMNS
+    ).to_csv(path, index=False)
+    with pytest.raises(
+        build.ValidationError,
+        match="correction source URL",
+    ):
+        build.load_game_corrections(path)
+
+
+def test_apply_game_corrections_is_keyed_and_preserves_inputs():
+    team_games = one_team_game_panel()
+    games = one_valid_game()
+    original_team_games = team_games.copy(deep=True)
+    original_games = games.copy(deep=True)
+    corrections = pd.DataFrame([
+        {
+            "game_id": "0022000001",
+            "franchise_id": "GSW",
+            "field": "pts",
+            "corrected_value": "115",
+            "source_url": "https://www.nba.com/game/example/box-score",
+            "note": "Official NBA score correction.",
+        },
+        {
+            "game_id": "0022000001",
+            "franchise_id": pd.NA,
+            "field": "attendance",
+            "corrected_value": pd.NA,
+            "source_url": "https://statsdmz.nba.com/gamebook.pdf",
+            "note": "Official scorer report says attendance not counted.",
+        },
+        {
+            "game_id": "0022000001",
+            "franchise_id": pd.NA,
+            "field": "neutral_site",
+            "corrected_value": "true",
+            "source_url": "https://www.nba.com/news/restart",
+            "note": "Official no-fan single-site bubble game.",
+        },
+    ], columns=CORRECTION_COLUMNS)
+
+    corrected_teams = build.apply_team_game_corrections(
+        team_games, corrections
+    )
+    corrected_games = build.apply_game_corrections(
+        games, corrections
+    )
+
+    assert corrected_teams.set_index("franchise_id").loc["GSW", "pts"] == 115
+    corrected_game = corrected_games.iloc[0]
+    assert pd.isna(corrected_game["attendance"])
+    assert corrected_game["attendance_source"] == "bref"
+    assert corrected_game["attendance_status"] == "missing"
+    assert corrected_game["neutral_site"] == True
+    assert corrected_game["neutral_site_source"] == (
+        "game_correction:no_fan_bubble"
+    )
+    pd.testing.assert_frame_equal(team_games, original_team_games)
+    pd.testing.assert_frame_equal(games, original_games)
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_count"),
+    [
+        pytest.param(
+            one_team_game_panel().query("franchise_id != 'GSW'"),
+            0,
+            id="zero",
+        ),
+        pytest.param(
+            pd.concat([
+                one_team_game_panel(),
+                one_team_game_panel().query("franchise_id == 'GSW'"),
+            ], ignore_index=True),
+            2,
+            id="multiple",
+        ),
+    ],
+)
+def test_team_game_correction_requires_one_exact_row(
+    frame, expected_count
+):
+    corrections = pd.DataFrame([{
+        "game_id": "0022000001",
+        "franchise_id": "GSW",
+        "field": "pts",
+        "corrected_value": "115",
+        "source_url": "https://www.nba.com/game/example/box-score",
+        "note": "Official NBA score correction.",
+    }], columns=CORRECTION_COLUMNS)
+
+    with pytest.raises(
+        build.ValidationError,
+        match=f"resolved {expected_count} rows",
+    ):
+        build.apply_team_game_corrections(frame, corrections)
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_count"),
+    [
+        pytest.param(
+            one_valid_game(game_id="0022000002"),
+            0,
+            id="zero",
+        ),
+        pytest.param(
+            pd.concat(
+                [one_valid_game(), one_valid_game()],
+                ignore_index=True,
+            ),
+            2,
+            id="multiple",
+        ),
+    ],
+)
+def test_game_correction_requires_one_exact_row(frame, expected_count):
+    corrections = pd.DataFrame([{
+        "game_id": "0022000001",
+        "franchise_id": pd.NA,
+        "field": "attendance",
+        "corrected_value": pd.NA,
+        "source_url": "https://statsdmz.nba.com/gamebook.pdf",
+        "note": "Official scorer report says attendance not counted.",
+    }], columns=CORRECTION_COLUMNS)
+
+    with pytest.raises(
+        build.ValidationError,
+        match=f"resolved {expected_count} rows",
+    ):
+        build.apply_game_corrections(frame, corrections)
+
+
+def test_primary_window_non_neutral_venues_have_capacity():
+    primary = pd.DataFrame([{
+        "game_id": "0022000001", "season": 2021, "venue_id": "espn-17",
+        "home_franchise_id": "BKN", "neutral_site": False,
+        "attendance": 0,
+    }])
+    venues = pd.DataFrame([{
+        "venue_id": "espn-17", "franchise_id": "BKN",
+        "first_season": 2020, "last_season": 2022, "capacity": 17732,
+        "capacity_source_url": "https://example.test/barclays-capacity",
+        "capacity_note": pd.NA,
+    }])
+    joined = build.attach_capacity(primary, venues)
+    assert joined["capacity"].notna().all()
+    assert joined["capacity_source_url"].str.startswith(
+        ("http://", "https://")
+    ).all()
+    assert (joined["capacity"] > 0).all()
+
+
+def test_attach_capacity_selects_exact_inclusive_season_era():
+    game = pd.DataFrame([{
+        "game_id": "0022000001",
+        "season": 2021,
+        "venue_id": "espn-17",
+        "home_franchise_id": "BKN",
+        "neutral_site": False,
+        "attendance": 17_000,
+    }])
+    venues = pd.DataFrame([
+        {
+            "venue_id": "espn-17",
+            "franchise_id": "BKN",
+            "first_season": 2020,
+            "last_season": 2020,
+            "capacity": 18_103,
+            "capacity_source_url": "https://example.test/old",
+            "capacity_note": pd.NA,
+        },
+        {
+            "venue_id": "espn-17",
+            "franchise_id": "BKN",
+            "first_season": 2021,
+            "last_season": 2022,
+            "capacity": 17_732,
+            "capacity_source_url": "https://example.test/new",
+            "capacity_note": pd.NA,
+        },
+    ])
+
+    attached = build.attach_capacity(game, venues).iloc[0]
+
+    assert attached[[
+        "capacity",
+        "capacity_source_url",
+    ]].to_dict() == {
+        "capacity": 17_732,
+        "capacity_source_url": "https://example.test/new",
+    }
+
+
+@pytest.mark.parametrize(
+    ("venues", "expected_count"),
+    [
+        pytest.param(
+            pd.DataFrame(columns=CAPACITY_COLUMNS),
+            0,
+            id="zero",
+        ),
+        pytest.param(
+            pd.DataFrame([
+                {
+                    "venue_id": "espn-17",
+                    "franchise_id": "BKN",
+                    "first_season": 2020,
+                    "last_season": 2022,
+                    "capacity": 17_732,
+                    "capacity_source_url": "https://example.test/one",
+                    "capacity_note": pd.NA,
+                },
+                {
+                    "venue_id": "espn-17",
+                    "franchise_id": "BKN",
+                    "first_season": 2021,
+                    "last_season": 2021,
+                    "capacity": 17_732,
+                    "capacity_source_url": "https://example.test/two",
+                    "capacity_note": pd.NA,
+                },
+            ]),
+            2,
+            id="multiple",
+        ),
+    ],
+)
+def test_attach_capacity_requires_one_season_aware_match(
+    venues, expected_count
+):
+    game = pd.DataFrame([{
+        "game_id": "0022000001",
+        "season": 2021,
+        "venue_id": "espn-17",
+        "home_franchise_id": "BKN",
+        "neutral_site": False,
+        "attendance": 17_000,
+    }])
+
+    with pytest.raises(
+        build.ValidationError,
+        match=f"capacity reference resolved {expected_count} rows",
+    ):
+        build.attach_capacity(game, venues)
+
+
+def test_load_venue_capacities_requires_positive_provenance(tmp_path):
+    path = tmp_path / "venue_capacities.csv"
+    pd.DataFrame([{
+        "venue_id": "espn-17",
+        "franchise_id": "BKN",
+        "first_season": 2020,
+        "last_season": 2022,
+        "capacity": 17_732,
+        "capacity_source_url": "https://example.test/barclays",
+        "capacity_note": pd.NA,
+    }], columns=CAPACITY_COLUMNS).to_csv(path, index=False)
+
+    loaded = build.load_venue_capacities(path)
+
+    assert loaded.iloc[0][[
+        "capacity",
+        "capacity_source_url",
+    ]].to_dict() == {
+        "capacity": 17_732,
+        "capacity_source_url": "https://example.test/barclays",
+    }
+
+    pd.DataFrame([{
+        "venue_id": "espn-17",
+        "franchise_id": "BKN",
+        "first_season": 2020,
+        "last_season": 2022,
+        "capacity": 0,
+        "capacity_source_url": "barclays.example/capacity",
+        "capacity_note": pd.NA,
+    }], columns=CAPACITY_COLUMNS).to_csv(path, index=False)
+    with pytest.raises(
+        build.ValidationError,
+        match="positive capacity and direct source URL",
+    ):
+        build.load_venue_capacities(path)
+
+
+def test_over_capacity_requires_documented_configuration_exception():
+    game = pd.DataFrame([{
+        "game_id": "0022000001",
+        "season": 2021,
+        "venue_id": "espn-17",
+        "home_franchise_id": "BKN",
+        "neutral_site": False,
+        "attendance": 18_000,
+    }])
+    venue = {
+        "venue_id": "espn-17",
+        "franchise_id": "BKN",
+        "first_season": 2020,
+        "last_season": 2022,
+        "capacity": 17_000,
+        "capacity_source_url": "https://example.test/barclays",
+        "capacity_note": pd.NA,
+    }
+    with pytest.raises(
+        build.ValidationError,
+        match="attendance above 105% of capacity",
+    ):
+        build.attach_capacity(game, pd.DataFrame([venue]))
+
+    documented = venue | {
+        "capacity_note": (
+            "Standing-room configuration documented for this game era."
+        )
+    }
+    attached = build.attach_capacity(
+        game, pd.DataFrame([documented])
+    )
+    assert attached.iloc[0]["capacity_note"] == (
+        "Standing-room configuration documented for this game era."
+    )
+
+
 def test_nba_id_remains_canonical_after_espn_join():
     nba = one_nba_game(game_id="0022000001")
     schedule = one_schedule_game(espn_game_id="espn-401300001")
@@ -205,6 +572,32 @@ def test_missing_hoopr_crosswalk_is_rejected():
             pd.DataFrame(),
         )
     assert assert_invalid_schedule in str(caught.value)
+
+
+def test_unique_next_day_hoopr_game_reconciles_to_nba_date():
+    schedule = one_schedule_game().assign(
+        game_date=datetime.date(2022, 10, 19)
+    )
+
+    game = build.enrich_modern_games(
+        one_nba_game(),
+        schedule,
+        one_bref_game(),
+    ).iloc[0]
+
+    assert game[[
+        "game_id",
+        "espn_game_id",
+        "game_date",
+        "venue_id",
+        "attendance",
+    ]].to_dict() == {
+        "game_id": "0022000001",
+        "espn_game_id": "espn-401300001",
+        "game_date": datetime.date(2022, 10, 18),
+        "venue_id": "espn-17",
+        "attendance": 18_000,
+    }
 
 
 @pytest.mark.parametrize(
@@ -404,6 +797,65 @@ def test_validation_rejects_low_selected_known_attendance_coverage():
     )
 
 
+def test_validation_exempts_only_missing_no_fan_bubble_attendance():
+    missing_id = "0021901231"
+    zero_id = "0021901233"
+    team_games = pd.concat([
+        one_team_game_panel(game_id=missing_id, season=2020),
+        one_team_game_panel(game_id=zero_id, season=2020),
+    ], ignore_index=True)
+    missing = one_valid_game(game_id=missing_id, season=2020)
+    missing.loc[0, [
+        "neutral_site",
+        "neutral_site_source",
+        "attendance_bref",
+        "attendance_espn",
+        "attendance",
+        "attendance_status",
+    ]] = [
+        True,
+        "game_correction:no_fan_bubble",
+        pd.NA,
+        0,
+        pd.NA,
+        "missing",
+    ]
+    explicit_zero = one_valid_game(game_id=zero_id, season=2020)
+    explicit_zero.loc[0, [
+        "neutral_site",
+        "neutral_site_source",
+        "attendance_bref",
+        "attendance_espn",
+        "attendance",
+        "attendance_status",
+    ]] = [
+        True,
+        "game_correction:no_fan_bubble",
+        0,
+        0,
+        0,
+        "reported_zero",
+    ]
+    games = pd.concat([missing, explicit_zero], ignore_index=True)
+
+    report = build.validate(
+        team_games,
+        games,
+        expected_counts={2020: 2},
+        expected_legacy=0,
+    )
+
+    assert report["attendance_counts"][2020] == {
+        "reported_zero": 1,
+        "reported_positive": 0,
+        "missing": 1,
+    }
+    assert report["selected_attendance_raw_coverage"][2020] == 0.5
+    assert report["selected_attendance_eligible_denominator"][2020] == 1
+    assert report["selected_attendance_exemptions"][2020] == 1
+    assert report["selected_attendance_coverage"][2020] == 1.0
+
+
 def test_validation_rejects_non_neutral_primary_venue_without_capacity():
     team_games = one_team_game_panel(season=2021)
     games = one_valid_game(season=2021)
@@ -520,6 +972,9 @@ def test_validation_returns_literal_coverage_report():
                 "missing": 0,
             },
         },
+        "selected_attendance_raw_coverage": {2023: 1.0},
+        "selected_attendance_eligible_denominator": {2023: 1},
+        "selected_attendance_exemptions": {2023: 0},
         "selected_attendance_coverage": {2023: 1.0},
         "bref_espn_agreement": {2023: 1.0},
     }
@@ -548,6 +1003,16 @@ def stub_one_game_assembly(
     monkeypatch.setattr(build.stats_nba, "EXPECTED_GAMES", {season: 1})
     monkeypatch.setattr(build, "EXPECTED_LEGACY_GAMES", 1)
     monkeypatch.setattr(
+        build,
+        "load_game_corrections",
+        lambda path: pd.DataFrame(columns=CORRECTION_COLUMNS),
+    )
+    monkeypatch.setattr(
+        build,
+        "load_venue_capacities",
+        lambda path: pd.DataFrame(columns=CAPACITY_COLUMNS),
+    )
+    monkeypatch.setattr(
         build.legacy, "load_team_games", lambda path: legacy_team_games
     )
     monkeypatch.setattr(
@@ -571,6 +1036,148 @@ def stub_one_game_assembly(
         "load_attendance",
         lambda raw_dir, requested_season: one_bref_game(season=season),
     )
+
+
+def test_assemble_attaches_capacity_before_strict_validation(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch, season=2021)
+    monkeypatch.setattr(
+        build,
+        "load_venue_capacities",
+        lambda path: pd.DataFrame([{
+            "venue_id": "espn-17",
+            "franchise_id": "BKN",
+            "first_season": 2021,
+            "last_season": 2021,
+            "capacity": 18_064,
+            "capacity_source_url": "https://example.com/chase-center",
+            "capacity_note": "Basketball configuration.",
+        }]),
+    )
+
+    _, games, _ = build.assemble(tmp_path / "raw")
+
+    modern = games.loc[games["season"].eq(2021)].iloc[0]
+    assert modern["capacity"] == 18_064
+    assert modern["capacity_source_url"] == (
+        "https://example.com/chase-center"
+    )
+    assert modern["capacity_note"] == "Basketball configuration."
+
+
+def test_assemble_applies_corrections_before_publication_frames(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch)
+    corrections = pd.DataFrame([
+        {
+            "game_id": "0022000001",
+            "franchise_id": "GSW",
+            "field": "pts",
+            "corrected_value": "115",
+            "source_url": "https://www.nba.com/game/example/box-score",
+            "note": "Official NBA score correction.",
+        },
+        {
+            "game_id": "0022000001",
+            "franchise_id": pd.NA,
+            "field": "attendance",
+            "corrected_value": pd.NA,
+            "source_url": "https://statsdmz.nba.com/gamebook.pdf",
+            "note": "Official attendance was not counted.",
+        },
+    ], columns=CORRECTION_COLUMNS)
+    monkeypatch.setattr(
+        build, "load_game_corrections", lambda path: corrections
+    )
+
+    team_games, games = build._assemble_frames(tmp_path / "raw")
+    corrected_team = team_games[
+        team_games["game_id"].eq("0022000001")
+        & team_games["franchise_id"].eq("GSW")
+    ].iloc[0]
+    corrected_game = games[games["game_id"].eq("0022000001")].iloc[0]
+
+    assert corrected_team["pts"] == 115
+    assert corrected_game["away_pts"] == 115
+    assert pd.isna(corrected_game["attendance"])
+    assert corrected_game["attendance_source"] == "bref"
+    assert corrected_game["attendance_status"] == "missing"
+
+
+def test_assemble_loads_legacy_attendance_from_game_cache(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch)
+    loaded_paths = {}
+    team_games = one_team_game_panel(
+        game_id="0021800001", season=2019
+    )
+    attendance = pd.DataFrame([{
+        "game_id": "0021800001",
+        "attendance": 17_000,
+    }])
+
+    def load_team_games(path):
+        loaded_paths["team_games"] = path
+        return team_games
+
+    def load_attendance(path):
+        loaded_paths["attendance"] = path
+        return attendance
+
+    monkeypatch.setattr(
+        build.legacy, "load_team_games", load_team_games
+    )
+    monkeypatch.setattr(
+        build.legacy, "load_attendance", load_attendance
+    )
+
+    build._assemble_frames(tmp_path / "raw")
+
+    assert loaded_paths == {
+        "team_games": (
+            tmp_path
+            / "raw/legacy/nba-teams-1984-2019-ordered.csv"
+        ),
+        "attendance": (
+            tmp_path / "raw/legacy/league_boxscores_extra.csv"
+        ),
+    }
+
+
+def test_assemble_uses_schedule_home_designation_for_neutral_game(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch)
+    neutral_team_games = one_team_game_panel().assign(is_home=False)
+    monkeypatch.setattr(
+        build.stats_nba,
+        "load_season",
+        lambda raw_dir, season: neutral_team_games,
+    )
+    monkeypatch.setattr(
+        build.hoopr,
+        "load_season",
+        lambda raw_dir, season: (
+            one_schedule_game().assign(neutral_site=True),
+            pd.DataFrame(),
+        ),
+    )
+
+    team_games, games = build._assemble_frames(tmp_path / "raw")
+    modern_teams = team_games[team_games["season"].eq(2023)]
+    modern_game = games[games["season"].eq(2023)].iloc[0]
+
+    assert modern_teams.set_index("franchise_id")[
+        "is_home"
+    ].to_dict() == {"BKN": True, "GSW": False}
+    assert (
+        modern_game["home_franchise_id"],
+        modern_game["away_franchise_id"],
+        modern_game["neutral_site"],
+    ) == ("BKN", "GSW", True)
 
 
 def test_assemble_combines_legacy_and_modern_panels(monkeypatch, tmp_path):
@@ -670,6 +1277,9 @@ def test_assemble_enforces_exact_output_columns_and_dtypes(
         "bref_row_matched",
         "attendance_status",
         "attendance_source",
+        "capacity",
+        "capacity_source_url",
+        "capacity_note",
     ]
     assert games.dtypes.astype(str).to_dict() == {
         "game_id": "string",
@@ -693,6 +1303,9 @@ def test_assemble_enforces_exact_output_columns_and_dtypes(
         "bref_row_matched": "bool",
         "attendance_status": "string",
         "attendance_source": "string",
+        "capacity": "Int64",
+        "capacity_source_url": "string",
+        "capacity_note": "string",
     }
     assert all(
         isinstance(value, datetime.date)
@@ -718,7 +1331,7 @@ def test_write_venue_inventory_uses_capacity_only_validation_exception(
     )
     with pytest.raises(
         build.ValidationError,
-        match="non-neutral 2020..2022 venue missing capacity",
+        match="capacity reference resolved 0 rows",
     ):
         build.assemble(tmp_path / "raw")
 
@@ -794,6 +1407,18 @@ def test_write_venue_inventory_reports_non_covid_observed_limits(
             "attendance": 18_000,
         },
     ])
+    direct_inventory = build.venue_inventory(games)
+    assert direct_inventory.iloc[0].to_dict() == {
+        "venue_id": "espn-17",
+        "venue_name": "Barclays Center",
+        "venue_city": "Brooklyn",
+        "home_franchise_id": "BKN",
+        "first_season": 2022,
+        "last_season": 2024,
+        "games": 3,
+        "observed_non_covid_max": 18_000,
+        "observed_non_covid_p99": 17_980,
+    }
     assembled = lambda raw_dir: (pd.DataFrame(), games, {})
     monkeypatch.setattr(
         build,
