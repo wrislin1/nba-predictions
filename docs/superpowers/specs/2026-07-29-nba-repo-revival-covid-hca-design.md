@@ -17,7 +17,7 @@ crowd, using the COVID era as a natural experiment.
 | Repo identity | Analysis-first; Flask dashboard archived, not maintained |
 | Git history | Rewrite with `git filter-repo` to purge `venv/`; force-push to `wrislin1/nba-predictions` |
 | Data storage | Tidy Parquet tables committed to git (no LFS); raw originals cold-archived to NAS; DuckDB generated locally, gitignored |
-| Data sources | Box scores via `nba_api` (stats.nba.com); attendance/schedules via basketball-reference month pages |
+| Data sources | Legacy 1983–2019 box scores from the archived stats.nba.com data; 2019-20 → 2025-26 box scores/schedules from the sportsdataverse hoopR parquet dumps (stats.nba.com is TLS-blocked from this network — see `docs/audits/2026-07-29-slice2-source-spike.md`); attendance source of record: basketball-reference month pages, with hoopR attendance as cross-validation |
 | Analysis deliverable | Markdown report + reproducible notebook, figures committed as PNG |
 | Methodology | Descriptive layer + explicitly scoped quasi-experimental fixed-effects models with cluster-bootstrap CIs |
 
@@ -129,9 +129,12 @@ joblib models exist only in the NAS archive afterward.
 
 ### Scraper package (`src/nba_data/`)
 
-- `fetch_boxscores.py` — a provider adapter around `LeagueGameFinder`, limited
-  to regular-season games; retry with bounded exponential backoff; raw JSON
-  responses and request metadata cached under `data/raw/`.
+- `hoopr.py` — provider adapter over the sportsdataverse hoopR-nba-data
+  GitHub parquet files (team box scores + schedules, seasons 2019-20 →
+  2025-26), downloaded once and cached under `data/raw/`; normalizes ESPN
+  identifiers to `franchise_id` via a date+team mapping and filters to
+  completed regular-season games between mapped franchises (excludes
+  All-Star and play-in rows).
 - `fetch_attendance.py` — b-ref month pages (~7/season), `requests` with real
   UA, 12 s spacing, HTML and request metadata cached to disk before parsing.
   A failed access check stops with diagnostics; it does not silently switch
