@@ -110,6 +110,9 @@ def load_season(
     result = json.loads(path.read_text())["resultSets"][0]
     raw = pd.DataFrame(result["rowSet"], columns=result["headers"])
     output = normalize_team_rows(raw, source="nba_stats")
+    actual_seasons = sorted(output["season"].unique().tolist())
+    if actual_seasons != [season]:
+        raise ValueError(f"season {season}: cached rows have seasons {actual_seasons}")
     games = output["game_id"].nunique()
     expected = EXPECTED_GAMES[season] if expected_games is None else expected_games
     if games != expected:

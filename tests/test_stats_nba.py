@@ -70,6 +70,20 @@ def test_load_season_normalizes_cached_leaguegamefinder(tmp_path):
     assert set(result["source"]) == {"nba_stats"}
 
 
+def test_load_season_rejects_cache_with_another_season(tmp_path):
+    """Would fail if a swapped, valid season cache were accepted."""
+    payload = fixture_leaguegamefinder_payload()
+    season_index = payload["resultSets"][0]["headers"].index("SEASON_ID")
+    for row in payload["resultSets"][0]["rowSet"]:
+        row[season_index] = "22021"
+    publish_fixture(tmp_path, payload)
+
+    with pytest.raises(
+        ValueError, match=r"season 2021: cached rows have seasons \[2022\]"
+    ):
+        stats_nba.load_season(tmp_path, 2021, expected_games=1)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("season, games", sorted(stats_nba.EXPECTED_GAMES.items()))
 def test_cached_season_counts(season, games):
