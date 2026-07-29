@@ -355,6 +355,8 @@ seaborn==0.13.2
     # via -r requirements.in
 send2trash==2.1.0
     # via jupyter-server
+setuptools==83.0.0
+    # via -r requirements.in
 six==1.17.0
     # via
     #   python-dateutil

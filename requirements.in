@@ -11,4 +11,5 @@ pyarrow
 pytest
 requests
 seaborn
+setuptools
 statsmodels
