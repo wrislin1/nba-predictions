@@ -174,3 +174,57 @@ def test_invalid_season_exits_before_fetching(monkeypatch, season):
 
     assert exc_info.value.code == 2
     assert recorder.calls == []
+
+
+def test_fetch_historical_forwards_only_requested_seasons(monkeypatch, tmp_path):
+    cli = load_cli()
+    raw_dir = Path(__file__).resolve().parents[1] / "data/raw"
+    fetch_calls = []
+    monkeypatch.setattr(
+        cli.historical_bref,
+        "fetch",
+        lambda *args: fetch_calls.append(args),
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "fetch-historical", "--season", "1947", "--season",
+            "1960", "--season", "1983",
+        ],
+    )
+
+    cli.main()
+
+    assert fetch_calls == [(raw_dir, (1947, 1960, 1983))]
+
+
+def test_fetch_historical_defaults_to_all_seasons(monkeypatch, tmp_path):
+    cli = load_cli()
+    raw_dir = Path(__file__).resolve().parents[1] / "data/raw"
+    fetch_calls = []
+    monkeypatch.setattr(
+        cli.historical_bref,
+        "fetch",
+        lambda *args: fetch_calls.append(args),
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["nba_data", "fetch-historical"])
+
+    cli.main()
+
+    assert fetch_calls == [(raw_dir, cli.historical_bref.HISTORICAL_SEASONS)]
+
+
+def test_build_historical_runs_from_repository_data_directory(monkeypatch, tmp_path):
+    cli = load_cli()
+    data_dir = Path(__file__).resolve().parents[1] / "data"
+    build_calls = []
+    monkeypatch.setattr(cli.historical_build, "run", build_calls.append)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["nba_data", "build-historical"])
+
+    cli.main()
+
+    assert build_calls == [data_dir]
