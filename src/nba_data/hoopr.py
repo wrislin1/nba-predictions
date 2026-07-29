@@ -63,7 +63,8 @@ def load_season(
         (raw["season_type"] == 2) & raw["status_type_completed"].astype(bool)
     ].copy()
     game_type = completed["type_abbreviation"].astype("string").str.strip().str.upper()
-    exhibition = game_type.isin({"ALLSTAR", "RISING STARS"})
+    notes = completed["notes_headline"].astype("string").str.strip().str.upper()
+    exhibition = game_type.eq("ALLSTAR") | notes.eq("RISING STARS")
     cup_championship = game_type.eq("CC")
     excluded = pd.concat([
         completed.loc[exhibition].assign(reason="exhibition"),
@@ -71,10 +72,10 @@ def load_season(
     ], ignore_index=True)
     retained = completed.loc[~(exhibition | cup_championship)].copy()
 
-    home_ids = retained["home_team_name"].map(
+    home_ids = retained["home_display_name"].map(
         lambda name: franchises.resolve(str(name), season)
     )
-    away_ids = retained["away_team_name"].map(
+    away_ids = retained["away_display_name"].map(
         lambda name: franchises.resolve(str(name), season)
     )
     expected = EXPECTED_GAMES[season] if expected_games is None else expected_games

@@ -7,6 +7,9 @@ import pytest
 from nba_data import cache, franchises, hoopr
 
 
+RAW = Path("data/raw")
+
+
 def schedule_fixture() -> pd.DataFrame:
     """Return representative rows from a hoopR NBA schedule parquet."""
     return pd.DataFrame([
@@ -15,9 +18,10 @@ def schedule_fixture() -> pd.DataFrame:
             "season_type": 2,
             "status_type_completed": True,
             "type_abbreviation": "REG",
+            "notes_headline": "",
             "game_date": "2023-10-24T23:30Z",
-            "home_team_name": "Denver Nuggets",
-            "away_team_name": "Los Angeles Lakers",
+            "home_display_name": "Denver Nuggets",
+            "away_display_name": "Los Angeles Lakers",
             "neutral_site": False,
             "venue_id": 1234,
             "venue_full_name": "Ball Arena",
@@ -29,9 +33,10 @@ def schedule_fixture() -> pd.DataFrame:
             "season_type": 2,
             "status_type_completed": True,
             "type_abbreviation": "REG",
+            "notes_headline": "",
             "game_date": "2023-10-24T23:30Z",
-            "home_team_name": "Golden State Warriors",
-            "away_team_name": "Phoenix Suns",
+            "home_display_name": "Golden State Warriors",
+            "away_display_name": "Phoenix Suns",
             "neutral_site": False,
             "venue_id": 2345,
             "venue_full_name": "Chase Center",
@@ -43,9 +48,10 @@ def schedule_fixture() -> pd.DataFrame:
             "season_type": 2,
             "status_type_completed": True,
             "type_abbreviation": "ALLSTAR",
+            "notes_headline": "NBA ALL-STAR GAME",
             "game_date": "2024-02-18T01:00Z",
-            "home_team_name": "Team LeBron",
-            "away_team_name": "Team Giannis",
+            "home_display_name": "Team LeBron",
+            "away_display_name": "Team Giannis",
             "neutral_site": True,
             "venue_id": 3456,
             "venue_full_name": "Gainbridge Fieldhouse",
@@ -57,9 +63,10 @@ def schedule_fixture() -> pd.DataFrame:
             "season_type": 2,
             "status_type_completed": True,
             "type_abbreviation": "CC",
+            "notes_headline": "NBA IN-SEASON TOURNAMENT CHAMPIONSHIP",
             "game_date": "2023-12-09T01:30Z",
-            "home_team_name": "Los Angeles Lakers",
-            "away_team_name": "Indiana Pacers",
+            "home_display_name": "Los Angeles Lakers",
+            "away_display_name": "Indiana Pacers",
             "neutral_site": True,
             "venue_id": 4567,
             "venue_full_name": "T-Mobile Arena",
@@ -71,14 +78,30 @@ def schedule_fixture() -> pd.DataFrame:
             "season_type": 2,
             "status_type_completed": False,
             "type_abbreviation": "REG",
+            "notes_headline": "",
             "game_date": "2024-04-14T19:30Z",
-            "home_team_name": "Boston Celtics",
-            "away_team_name": "Washington Wizards",
+            "home_display_name": "Boston Celtics",
+            "away_display_name": "Washington Wizards",
             "neutral_site": False,
             "venue_id": 5678,
             "venue_full_name": "TD Garden",
             "venue_address_city": "Boston",
             "attendance": "19156",
+        },
+        {
+            "game_id": 401000006,
+            "season_type": 2,
+            "status_type_completed": True,
+            "type_abbreviation": "STD",
+            "notes_headline": "RISING STARS",
+            "game_date": "2020-02-14T02:00Z",
+            "home_display_name": "USA",
+            "away_display_name": "World",
+            "neutral_site": True,
+            "venue_id": 6789,
+            "venue_full_name": "United Center",
+            "venue_address_city": "Chicago",
+            "attendance": "17764",
         },
     ])
 
@@ -107,6 +130,10 @@ def test_load_season_filters_exhibitions_cup_and_incomplete_rows(tmp_path):
 
     assert len(schedule) == 2
     assert set(excluded["reason"]) == {"exhibition", "cup_championship"}
+    assert excluded["reason"].value_counts().to_dict() == {
+        "exhibition": 2,
+        "cup_championship": 1,
+    }
     assert schedule["espn_game_id"].str.startswith("espn-").all()
     assert schedule["venue_id"].str.startswith("espn-").all()
     assert schedule["espn_attendance"].dtype == "Int64"
@@ -115,7 +142,7 @@ def test_load_season_filters_exhibitions_cup_and_incomplete_rows(tmp_path):
 def test_load_season_rejects_unknown_ordinary_entrants(tmp_path):
     """Would fail if an unrecognized non-exhibition team were retained."""
     frame = schedule_fixture()
-    frame.loc[1, "home_team_name"] = "Unknown NBA Club"
+    frame.loc[1, "home_display_name"] = "Unknown NBA Club"
     publish_schedule_fixture(tmp_path, frame=frame)
 
     with pytest.raises(franchises.UnknownTeamError, match="Unknown NBA Club"):
@@ -178,3 +205,13 @@ def test_fetch_wraps_request_errors_with_type_and_url(tmp_path, monkeypatch):
         hoopr.fetch(tmp_path, [2024])
 
     assert "https://raw.githubusercontent.com/sportsdataverse/hoopR-nba-data/" in str(error.value)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("season, games", sorted(hoopr.EXPECTED_GAMES.items()))
+def test_cached_season_counts(season, games):
+    """Would fail if pinned schedule schemas or exclusions drifted by season."""
+    schedule, _ = hoopr.load_season(RAW, season)
+
+    assert len(schedule) == games
+    assert schedule["season"].eq(season).all()
