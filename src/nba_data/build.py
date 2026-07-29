@@ -216,13 +216,14 @@ def enrich_modern_games(
     ])
 
 
-def validate(
+def _validate(
     team_games: pd.DataFrame,
     games: pd.DataFrame,
     expected_counts: dict[int, int],
     expected_legacy: int,
+    *,
+    enforce_capacity: bool,
 ) -> dict:
-    """Validate publication invariants and return a deterministic coverage report."""
     errors = []
     games_by_season = {
         int(season): int(count)
@@ -500,26 +501,42 @@ def validate(
             f"{low_selected}"
         )
 
-    primary_non_neutral = (
-        games["season"].between(2020, 2022)
-        & ~games["neutral_site"]
-    )
-    missing_capacity = primary_non_neutral
-    if "capacity" in games:
-        missing_capacity &= games["capacity"].isna()
-    if missing_capacity.any():
-        errors.append(
-            "non-neutral 2020..2022 venue missing capacity: "
-            f"{games.loc[missing_capacity, 'game_id'].head().tolist()}"
+    if enforce_capacity:
+        primary_non_neutral = (
+            games["season"].between(2020, 2022)
+            & ~games["neutral_site"]
         )
+        missing_capacity = primary_non_neutral
+        if "capacity" in games:
+            missing_capacity &= games["capacity"].isna()
+        if missing_capacity.any():
+            errors.append(
+                "non-neutral 2020..2022 venue missing capacity: "
+                f"{games.loc[missing_capacity, 'game_id'].head().tolist()}"
+            )
 
     if errors:
         raise ValidationError("; ".join(errors))
     return report
 
 
-def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
-    """Load, enrich, combine, and validate the full legacy and modern panels."""
+def validate(
+    team_games: pd.DataFrame,
+    games: pd.DataFrame,
+    expected_counts: dict[int, int],
+    expected_legacy: int,
+) -> dict:
+    """Validate publication invariants and return a deterministic coverage report."""
+    return _validate(
+        team_games,
+        games,
+        expected_counts,
+        expected_legacy,
+        enforce_capacity=True,
+    )
+
+
+def _assemble_frames(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
     legacy_path = (
         raw_dir / "legacy" / "nba-teams-1984-2019-ordered.csv"
     )
@@ -587,6 +604,12 @@ def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
         ["season", "game_date", "game_id"],
         kind="stable",
     ).reset_index(drop=True)
+    return team_games, games
+
+
+def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Load, enrich, combine, and strictly validate the publication panels."""
+    team_games, games = _assemble_frames(raw_dir)
     report = validate(
         team_games,
         games,
@@ -596,9 +619,24 @@ def assemble(raw_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     return team_games, games, report
 
 
+def _assemble_for_venue_inventory(
+    raw_dir: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Assemble inventory inputs while omitting only the capacity gate."""
+    team_games, games = _assemble_frames(raw_dir)
+    report = _validate(
+        team_games,
+        games,
+        stats_nba.EXPECTED_GAMES,
+        EXPECTED_LEGACY_GAMES,
+        enforce_capacity=False,
+    )
+    return team_games, games, report
+
+
 def write_venue_inventory(data_dir: Path) -> Path:
     """Write the venue-era observations needed to curate capacity data."""
-    _, games, _ = assemble(data_dir / "raw")
+    _, games, _ = _assemble_for_venue_inventory(data_dir / "raw")
     post = games[games["venue_id"].notna()].copy()
     normal = post[
         ~post["neutral_site"]

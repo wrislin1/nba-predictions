@@ -525,17 +525,27 @@ def test_validation_returns_literal_coverage_report():
     }
 
 
-def stub_one_game_assembly(monkeypatch):
+def stub_one_game_assembly(
+    monkeypatch, season=2023, home_pts=125, away_pts=99
+):
     legacy_team_games = one_team_game_panel(
         game_id="0021800001", season=2019
     )
-    modern_team_games = one_team_game_panel()
+    modern_team_games = one_team_game_panel(season=season)
+    modern_team_games.loc[
+        modern_team_games["is_home"], "pts"
+    ] = home_pts
+    modern_team_games.loc[
+        ~modern_team_games["is_home"], "pts"
+    ] = away_pts
     legacy_attendance = pd.DataFrame([{
         "game_id": "0021800001",
         "attendance": 17_000,
     }])
-    monkeypatch.setattr(build.stats_nba, "SEASONS", {2023: "2022-23"})
-    monkeypatch.setattr(build.stats_nba, "EXPECTED_GAMES", {2023: 1})
+    monkeypatch.setattr(
+        build.stats_nba, "SEASONS", {season: "fixture-season"}
+    )
+    monkeypatch.setattr(build.stats_nba, "EXPECTED_GAMES", {season: 1})
     monkeypatch.setattr(build, "EXPECTED_LEGACY_GAMES", 1)
     monkeypatch.setattr(
         build.legacy, "load_team_games", lambda path: legacy_team_games
@@ -551,12 +561,15 @@ def stub_one_game_assembly(monkeypatch):
     monkeypatch.setattr(
         build.hoopr,
         "load_season",
-        lambda raw_dir, season: (one_schedule_game(), pd.DataFrame()),
+        lambda raw_dir, requested_season: (
+            one_schedule_game(season=season),
+            pd.DataFrame(),
+        ),
     )
     monkeypatch.setattr(
         build.bref,
         "load_attendance",
-        lambda raw_dir, season: one_bref_game(),
+        lambda raw_dir, requested_season: one_bref_game(season=season),
     )
 
 
@@ -690,6 +703,62 @@ def test_assemble_enforces_exact_output_columns_and_dtypes(
     )
 
 
+def test_write_venue_inventory_uses_capacity_only_validation_exception(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(monkeypatch, season=2021)
+    team_games = one_team_game_panel(season=2021)
+    games = one_valid_game(season=2021).drop(columns="capacity")
+
+    assert_invalid(
+        team_games,
+        games,
+        {2021: 1},
+        "non-neutral 2020..2022 venue missing capacity",
+    )
+    with pytest.raises(
+        build.ValidationError,
+        match="non-neutral 2020..2022 venue missing capacity",
+    ):
+        build.assemble(tmp_path / "raw")
+
+    destination = build.write_venue_inventory(tmp_path)
+    inventory = pd.read_csv(destination)
+
+    assert destination == tmp_path / "raw/reports/venue_inventory.csv"
+    assert inventory[[
+        "venue_id",
+        "home_franchise_id",
+        "first_season",
+        "last_season",
+        "games",
+    ]].to_dict("records") == [{
+        "venue_id": "espn-17",
+        "home_franchise_id": "BKN",
+        "first_season": 2021,
+        "last_season": 2021,
+        "games": 1,
+    }]
+
+
+def test_write_venue_inventory_still_rejects_invalid_score(
+    monkeypatch, tmp_path
+):
+    stub_one_game_assembly(
+        monkeypatch,
+        season=2021,
+        home_pts=99,
+        away_pts=99,
+    )
+
+    with pytest.raises(build.ValidationError) as caught:
+        build.write_venue_inventory(tmp_path)
+
+    assert "invalid score or tie" in str(caught.value)
+    assert "venue missing capacity" not in str(caught.value)
+    assert not (tmp_path / "raw/reports/venue_inventory.csv").exists()
+
+
 def test_write_venue_inventory_reports_non_covid_observed_limits(
     monkeypatch, tmp_path
 ):
@@ -725,10 +794,11 @@ def test_write_venue_inventory_reports_non_covid_observed_limits(
             "attendance": 18_000,
         },
     ])
+    assembled = lambda raw_dir: (pd.DataFrame(), games, {})
     monkeypatch.setattr(
         build,
-        "assemble",
-        lambda raw_dir: (pd.DataFrame(), games, {}),
+        "_assemble_for_venue_inventory",
+        assembled,
     )
 
     destination = build.write_venue_inventory(tmp_path)
