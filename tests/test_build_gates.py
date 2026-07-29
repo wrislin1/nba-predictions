@@ -2102,29 +2102,71 @@ def test_raw_provenance_records_verified_hoopr_pin_per_season(tmp_path):
     }]
 
 
-def test_raw_provenance_records_historical_reconciliation_boxscores(
-    tmp_path,
+def write_historical_team_corrections(data_dir, game_urls):
+    reference_dir = data_dir / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    rows = [{
+        "game_id": game_id,
+        "franchise_id": "SAC",
+        "field": "fgm",
+        "corrected_value": "40",
+        "source_url": url,
+        "note": "Exact historical team total.",
+        "attendance_coverage_exemption_reason": pd.NA,
+    } for game_id, url in game_urls]
+    pd.DataFrame(rows, columns=CORRECTION_COLUMNS).to_csv(
+        reference_dir / "game_corrections.csv",
+        index=False,
+    )
+
+
+def write_historical_boxscore(
+    data_dir,
+    filename,
+    game_id,
+    *,
+    metadata_overrides=None,
+    missing_metadata=(),
 ):
-    data_dir = tmp_path / "data"
     raw_dir = data_dir / "raw/reconciliation/bref"
-    raw_dir.mkdir(parents=True)
-    payload = raw_dir / "198311080CHI.html"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    payload = raw_dir / filename
     payload.write_bytes(b"<html>historical box score</html>")
     digest = hashlib.sha256(payload.read_bytes()).hexdigest()
     url = (
         "https://www.basketball-reference.com/boxscores/"
-        "198311080CHI.html"
+        f"{filename}"
     )
+    metadata = {
+        "provider": "basketball_reference",
+        "resource": "historical_boxscore",
+        "game_id": game_id,
+        "url": url,
+        "sha256": digest,
+        "fetched_at": "not-manifest-provenance",
+    }
+    metadata.update(metadata_overrides or {})
+    for field in missing_metadata:
+        metadata.pop(field)
     payload.with_name(payload.name + ".meta.json").write_text(
-        json.dumps({
-            "provider": "basketball_reference",
-            "resource": "historical_boxscore",
-            "game_id": "0028300064",
-            "url": url,
-            "sha256": digest,
-            "fetched_at": "not-manifest-provenance",
-        }),
+        json.dumps(metadata),
         encoding="utf-8",
+    )
+    return payload, url, digest
+
+
+def test_raw_provenance_records_historical_reconciliation_boxscores(
+    tmp_path,
+):
+    data_dir = tmp_path / "data"
+    payload, url, digest = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [("0028300064", url)],
     )
 
     provenance = build._raw_provenance(data_dir)
@@ -2137,6 +2179,190 @@ def test_raw_provenance_records_historical_reconciliation_boxscores(
         "url": url,
         "sha256": digest,
     }]
+
+
+def test_historical_reconciliation_requires_sidecar(tmp_path):
+    data_dir = tmp_path / "data"
+    payload, url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [("0028300064", url)],
+    )
+    payload.with_name(payload.name + ".meta.json").unlink()
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "missing"),
+    [
+        ("sha256", None, True),
+        ("sha256", "0" * 64, False),
+        ("provider", None, True),
+        ("provider", "basketball-reference", False),
+        ("resource", None, True),
+        ("resource", "boxscore", False),
+        ("game_id", None, True),
+        ("game_id", "0028309999", False),
+        ("url", None, True),
+        ("url", 198311080, False),
+    ],
+    ids=[
+        "missing-sha",
+        "wrong-sha",
+        "missing-provider",
+        "wrong-provider",
+        "missing-resource",
+        "wrong-resource",
+        "missing-game-id",
+        "wrong-game-id",
+        "missing-url",
+        "wrong-url",
+    ],
+)
+def test_historical_reconciliation_rejects_invalid_sidecar_binding(
+    tmp_path,
+    field,
+    bad_value,
+    missing,
+):
+    data_dir = tmp_path / "data"
+    payload, url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+        metadata_overrides=(
+            {} if missing else {field: bad_value}
+        ),
+        missing_metadata=((field,) if missing else ()),
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [("0028300064", url)],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+def test_historical_reconciliation_url_must_match_body_filename(tmp_path):
+    data_dir = tmp_path / "data"
+    wrong_url = (
+        "https://www.basketball-reference.com/boxscores/"
+        "198311100HOU.html"
+    )
+    write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+        metadata_overrides={"url": wrong_url},
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [("0028300064", wrong_url)],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+def test_historical_reconciliation_rejects_duplicate_game_ids(tmp_path):
+    data_dir = tmp_path / "data"
+    _, first_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+    )
+    _, second_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311100HOU.html",
+        "0028300064",
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [
+            ("0028300064", first_url),
+            ("0028300074", second_url),
+        ],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+def test_historical_reconciliation_rejects_cross_labeled_games(tmp_path):
+    data_dir = tmp_path / "data"
+    _, first_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300074",
+    )
+    _, second_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311100HOU.html",
+        "0028300064",
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [
+            ("0028300064", first_url),
+            ("0028300074", second_url),
+        ],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+def test_historical_reconciliation_rejects_missing_ledger_page(tmp_path):
+    data_dir = tmp_path / "data"
+    _, first_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+    )
+    second_url = (
+        "https://www.basketball-reference.com/boxscores/"
+        "198311100HOU.html"
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [
+            ("0028300064", first_url),
+            ("0028300074", second_url),
+        ],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
+
+
+def test_historical_reconciliation_rejects_extra_unreferenced_page(
+    tmp_path,
+):
+    data_dir = tmp_path / "data"
+    _, first_url, _ = write_historical_boxscore(
+        data_dir,
+        "198311080CHI.html",
+        "0028300064",
+    )
+    write_historical_boxscore(
+        data_dir,
+        "198311100HOU.html",
+        "0028300074",
+    )
+    write_historical_team_corrections(
+        data_dir,
+        [("0028300064", first_url)],
+    )
+
+    with pytest.raises(build.ValidationError):
+        build._raw_provenance(data_dir)
 
 
 def test_run_restores_prior_publication_when_directory_swap_fails(

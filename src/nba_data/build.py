@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from nba_data import bref, franchises, hoopr, legacy, stats_nba
+from nba_data import bref, cache, franchises, hoopr, legacy, stats_nba
 
 
 JOIN_KEY = [
@@ -1277,6 +1277,108 @@ def _relative_path(path: Path, data_dir: Path) -> str:
     return path.relative_to(data_dir).as_posix()
 
 
+def _historical_reconciliation_provenance(
+    data_dir: Path,
+) -> list[dict]:
+    raw_paths = sorted(
+        (data_dir / "raw/reconciliation/bref").glob("*.html")
+    )
+    correction_path = data_dir / "reference/game_corrections.csv"
+    if not correction_path.exists():
+        if raw_paths:
+            raise ValidationError(
+                "historical box-score correction ledger is missing"
+            )
+        return []
+
+    corrections = load_game_corrections(correction_path)
+    expected_rows = (
+        corrections.loc[
+            corrections["franchise_id"].notna(),
+            ["game_id", "source_url"],
+        ]
+        .drop_duplicates()
+    )
+    if (
+        expected_rows["game_id"].duplicated(keep=False).any()
+        or expected_rows["source_url"].duplicated(keep=False).any()
+    ):
+        raise ValidationError(
+            "historical box-score correction ledger is cross-labeled"
+        )
+    expected_pairs = set(expected_rows.itertuples(index=False, name=None))
+
+    historical_boxscores = []
+    actual_pairs = set()
+    actual_game_ids = set()
+    actual_urls = set()
+    for path in raw_paths:
+        sidecar = path.with_name(path.name + ".meta.json")
+        try:
+            cached = cache.read_valid(path, lambda _: None)
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (
+            cache.CacheIntegrityError,
+            json.JSONDecodeError,
+            OSError,
+        ) as exc:
+            raise ValidationError(
+                "historical box-score cache integrity failure for "
+                f"{path.name}"
+            ) from exc
+        if cached is None or (
+            metadata.get("provider") != "basketball_reference"
+            or metadata.get("resource") != "historical_boxscore"
+            or not isinstance(metadata.get("sha256"), str)
+            or not isinstance(metadata.get("game_id"), str)
+            or not isinstance(metadata.get("url"), str)
+        ):
+            raise ValidationError(
+                "historical box-score cache metadata mismatch for "
+                f"{path.name}"
+            )
+
+        expected_url = (
+            "https://www.basketball-reference.com/boxscores/"
+            f"{path.name}"
+        )
+        game_id = metadata["game_id"]
+        url = metadata["url"]
+        pair = (game_id, url)
+        if url != expected_url:
+            raise ValidationError(
+                "historical box-score URL/filename mismatch for "
+                f"{path.name}"
+            )
+        if game_id in actual_game_ids or url in actual_urls:
+            raise ValidationError(
+                "duplicate historical box-score game or URL for "
+                f"{path.name}"
+            )
+        if pair not in expected_pairs:
+            raise ValidationError(
+                "historical box-score page is not bound to a team "
+                f"correction: {path.name}"
+            )
+
+        actual_pairs.add(pair)
+        actual_game_ids.add(game_id)
+        actual_urls.add(url)
+        historical_boxscores.append({
+            "path": _relative_path(path, data_dir),
+            "game_id": game_id,
+            "url": url,
+            "sha256": metadata["sha256"],
+        })
+
+    if actual_pairs != expected_pairs:
+        raise ValidationError(
+            "historical box-score page set does not match team "
+            "corrections"
+        )
+    return historical_boxscores
+
+
 def _raw_provenance(data_dir: Path) -> dict:
     raw_dir = data_dir / "raw"
     stats = []
@@ -1336,29 +1438,9 @@ def _raw_provenance(data_dir: Path) -> dict:
             "sha256": _sha256(path),
         })
 
-    historical_boxscores = []
-    for path in sorted(
-        (raw_dir / "reconciliation/bref").glob("*.html")
-    ):
-        metadata = _load_metadata(
-            path.with_name(path.name + ".meta.json"), path
-        )
-        if (
-            metadata.get("provider") != "basketball_reference"
-            or metadata.get("resource") != "historical_boxscore"
-            or not isinstance(metadata.get("game_id"), str)
-            or not isinstance(metadata.get("url"), str)
-        ):
-            raise ValidationError(
-                "historical box-score cache metadata mismatch for "
-                f"{path.name}"
-            )
-        historical_boxscores.append({
-            "path": _relative_path(path, data_dir),
-            "game_id": metadata["game_id"],
-            "url": metadata["url"],
-            "sha256": _sha256(path),
-        })
+    historical_boxscores = _historical_reconciliation_provenance(
+        data_dir
+    )
 
     legacy_files = [
         {
