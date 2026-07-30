@@ -64,7 +64,10 @@ def load_site_corrections(path: Path) -> pd.DataFrame:
     errors = []
     if frame["game_id"].duplicated(keep=False).any():
         errors.append("duplicate historical site correction game_id")
-    if not set(frame["site_status"].dropna()) <= {"home", "neutral"}:
+    if (
+        frame["site_status"].isna().any()
+        or not set(frame["site_status"].dropna()) <= {"home", "neutral"}
+    ):
         errors.append("site correction must be home or neutral")
     for column in ("game_id", "source_url", "note"):
         if frame[column].isna().any() or frame[column].str.strip().eq("").any():

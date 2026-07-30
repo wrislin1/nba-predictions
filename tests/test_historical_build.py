@@ -48,12 +48,29 @@ def test_expected_counts_cover_exact_historical_seasons():
 
 
 def test_site_correction_changes_only_status():
-    games = pd.DataFrame([{
-        "game_id": "bref-194611010TRH",
-        "site_status": "unknown",
-        "home_pts": 66,
-        "away_pts": 68,
-    }])
+    games = pd.DataFrame([
+        {
+            "game_id": "bref-before",
+            "site_status": "home",
+            "home_pts": 99,
+            "away_pts": 88,
+            "attendance": 1000,
+        },
+        {
+            "game_id": "bref-194611010TRH",
+            "site_status": "unknown",
+            "home_pts": 66,
+            "away_pts": 68,
+            "attendance": 4329,
+        },
+        {
+            "game_id": "bref-after",
+            "site_status": "neutral",
+            "home_pts": 77,
+            "away_pts": 76,
+            "attendance": pd.NA,
+        },
+    ])
     corrections = pd.DataFrame([{
         "game_id": "bref-194611010TRH",
         "site_status": "neutral",
@@ -63,8 +80,9 @@ def test_site_correction_changes_only_status():
 
     result = historical_build.apply_site_corrections(games, corrections)
 
-    assert result.loc[0, "site_status"] == "neutral"
-    assert result.loc[0, ["home_pts", "away_pts"]].tolist() == [66, 68]
+    expected = games.copy()
+    expected.loc[1, "site_status"] = "neutral"
+    pd.testing.assert_frame_equal(result, expected)
 
 
 def test_counts_reject_missing_ending_season(tmp_path):
@@ -149,6 +167,22 @@ def test_corrections_reject_unknown_as_selected_value(tmp_path):
         historical_build.load_site_corrections(write_corrections(tmp_path, rows))
 
 
+@pytest.mark.parametrize("status", [None, " "])
+def test_corrections_reject_missing_or_blank_selected_status(tmp_path, status):
+    rows = [{
+        "game_id": "bref-one",
+        "site_status": status,
+        "source_url": "https://example.org/one",
+        "note": "A correction needs a selected status.",
+    }]
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="site correction must be home or neutral",
+    ):
+        historical_build.load_site_corrections(write_corrections(tmp_path, rows))
+
+
 @pytest.mark.parametrize("column", ["source_url", "note"])
 def test_corrections_reject_blank_source_or_note(tmp_path, column):
     rows = [{
@@ -178,6 +212,25 @@ def test_apply_corrections_rejects_orphan_game_id():
     with pytest.raises(
         historical_build.HistoricalValidationError,
         match=r"site correction must resolve exactly one game: \['bref-missing'\]",
+    ):
+        historical_build.apply_site_corrections(games, corrections)
+
+
+def test_apply_corrections_rejects_duplicate_game_id_target():
+    games = pd.DataFrame([
+        {"game_id": "bref-duplicate", "site_status": "unknown"},
+        {"game_id": "bref-duplicate", "site_status": "unknown"},
+    ])
+    corrections = pd.DataFrame([{
+        "game_id": "bref-duplicate",
+        "site_status": "neutral",
+        "source_url": "https://example.org/duplicate",
+        "note": "Documented neutral venue.",
+    }])
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match=r"site correction must resolve exactly one game: \['bref-duplicate'\]",
     ):
         historical_build.apply_site_corrections(games, corrections)
 
