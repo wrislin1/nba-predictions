@@ -1095,6 +1095,7 @@
       "lxml": "6.1.1",
       "matplotlib": "3.11.1",
       "nba_api": "1.11.4",
+      "numpy": "2.5.1",
       "openpyxl": "3.1.5",
       "pandas": "3.0.5",
       "pyarrow": "25.0.0",

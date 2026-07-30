@@ -98,6 +98,27 @@ def test_requirements_are_utf8_and_pinned() -> None:
     assert REQUIRED_REQUIREMENTS <= names
 
 
+def test_build_manifest_dependencies_match_direct_requirements() -> None:
+    direct_names = set()
+    for line in (ROOT / "requirements.in").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        requirement = line.split("#", 1)[0].strip()
+        if not requirement:
+            continue
+        match = re.match(r"([A-Za-z0-9_.-]+)", requirement)
+        if match is not None:
+            direct_names.add(match.group(1))
+    manifest = json.loads(
+        (ROOT / "data/parquet/build_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert set(manifest["versions"]["dependencies"]) == direct_names
+    assert "numpy" in manifest["versions"]["dependencies"]
+
+
 def test_packaged_reference_assets_match_publication_reference() -> None:
     """Would fail if installed and repository builds resolved different IDs."""
     for name in ("franchises.csv", "hoopr_snapshot.json"):
