@@ -2139,6 +2139,58 @@ def test_run_publishes_exact_tables_and_deterministic_manifest(
     assert "fetched_at" not in json.dumps(manifest)
 
 
+def test_run_preserves_complete_historical_publication_pair(monkeypatch, tmp_path):
+    """Would fail if the modern directory swap discarded historical bytes."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output_dir = data_dir / "parquet"
+    output_dir.mkdir()
+    historical = {
+        "historical_games.parquet": b"historical parquet bytes",
+        "historical_games_manifest.json": b"historical manifest bytes",
+    }
+    for name, payload in historical.items():
+        (output_dir / name).write_bytes(payload)
+
+    build.run(data_dir)
+
+    assert {name: (output_dir / name).read_bytes() for name in historical} == historical
+
+
+def test_run_rejects_incomplete_historical_publication_pair(monkeypatch, tmp_path):
+    """Would fail if a modern rebuild replaced an orphan historical product."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output_dir = data_dir / "parquet"
+    output_dir.mkdir()
+    orphan = output_dir / "historical_games.parquet"
+    orphan.write_bytes(b"orphaned historical bytes")
+
+    with pytest.raises(
+        build.ValidationError,
+        match="historical publication pair is incomplete",
+    ):
+        build.run(data_dir)
+
+    assert orphan.read_bytes() == b"orphaned historical bytes"
+
+
+def test_modern_manifest_omits_historical_only_references(monkeypatch, tmp_path):
+    """Would fail if historical reference changes mutated modern attestation."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    (data_dir / "reference/historical_season_counts.csv").write_text(
+        "historical only\n", encoding="utf-8"
+    )
+
+    build.run(data_dir)
+
+    manifest = json.loads(
+        (data_dir / "parquet/build_manifest.json").read_text(encoding="utf-8")
+    )
+    assert "reference/historical_season_counts.csv" not in manifest["references"]
+
+
 def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
     data_dir = tmp_path / "data"
     raw_dir = data_dir / "raw/stats_nba"

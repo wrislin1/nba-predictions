@@ -150,6 +150,16 @@ PUBLISHED_FILES = (
     "venues.parquet",
     "build_manifest.json",
 )
+PRESERVED_HISTORICAL_FILES = (
+    "historical_games.parquet",
+    "historical_games_manifest.json",
+)
+MODERN_REFERENCE_FILES = (
+    "franchises.csv",
+    "game_corrections.csv",
+    "hoopr_snapshot.json",
+    "venue_capacities.csv",
+)
 FRANCHISE_COLUMNS = [
     "alias",
     "franchise_id",
@@ -1589,10 +1599,27 @@ def _raw_provenance(data_dir: Path) -> dict:
 def _reference_provenance(data_dir: Path) -> dict:
     reference_dir = data_dir / "reference"
     return {
-        _relative_path(path, data_dir): _sha256(path)
-        for path in sorted(reference_dir.glob("*"))
-        if path.is_file()
+        _relative_path(reference_dir / name, data_dir): _sha256(
+            reference_dir / name
+        )
+        for name in MODERN_REFERENCE_FILES
     }
+
+
+def _copy_historical_publication(
+    output_dir: Path,
+    stage_dir: Path,
+) -> set[str]:
+    present = {
+        name
+        for name in PRESERVED_HISTORICAL_FILES
+        if (output_dir / name).is_file()
+    }
+    if present and present != set(PRESERVED_HISTORICAL_FILES):
+        raise ValidationError("historical publication pair is incomplete")
+    for name in sorted(present):
+        shutil.copyfile(output_dir / name, stage_dir / name)
+    return present
 
 
 def _dependency_versions(project_dir: Path) -> dict:
@@ -1736,6 +1763,9 @@ def run(data_dir: Path) -> None:
         tempfile.mkdtemp(prefix=".parquet-stage-", dir=data_dir)
     )
     try:
+        preserved = _copy_historical_publication(
+            data_dir / "parquet", stage_dir
+        )
         existing_placeholder = data_dir / "parquet/.gitkeep"
         if existing_placeholder.exists():
             shutil.copyfile(
@@ -1801,7 +1831,7 @@ def run(data_dir: Path) -> None:
             for path in stage_dir.iterdir()
             if not path.name.startswith(".")
         }
-        if staged_products != set(PUBLISHED_FILES):
+        if staged_products != set(PUBLISHED_FILES) | preserved:
             raise ValidationError("staged publication file set is incomplete")
         _publish_stage(stage_dir, data_dir / "parquet")
     finally:

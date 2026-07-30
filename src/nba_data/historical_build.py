@@ -2,11 +2,16 @@
 
 from datetime import date
 import hashlib
+import json
+import os
 from pathlib import Path
+import re
+import shutil
+import tempfile
 
 import pandas as pd
 
-from nba_data import franchises, historical_bref
+from nba_data import build, cache, franchises, historical_bref
 
 
 COUNT_COLUMNS = [
@@ -52,6 +57,14 @@ HISTORICAL_DTYPES = {
     "boxscore_url": "string",
     "schedule_url": "string",
 }
+HISTORICAL_PRODUCTS = (
+    "historical_games.parquet",
+    "historical_games_manifest.json",
+)
+_HISTORICAL_CACHE_NAME = re.compile(
+    r"(?P<league>BAA|NBA)_(?P<season>\d{4})_games"
+    r"(?:-(?P<month>[a-z]+))?\.html$"
+)
 
 
 class HistoricalValidationError(ValueError):
@@ -442,7 +455,256 @@ def validate(
     }
 
 
-def run(data_dir: Path) -> None:
-    raise RuntimeError(
-        "historical publication is unavailable until its gates are installed"
+def _cache_error(exc: Exception) -> HistoricalValidationError:
+    return HistoricalValidationError(str(exc))
+
+
+def _raw_provenance(data_dir: Path) -> dict:
+    """Attest every historical schedule cache body and its exact sidecar."""
+    cache_dir = data_dir / "raw/historical_bref"
+    if not cache_dir.exists():
+        return {"basketball_reference": {"pages": []}}
+
+    bodies = set()
+    sidecars = set()
+    for path in sorted(cache_dir.iterdir()):
+        if path.is_dir() or path.name.endswith(".part"):
+            raise HistoricalValidationError(
+                f"unexpected historical cache entry: {path.name}"
+            )
+        if path.name.endswith(".html"):
+            name = path.name
+            if _HISTORICAL_CACHE_NAME.fullmatch(name) is None:
+                raise HistoricalValidationError(
+                    f"unexpected historical cache entry: {path.name}"
+                )
+            bodies.add(name)
+        elif path.name.endswith(".html.meta.json"):
+            name = path.name.removesuffix(".meta.json")
+            if _HISTORICAL_CACHE_NAME.fullmatch(name) is None:
+                raise HistoricalValidationError(
+                    f"unexpected historical cache entry: {path.name}"
+                )
+            sidecars.add(name)
+        else:
+            raise HistoricalValidationError(
+                f"unexpected historical cache entry: {path.name}"
+            )
+    if bodies != sidecars:
+        raise HistoricalValidationError("incomplete historical cache pair")
+
+    by_season: dict[int, list[Path]] = {}
+    for name in sorted(bodies):
+        match = _HISTORICAL_CACHE_NAME.fullmatch(name)
+        assert match is not None
+        season = int(match["season"])
+        try:
+            expected_league = historical_bref.league_for_season(season)
+        except ValueError as exc:
+            raise _cache_error(exc) from exc
+        if match["league"] != expected_league:
+            raise HistoricalValidationError("historical cache metadata mismatch")
+        by_season.setdefault(season, []).append(cache_dir / name)
+
+    pages = []
+    identities = set()
+    urls = set()
+    for season, paths in sorted(by_season.items()):
+        indexes = [path for path in paths if "_games-" not in path.name]
+        if len(indexes) != 1:
+            raise HistoricalValidationError(
+                "historical cache requires exactly one season index"
+            )
+        index_path = indexes[0]
+        try:
+            index_payload = cache.read_valid(
+                index_path,
+                lambda path, value=season: historical_bref.validate_index(
+                    path, value
+                ),
+            )
+            assert index_payload is not None
+            discovered = historical_bref.discover_month_pages(
+                index_payload, season
+            )
+        except (cache.CacheIntegrityError, ValueError, json.JSONDecodeError) as exc:
+            raise _cache_error(exc) from exc
+        discovered_by_name = {page.filename: page for page in discovered}
+        actual_month_names = {path.name for path in paths if path != index_path}
+        if actual_month_names != set(discovered_by_name):
+            raise HistoricalValidationError(
+                "historical cache month pages differ from discovered index"
+            )
+
+        for path in sorted(paths):
+            match = _HISTORICAL_CACHE_NAME.fullmatch(path.name)
+            assert match is not None
+            month = match["month"]
+            is_index = month is None
+            url = (
+                historical_bref.index_url(season)
+                if is_index else discovered_by_name[path.name].url
+            )
+            resource = (
+                "historical_schedule_index"
+                if is_index else "historical_schedule_month"
+            )
+            try:
+                cache.read_valid(
+                    path,
+                    (
+                        (lambda value, year=season: historical_bref.validate_index(
+                            value, year
+                        ))
+                        if is_index
+                        else (
+                            lambda value, year=season, page_url=url:
+                            historical_bref.validate_month(
+                                value, year, page_url
+                            )
+                        )
+                    ),
+                )
+                metadata = json.loads(
+                    path.with_name(path.name + ".meta.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (cache.CacheIntegrityError, ValueError, json.JSONDecodeError) as exc:
+                raise _cache_error(exc) from exc
+            expected = {
+                "provider": "basketball_reference",
+                "resource": resource,
+                "league": match["league"],
+                "season": season,
+                "month": month,
+                "url": url,
+            }
+            if any(metadata.get(key) != value for key, value in expected.items()):
+                raise HistoricalValidationError("historical cache metadata mismatch")
+            identity = (
+                metadata["resource"], metadata["league"], metadata["season"],
+                metadata.get("month"),
+            )
+            if identity in identities or metadata["url"] in urls:
+                raise HistoricalValidationError("duplicate historical cache identity")
+            identities.add(identity)
+            urls.add(metadata["url"])
+            pages.append({
+                "path": path.relative_to(data_dir).as_posix(),
+                "provider": metadata["provider"],
+                "resource": metadata["resource"],
+                "league": metadata["league"],
+                "season": metadata["season"],
+                "month": metadata.get("month"),
+                "url": metadata["url"],
+                "sha256": metadata["sha256"],
+            })
+    return {"basketball_reference": {"pages": pages}}
+
+
+def _reference_provenance(data_dir: Path) -> dict:
+    names = (
+        "franchises.csv",
+        "historical_season_counts.csv",
+        "historical_site_corrections.csv",
     )
+    reference_dir = data_dir / "reference"
+    franchise_path = reference_dir / "franchises.csv"
+    if franchise_path.read_bytes() != franchises.REFERENCE.read_bytes():
+        raise HistoricalValidationError(
+            "franchise reference differs from the packaged runtime reference"
+        )
+    return {
+        path.relative_to(data_dir).as_posix(): cache.sha256_file(path)
+        for path in (reference_dir / name for name in names)
+    }
+
+
+def _publish_historical_pair(stage_dir: Path, output_dir: Path) -> None:
+    staged = sorted(path.name for path in stage_dir.iterdir())
+    if staged != sorted(HISTORICAL_PRODUCTS):
+        raise HistoricalValidationError(
+            "historical stage must contain exactly "
+            f"{sorted(HISTORICAL_PRODUCTS)}"
+        )
+    existing = [
+        name for name in HISTORICAL_PRODUCTS if (output_dir / name).exists()
+    ]
+    if existing and len(existing) != len(HISTORICAL_PRODUCTS):
+        raise HistoricalValidationError("historical publication pair is incomplete")
+    rollback_dir = None
+    if existing:
+        rollback_dir = Path(
+            tempfile.mkdtemp(
+                prefix=".historical-rollback-", dir=output_dir.parent
+            )
+        )
+        for name in HISTORICAL_PRODUCTS:
+            os.replace(output_dir / name, rollback_dir / name)
+    try:
+        for name in HISTORICAL_PRODUCTS:
+            os.replace(stage_dir / name, output_dir / name)
+    except OSError:
+        if rollback_dir is not None:
+            for name in HISTORICAL_PRODUCTS:
+                if (rollback_dir / name).exists():
+                    os.replace(rollback_dir / name, output_dir / name)
+        raise
+    if rollback_dir is not None:
+        shutil.rmtree(rollback_dir)
+
+
+def run(data_dir: Path) -> None:
+    """Build and atomically publish the independently attested history."""
+    games, report = assemble(data_dir)
+    modern_seasons = pd.read_parquet(
+        data_dir / "parquet/games.parquet", columns=["season"]
+    )["season"]
+    modern_min_season = int(modern_seasons.min())
+    if modern_min_season != 1984:
+        raise HistoricalValidationError(
+            "modern publication must begin at ending season 1984"
+        )
+    report["modern_min_season"] = modern_min_season
+    provenance = _raw_provenance(data_dir)
+    references = _reference_provenance(data_dir)
+    stage_dir = Path(tempfile.mkdtemp(prefix=".historical-stage-", dir=data_dir))
+    try:
+        parquet_path = stage_dir / "historical_games.parquet"
+        games.to_parquet(
+            parquet_path, engine="pyarrow", compression="zstd", index=False
+        )
+        reread = pd.read_parquet(parquet_path)
+        build._assert_staged_frame(reread, games, "historical_games")
+        reread_report = validate(
+            reread,
+            load_expected_counts(
+                data_dir / "reference/historical_season_counts.csv"
+            ),
+        )
+        reread_report["modern_min_season"] = modern_min_season
+        if reread_report != report:
+            raise HistoricalValidationError(
+                "historical validation changed after Parquet re-read"
+            )
+        manifest = {
+            "schema_version": 1,
+            "sources": provenance,
+            "references": references,
+            "versions": build._dependency_versions(data_dir.parent),
+            "tables": {
+                "historical_games": build._table_manifest(parquet_path, reread)
+            },
+            "validation": reread_report,
+        }
+        (stage_dir / "historical_games_manifest.json").write_text(
+            json.dumps(
+                manifest, indent=2, sort_keys=True, allow_nan=False
+            ) + "\n",
+            encoding="utf-8",
+        )
+        _publish_historical_pair(stage_dir, data_dir / "parquet")
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)

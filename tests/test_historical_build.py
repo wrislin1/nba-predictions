@@ -1,9 +1,27 @@
+import hashlib
+import json
+import os
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from nba_data import historical_build
+from nba_data import cache, historical_bref, historical_build
+
+
+SEED_INDEX_HTML = (
+    b'<html><body>'
+    b'<a href="/leagues/BAA_1947_games-november.html">November</a>'
+    b"</body></html>"
+)
+SEED_MONTH_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/historical_bref/BAA_1947_games-november.html"
+)
+SEED_MONTH_URL = (
+    "https://www.basketball-reference.com/leagues/"
+    "BAA_1947_games-november.html"
+)
 
 
 COUNT_COLUMNS = [
@@ -313,6 +331,244 @@ def assembled_game_frame():
     }])
     frame = frame.loc[:, historical_build.HISTORICAL_COLUMNS]
     return frame.astype(historical_build.HISTORICAL_DTYPES)
+
+
+def seed_verified_historical_cache(repo_dir):
+    cache_dir = repo_dir / "raw/historical_bref"
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games.html",
+        SEED_INDEX_HTML,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_index",
+            "league": "BAA",
+            "season": 1947,
+            "url": historical_bref.index_url(1947),
+        },
+        lambda path: historical_bref.validate_index(path, 1947),
+    )
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games-november.html",
+        SEED_MONTH_FIXTURE.read_bytes(),
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": "BAA",
+            "season": 1947,
+            "month": "november",
+            "url": SEED_MONTH_URL,
+        },
+        lambda path: historical_bref.validate_month(
+            path, 1947, SEED_MONTH_URL
+        ),
+    )
+
+
+def test_raw_provenance_rejects_orphan_body(tmp_path):
+    """Would fail if a lone historical body could enter a manifest."""
+    cache_dir = tmp_path / "raw/historical_bref"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "BAA_1947_games.html").write_bytes(b"<html></html>")
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="incomplete historical cache pair",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
+def test_raw_provenance_rejects_metadata_url_mismatch(tmp_path):
+    """Would fail if a verified body could be claimed by another URL."""
+    seed_verified_historical_cache(tmp_path)
+    sidecar = next(
+        (tmp_path / "raw/historical_bref").glob(
+            "*games-november.html.meta.json"
+        )
+    )
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["url"] = "https://example.org/wrong"
+    sidecar.write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="historical cache metadata mismatch",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param("orphan_sidecar", id="orphan-sidecar"),
+        pytest.param("checksum", id="checksum"),
+        pytest.param("identity", id="identity"),
+        pytest.param("extra", id="unexpected-file"),
+        pytest.param("months", id="discovered-month-set"),
+    ],
+)
+def test_raw_provenance_rejects_unattestable_cache_inventory(tmp_path, mutation):
+    """Would fail if cache inventory drift were silently attested."""
+    seed_verified_historical_cache(tmp_path)
+    cache_dir = tmp_path / "raw/historical_bref"
+    if mutation == "orphan_sidecar":
+        (cache_dir / "BAA_1947_games-december.html.meta.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+    elif mutation == "checksum":
+        (cache_dir / "BAA_1947_games-november.html").write_bytes(b"changed")
+    elif mutation == "identity":
+        sidecar = cache_dir / "BAA_1947_games.html.meta.json"
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        metadata["provider"] = "wrong"
+        sidecar.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+    elif mutation == "extra":
+        (cache_dir / "notes.txt").write_text("not cache", encoding="utf-8")
+    else:
+        (cache_dir / "BAA_1947_games.html").write_bytes(
+            SEED_INDEX_HTML.replace(b"</body>", b'<a href="/leagues/BAA_1947_games-december.html">December</a></body>')
+        )
+        sidecar = cache_dir / "BAA_1947_games.html.meta.json"
+        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+        metadata["sha256"] = hashlib.sha256(
+            (cache_dir / "BAA_1947_games.html").read_bytes()
+        ).hexdigest()
+        sidecar.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+
+    with pytest.raises(historical_build.HistoricalValidationError):
+        historical_build._raw_provenance(tmp_path)
+
+
+def test_publish_historical_pair_restores_complete_pair_after_replace_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if a second historical replacement lost the first old file."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    old = {
+        "historical_games.parquet": b"old games",
+        "historical_games_manifest.json": b"old manifest",
+    }
+    for name, payload in old.items():
+        (output / name).write_bytes(payload)
+        (stage / name).write_bytes(b"new " + payload)
+    actual_replace = os.replace
+    moves = 0
+
+    def fail_second_stage_move(source, destination):
+        nonlocal moves
+        if Path(source).parent == stage and Path(destination).parent == output:
+            moves += 1
+            if moves == 2:
+                raise OSError("seeded replacement failure")
+        actual_replace(source, destination)
+
+    monkeypatch.setattr(historical_build.os, "replace", fail_second_stage_move)
+
+    with pytest.raises(OSError, match="seeded replacement failure"):
+        historical_build._publish_historical_pair(stage, output)
+
+    assert {name: (output / name).read_bytes() for name in old} == old
+
+
+def test_run_rejects_modern_publication_starting_after_1984(monkeypatch, tmp_path):
+    """Would fail if historical publication could bridge a gap after 1983."""
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1985]}).to_parquet(output / "games.parquet")
+    monkeypatch.setattr(
+        historical_build, "assemble", lambda data_dir: (assembled_game_frame(), {})
+    )
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="modern publication must begin at ending season 1984",
+    ):
+        historical_build.run(tmp_path)
+
+
+def test_run_preserves_prior_historical_pair_when_validation_fails(
+    monkeypatch, tmp_path
+):
+    """Would fail if pre-publication validation could replace old history."""
+    output = tmp_path / "parquet"
+    output.mkdir()
+    old = {
+        "historical_games.parquet": b"old games",
+        "historical_games_manifest.json": b"old manifest",
+    }
+    for name, payload in old.items():
+        (output / name).write_bytes(payload)
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (_ for _ in ()).throw(
+            historical_build.HistoricalValidationError("seeded")
+        ),
+    )
+
+    with pytest.raises(historical_build.HistoricalValidationError, match="seeded"):
+        historical_build.run(tmp_path)
+
+    assert {name: (output / name).read_bytes() for name in old} == old
+
+
+def test_run_publishes_deterministic_attested_historical_manifest(
+    monkeypatch, tmp_path
+):
+    """Would fail if historical publication leaked volatile or wrong provenance."""
+    monkeypatch.setattr(
+        historical_build.historical_bref, "HISTORICAL_SEASONS", (1947, 1983)
+    )
+    seed_verified_historical_cache(tmp_path)
+    seed_historical_references(tmp_path, {1947: 1, 1983: 1})
+    reference_dir = tmp_path / "reference"
+    (reference_dir / "franchises.csv").write_bytes(
+        historical_build.franchises.REFERENCE.read_bytes()
+    )
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1984]}).to_parquet(output / "games.parquet")
+    games = assembled_game_frame()
+    later = games.copy()
+    later.loc[0, "game_id"] = "bref-198311010TOR"
+    later.loc[0, "season"] = 1983
+    later.loc[0, "league"] = "NBA"
+    later.loc[0, "schedule_url"] = (
+        "https://www.basketball-reference.com/leagues/"
+        "NBA_1983_games-october.html"
+    )
+    games = pd.concat([games, later], ignore_index=True).astype(
+        historical_build.HISTORICAL_DTYPES
+    )
+    report = historical_build.validate(games, {1947: 1, 1983: 1})
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (games.copy(), report.copy()),
+    )
+
+    historical_build.run(tmp_path)
+    first = {
+        name: hashlib.sha256((output / name).read_bytes()).hexdigest()
+        for name in historical_build.HISTORICAL_PRODUCTS
+    }
+    historical_build.run(tmp_path)
+    second = {
+        name: hashlib.sha256((output / name).read_bytes()).hexdigest()
+        for name in historical_build.HISTORICAL_PRODUCTS
+    }
+    manifest = json.loads(
+        (output / "historical_games_manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert first == second
+    assert manifest["schema_version"] == 1
+    assert manifest["tables"]["historical_games"]["min_season"] == 1947
+    assert manifest["tables"]["historical_games"]["max_season"] == 1983
+    assert "fetched_at" not in json.dumps(manifest)
+    assert "/home/" not in json.dumps(manifest)
 
 
 def test_assemble_resolves_lineage_and_orients_margin(monkeypatch, tmp_path):
