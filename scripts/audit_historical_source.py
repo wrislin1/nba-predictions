@@ -45,8 +45,12 @@ def render_markdown(audits: list[dict]) -> str:
         "",
         "Only `{league}_{season}_games-{month}.html` links are accepted; "
         "`games-playoffs.html` is excluded.",
-        "Rows after an exact `Playoffs` separator are postseason; 1947 uses "
-        "a documented first-playoff-game fallback when no separator exists.",
+        "Rows after an exact `Playoffs` separator are postseason. Four "
+        "verified duplicate `Playoffs` layouts classify rows before the first "
+        "separator, except for two verified 1953 carryovers between separators. "
+        "Exact `Tiebreaker` and `Protest; does not count toward record` rows "
+        "are excluded as postseason or voided games. 1947 and 1980 use a "
+        "documented first-playoff-game fallback when no separator exists.",
         "",
         "## Schema and statistic keys",
         "",

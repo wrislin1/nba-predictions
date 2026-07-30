@@ -27,6 +27,10 @@ REQUIRED_STATS = frozenset({
 OVERTIME_PATTERN = re.compile(r"^(?:(\d+)OT|OT)?$")
 BOXSCORE_PATTERN = re.compile(r"^/boxscores/(\d{9}[A-Z0-9]{3})\.html$")
 EXPLICIT_NEUTRAL_REMARKS = frozenset({"neutral site"})
+EXCLUDED_REGULAR_SEASON_REMARKS = frozenset({
+    "tiebreaker",
+    "protest; does not count toward record",
+})
 
 
 @dataclass(frozen=True, order=True)
@@ -51,6 +55,28 @@ CURATED_PLAYOFF_BOUNDARIES = {
             "The checksum-verified cached April schedule starts with this "
             "April 2 playoff game and has no in-table Playoffs separator."
         ),
+    ),
+    1980: _CuratedPlayoffBoundary(
+        first_playoff_game_id="bref-198004020PHI",
+        schedule_url=f"{BASE_URL}/leagues/NBA_1980_games-april.html",
+        note=(
+            "The checksum-verified cached April schedule starts with this "
+            "April 2 playoff game and has no in-table Playoffs separator."
+        ),
+    ),
+}
+
+VERIFIED_DUPLICATE_PLAYOFF_SEPARATORS = {
+    f"{BASE_URL}/leagues/BAA_1948_games-march.html": (29, 33),
+    f"{BASE_URL}/leagues/NBA_1950_games-march.html": (81, 85),
+    f"{BASE_URL}/leagues/NBA_1953_games-march.html": (47, 51),
+    f"{BASE_URL}/leagues/NBA_1957_games-march.html": (32, 35),
+}
+
+VERIFIED_DUPLICATE_SEPARATOR_REGIONS = {
+    f"{BASE_URL}/leagues/NBA_1953_games-march.html": (
+        ("bref-195303170SYR", "bref-195303180MLH"),
+        ("bref-195303170NYK",),
     ),
 }
 
@@ -239,7 +265,10 @@ def validate_month(path: Path, season: int, url: str) -> None:
     parse_schedule_page(path.read_bytes(), season=season, schedule_url=url)
 
 
-def _playoff_separator_source_row(payload: bytes, schedule_url: str) -> int | None:
+def _playoff_separator_source_rows(
+    payload: bytes,
+    schedule_url: str,
+) -> tuple[int, ...]:
     root = _document(payload, schedule_url)
     tables = root.xpath("//table[@id='schedule']")
     if len(tables) != 1:
@@ -254,9 +283,59 @@ def _playoff_separator_source_row(payload: bytes, schedule_url: str) -> int | No
         if "thead" in row.get("class", "").split()
         and " ".join("".join(row.itertext()).split()) == "Playoffs"
     ]
-    if len(matches) > 1:
-        raise ValueError(f"{schedule_url}: duplicate Playoffs separator")
-    return matches[0] if matches else None
+    separator_rows = tuple(matches)
+    expected_rows = VERIFIED_DUPLICATE_PLAYOFF_SEPARATORS.get(schedule_url)
+    if expected_rows is not None and separator_rows != expected_rows:
+        raise ValueError(
+            f"{schedule_url}: verified duplicate Playoffs separator rows "
+            f"must be {expected_rows}, found {separator_rows}"
+        )
+    if expected_rows is None and len(separator_rows) > 1:
+        raise ValueError(
+            f"{schedule_url}: unverified duplicate Playoffs separator rows "
+            f"{separator_rows}"
+        )
+    return separator_rows
+
+
+def _without_excluded_remarks(frame: pd.DataFrame) -> pd.DataFrame:
+    remarks = frame["game_remarks"].str.casefold()
+    return frame.loc[~remarks.isin(EXCLUDED_REGULAR_SEASON_REMARKS)]
+
+
+def _verified_duplicate_separator_frame(
+    frame: pd.DataFrame,
+    schedule_url: str,
+    separator_rows: tuple[int, ...],
+) -> pd.DataFrame:
+    first_separator, second_separator = separator_rows
+    output = frame.loc[frame["source_row"] < first_separator]
+    regions = VERIFIED_DUPLICATE_SEPARATOR_REGIONS.get(schedule_url)
+    if regions is None:
+        return output
+    regular_ids, postseason_ids = regions
+    between = frame.loc[
+        frame["source_row"].gt(first_separator)
+        & frame["source_row"].lt(second_separator)
+    ]
+    for game_ids, expected_region in (
+        (regular_ids, "regular-season"),
+        (postseason_ids, "postseason"),
+    ):
+        matches = between.loc[between["game_id"].isin(game_ids)]
+        if (
+            len(matches) != len(game_ids)
+            or set(matches["game_id"]) != set(game_ids)
+            or matches["game_id"].duplicated().any()
+        ):
+            raise ValueError(
+                f"{schedule_url}: expected {expected_region} between-separator "
+                f"games {game_ids} exactly once"
+            )
+    return pd.concat(
+        [output, between.loc[between["game_id"].isin(regular_ids)]],
+        ignore_index=True,
+    )
 
 
 def _request(session: requests.Session, url: str) -> bytes:
@@ -355,11 +434,18 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
         frame = parse_schedule_page(
             month_payload, season=season, schedule_url=page.url
         )
-        separator_row = _playoff_separator_source_row(month_payload, page.url)
-        if separator_row is not None:
-            parsed_pages.append(
-                (page, frame.loc[frame["source_row"] < separator_row])
-            )
+        frame = _without_excluded_remarks(frame)
+        separator_rows = _playoff_separator_source_rows(month_payload, page.url)
+        if separator_rows:
+            if len(separator_rows) == 1:
+                selected = frame.loc[
+                    frame["source_row"] < separator_rows[0]
+                ]
+            else:
+                selected = _verified_duplicate_separator_frame(
+                    frame, page.url, separator_rows
+                )
+            parsed_pages.append((page, selected))
             separator_found = True
             continue
         parsed_pages.append((page, frame))

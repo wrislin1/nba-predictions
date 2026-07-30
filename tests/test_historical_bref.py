@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import requests
 
-from nba_data import cache, historical_bref
+from nba_data import cache, franchises, historical_bref, historical_build
 
 
 FIXTURES = Path(__file__).parent / "fixtures/historical_bref"
@@ -315,7 +315,7 @@ def test_audit_renderer_documents_source_boundaries_and_missingness():
 
     assert "games-playoffs.html` is excluded" in rendered
     assert "exact `Playoffs` separator" in rendered
-    assert "1947 uses a documented first-playoff-game fallback" in rendered
+    assert "1947 and 1980 use a documented first-playoff-game fallback" in rendered
     assert "### 1947 BAA" in rendered
     assert "- Games: 331" in rendered
     assert "## Schema and statistic keys" in rendered
@@ -435,3 +435,138 @@ def test_fallback_ids_are_stable_across_input_order():
     assert forward[["schedule_url", "game_id"]].equals(
         reverse[["schedule_url", "game_id"]]
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("season", historical_bref.HISTORICAL_SEASONS)
+def test_every_historical_cached_season_matches_curated_count(season):
+    counts = historical_build.load_expected_counts(
+        Path("data/reference/historical_season_counts.csv")
+    )
+
+    frame = historical_bref.load_season(Path("data/raw"), season)
+
+    assert len(frame) == counts[season]
+    assert frame["game_id"].notna().all()
+    assert frame["game_id"].is_unique
+    assert frame["away_pts"].notna().all()
+    assert frame["home_pts"].notna().all()
+
+
+@pytest.mark.integration
+def test_every_historical_source_team_name_resolves_through_franchise_table():
+    pairs = set()
+    for season in historical_bref.HISTORICAL_SEASONS:
+        frame = historical_bref.load_season(Path("data/raw"), season)
+        pairs.update((season, name) for name in frame["away_team_name"])
+        pairs.update((season, name) for name in frame["home_team_name"])
+
+    for season, name in sorted(pairs):
+        assert franchises.resolve(name, season) in franchises.FRANCHISE_IDS
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("season", "game_id"),
+    [
+        (1948, "bref-194803230CHS"),
+        (1948, "bref-194803250CHS"),
+        (1950, "bref-195003200FTW"),
+        (1950, "bref-195003210ROC"),
+        (1956, "bref-195603150SYR"),
+        (1956, "bref-195603160STL"),
+        (1957, "bref-195703140STL"),
+        (1957, "bref-195703160STL"),
+    ],
+)
+def test_cached_historical_tiebreakers_are_excluded(season, game_id):
+    frame = historical_bref.load_season(Path("data/raw"), season)
+
+    assert game_id not in set(frame["game_id"])
+
+
+@pytest.mark.integration
+def test_cached_1953_voided_game_is_excluded_but_replay_is_retained():
+    frame = historical_bref.load_season(Path("data/raw"), 1953)
+
+    assert "bref-195211280MLH" not in set(frame["game_id"])
+    assert "bref-195303110MLH" in set(frame["game_id"])
+
+
+@pytest.mark.integration
+def test_cached_1953_duplicate_separator_keeps_only_verified_carryovers():
+    frame = historical_bref.load_season(Path("data/raw"), 1953)
+
+    assert "bref-195303170SYR" in set(frame["game_id"])
+    assert "bref-195303180MLH" in set(frame["game_id"])
+    assert "bref-195303170NYK" not in set(frame["game_id"])
+
+
+@pytest.mark.integration
+def test_cached_1980_month_boundary_excludes_first_playoff_game():
+    frame = historical_bref.load_season(Path("data/raw"), 1980)
+
+    assert "bref-198004020PHI" not in set(frame["game_id"])
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("filename", "expected_rows"),
+    [
+        ("BAA_1948_games-march.html", (29, 33)),
+        ("NBA_1950_games-march.html", (81, 85)),
+        ("NBA_1953_games-march.html", (47, 51)),
+        ("NBA_1957_games-march.html", (32, 35)),
+    ],
+)
+def test_cached_verified_duplicate_separator_layouts_are_exact(
+    filename, expected_rows
+):
+    payload = (Path("data/raw/historical_bref") / filename).read_bytes()
+    schedule_url = f"{historical_bref.BASE_URL}/leagues/{filename}"
+
+    assert historical_bref._playoff_separator_source_rows(
+        payload, schedule_url
+    ) == expected_rows
+
+
+@pytest.mark.integration
+def test_duplicate_separator_validation_rejects_unknown_missing_moved_and_new_rows():
+    filename = "BAA_1948_games-march.html"
+    payload = (Path("data/raw/historical_bref") / filename).read_bytes()
+    schedule_url = f"{historical_bref.BASE_URL}/leagues/{filename}"
+    separator = b"<tr class='thead'><th colspan='11'>Playoffs</th></tr>"
+
+    with pytest.raises(ValueError, match="unverified duplicate Playoffs"):
+        historical_bref._playoff_separator_source_rows(
+            payload,
+            "https://example.test/unverified-duplicate.html",
+        )
+    with pytest.raises(ValueError, match="verified duplicate Playoffs"):
+        historical_bref._playoff_separator_source_rows(
+            payload.replace(separator, b"", 1), schedule_url
+        )
+    with pytest.raises(ValueError, match="verified duplicate Playoffs"):
+        historical_bref._playoff_separator_source_rows(
+            payload.replace(
+                b"<tbody>",
+                b"<tbody><tr class='thead'><th>Header</th></tr>",
+                1,
+            ),
+            schedule_url,
+        )
+    with pytest.raises(ValueError, match="verified duplicate Playoffs"):
+        historical_bref._playoff_separator_source_rows(
+            payload.replace(separator, separator + separator, 1),
+            schedule_url,
+        )
+
+
+def test_audit_renderer_documents_verified_postseason_edge_cases():
+    rendered = audit_historical_source.render_markdown([])
+
+    assert "verified duplicate `Playoffs` layouts" in rendered
+    assert "Tiebreaker" in rendered
+    assert "does not count toward record" in rendered
+    assert "1953 carryovers" in rendered
+    assert "1947 and 1980 use a documented first-playoff-game fallback" in rendered
