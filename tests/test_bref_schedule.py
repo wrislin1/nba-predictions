@@ -64,6 +64,8 @@ def test_parser_preserves_missing_zero_and_overtime_semantics():
 
     assert pd.isna(result.iloc[0]["attendance"])
     assert result.iloc[1]["attendance"] == 4329
+    assert result.iloc[2]["attendance"] == 0
+    assert pd.isna(result.iloc[2]["venue_name"])
     assert result["attendance_status"].tolist() == [
         "missing", "reported_positive", "reported_zero"
     ]
@@ -154,6 +156,11 @@ def test_assign_game_ids_is_stable_across_input_order():
     assert forward[["schedule_url", "game_id"]].equals(
         reverse[["schedule_url", "game_id"]]
     )
+    assert forward["game_id"].is_unique
+    assert forward["game_id"].tolist() == [
+        "bref-fallback-19461112-boston-celtics-at-providence-steamrollers-01",
+        "bref-fallback-19461112-boston-celtics-at-providence-steamrollers-02",
+    ]
 
 
 def test_parser_skips_non_final_rows_with_no_scores():
