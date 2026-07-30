@@ -10,6 +10,7 @@ import shutil
 import tempfile
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from nba_data import build, cache, franchises, historical_bref
 
@@ -462,6 +463,12 @@ def _cache_error(exc: Exception) -> HistoricalValidationError:
 def _raw_provenance(data_dir: Path) -> dict:
     """Attest every historical schedule cache body and its exact sidecar."""
     cache_dir = data_dir / "raw/historical_bref"
+    if cache_dir.is_symlink() or (
+        cache_dir.exists() and not cache_dir.is_dir()
+    ):
+        raise HistoricalValidationError(
+            "historical cache root must be a regular directory"
+        )
     if not cache_dir.exists():
         return {"basketball_reference": {"pages": []}}
 
@@ -625,7 +632,10 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
-def _publish_historical_pair(stage_dir: Path, output_dir: Path) -> None:
+def _publish_historical_pair(
+    stage_dir: Path, output_dir: Path
+) -> Path | None:
+    """Publish the pair, returning retained rollback data after commit."""
     staged = sorted(path.name for path in stage_dir.iterdir())
     if staged != sorted(HISTORICAL_PRODUCTS):
         raise HistoricalValidationError(
@@ -671,18 +681,35 @@ def _publish_historical_pair(stage_dir: Path, output_dir: Path) -> None:
             published.append(name)
     except OSError:
         if rollback_dir is not None:
-            for name in moved_prior:
-                if (rollback_dir / name).exists():
-                    os.replace(rollback_dir / name, output_dir / name)
+            try:
+                for name in moved_prior:
+                    if (rollback_dir / name).exists():
+                        os.replace(rollback_dir / name, output_dir / name)
+            except OSError as restoration_error:
+                raise HistoricalValidationError(
+                    "historical publication restoration failed; "
+                    f"recovery data retained at {rollback_dir}"
+                ) from restoration_error
+            try:
+                shutil.rmtree(rollback_dir)
+            except OSError as cleanup_error:
+                raise HistoricalValidationError(
+                    "historical publication failed after restoring the prior "
+                    "pair; rollback data retained at "
+                    f"{rollback_dir}"
+                ) from cleanup_error
         else:
             for name in published:
                 path = output_dir / name
                 if path.exists():
                     path.unlink()
         raise
-    finally:
-        if rollback_dir is not None and rollback_dir.exists():
+    if rollback_dir is not None and rollback_dir.exists():
+        try:
             shutil.rmtree(rollback_dir)
+        except OSError:
+            return rollback_dir
+    return None
 
 
 def run(data_dir: Path) -> None:
@@ -719,14 +746,17 @@ def run(data_dir: Path) -> None:
             raise HistoricalValidationError(
                 "historical validation changed after Parquet re-read"
             )
+        table_manifest = build._table_manifest(parquet_path, reread)
+        table_manifest["schema"] = [
+            {"name": field.name, "arrow_type": str(field.type)}
+            for field in pq.read_schema(parquet_path)
+        ]
         manifest = {
             "schema_version": 1,
             "sources": provenance,
             "references": references,
             "versions": build._dependency_versions(data_dir.parent),
-            "tables": {
-                "historical_games": build._table_manifest(parquet_path, reread)
-            },
+            "tables": {"historical_games": table_manifest},
             "validation": reread_report,
         }
         (stage_dir / "historical_games_manifest.json").write_text(

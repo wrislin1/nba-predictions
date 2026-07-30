@@ -3126,6 +3126,80 @@
       "max_season": 1983,
       "min_season": 1947,
       "rows": 19405,
+      "schema": [
+        {
+          "arrow_type": "large_string",
+          "name": "game_id"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "season"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "league"
+        },
+        {
+          "arrow_type": "date32[day]",
+          "name": "game_date"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "away_team_name"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "home_team_name"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "away_franchise_id"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "home_franchise_id"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "away_pts"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "home_pts"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "home_margin"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "overtime_periods"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "site_status"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "venue_name"
+        },
+        {
+          "arrow_type": "int64",
+          "name": "attendance"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "attendance_status"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "boxscore_url"
+        },
+        {
+          "arrow_type": "large_string",
+          "name": "schedule_url"
+        }
+      ],
       "sha256": "2c545d90435f2dc0f7fed1369d02a5033602d1544e2734dde92a8b7ed1eb9269"
     }
   },

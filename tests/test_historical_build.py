@@ -627,6 +627,110 @@ def test_publish_historical_pair_restores_prior_after_second_backup_failure(
     assert list(tmp_path.glob(".historical-rollback-*")) == []
 
 
+def test_publish_historical_pair_retains_recovery_after_restoration_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if a failed restoration destroyed the only prior pair."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    old = {}
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        old[name] = b"old " + name.encode()
+        (output / name).write_bytes(old[name])
+        (stage / name).write_bytes(b"new " + name.encode())
+    real_replace = os.replace
+    publication_moves = 0
+
+    def fail_publication_then_restoration(source, destination):
+        nonlocal publication_moves
+        source = Path(source)
+        destination = Path(destination)
+        if source.parent == stage and destination.parent == output:
+            publication_moves += 1
+            if publication_moves == 2:
+                raise OSError("seeded publication failure")
+        if (
+            source.parent.name.startswith(".historical-rollback-")
+            and destination.parent == output
+        ):
+            raise OSError("seeded restoration failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        historical_build.os, "replace", fail_publication_then_restoration
+    )
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="historical publication restoration failed",
+    ) as caught:
+        historical_build._publish_historical_pair(stage, output)
+
+    recovery_dirs = list(tmp_path.glob(".historical-rollback-*"))
+    assert len(recovery_dirs) == 1
+    recovery_dir = recovery_dirs[0]
+    assert str(recovery_dir) in str(caught.value)
+    assert {
+        name: (recovery_dir / name).read_bytes() for name in old
+    } == old
+
+
+def test_publish_historical_pair_retains_prior_after_commit_cleanup_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if old-pair cleanup invalidated a committed publication."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    old = {}
+    new = {}
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        old[name] = b"old " + name.encode()
+        new[name] = b"new " + name.encode()
+        (output / name).write_bytes(old[name])
+        (stage / name).write_bytes(new[name])
+    real_rmtree = historical_build.shutil.rmtree
+
+    def retain_rollback(path):
+        if Path(path).name.startswith(".historical-rollback-"):
+            raise OSError("seeded rollback cleanup failure")
+        real_rmtree(path)
+
+    monkeypatch.setattr(historical_build.shutil, "rmtree", retain_rollback)
+
+    recovery_dir = historical_build._publish_historical_pair(stage, output)
+
+    assert recovery_dir is not None
+    assert recovery_dir == next(tmp_path.glob(".historical-rollback-*"))
+    assert {name: (output / name).read_bytes() for name in new} == new
+    assert {
+        name: (recovery_dir / name).read_bytes() for name in old
+    } == old
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_raw_provenance_rejects_non_directory_cache_root(tmp_path, kind):
+    """Would fail if provenance followed or traversed a non-directory root."""
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    cache_root = raw_dir / "historical_bref"
+    if kind == "file":
+        cache_root.write_bytes(b"not a directory")
+    else:
+        target = tmp_path / "cache-target"
+        target.mkdir()
+        cache_root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="historical cache root must be a regular directory",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
 @pytest.mark.parametrize("target", ["body", "sidecar"])
 @pytest.mark.parametrize("kind", ["directory", "symlink"])
 def test_raw_provenance_rejects_non_regular_cache_entry(tmp_path, target, kind):
@@ -794,6 +898,26 @@ def test_run_publishes_deterministic_attested_historical_manifest(
     assert manifest["schema_version"] == 1
     assert manifest["tables"]["historical_games"]["min_season"] == 1947
     assert manifest["tables"]["historical_games"]["max_season"] == 1983
+    assert manifest["tables"]["historical_games"]["schema"] == [
+        {"name": "game_id", "arrow_type": "large_string"},
+        {"name": "season", "arrow_type": "int64"},
+        {"name": "league", "arrow_type": "large_string"},
+        {"name": "game_date", "arrow_type": "date32[day]"},
+        {"name": "away_team_name", "arrow_type": "large_string"},
+        {"name": "home_team_name", "arrow_type": "large_string"},
+        {"name": "away_franchise_id", "arrow_type": "large_string"},
+        {"name": "home_franchise_id", "arrow_type": "large_string"},
+        {"name": "away_pts", "arrow_type": "int64"},
+        {"name": "home_pts", "arrow_type": "int64"},
+        {"name": "home_margin", "arrow_type": "int64"},
+        {"name": "overtime_periods", "arrow_type": "int64"},
+        {"name": "site_status", "arrow_type": "large_string"},
+        {"name": "venue_name", "arrow_type": "large_string"},
+        {"name": "attendance", "arrow_type": "int64"},
+        {"name": "attendance_status", "arrow_type": "large_string"},
+        {"name": "boxscore_url", "arrow_type": "large_string"},
+        {"name": "schedule_url", "arrow_type": "large_string"},
+    ]
     assert "fetched_at" not in json.dumps(manifest)
     assert "/home/" not in json.dumps(manifest)
 
