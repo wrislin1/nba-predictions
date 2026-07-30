@@ -1,28 +1,45 @@
 alias,franchise_id,first_season,last_season
+Anderson Packers,AND_1949,1950,1950
 Atlanta Hawks,ATL,,
-Boston Celtics,BOS,,
+Tri-Cities Blackhawks,ATL,1950,1951
+Milwaukee Hawks,ATL,1952,1955
+St. Louis Hawks,ATL,1956,1968
+Baltimore Bullets,BAL_1947,1948,1955
 New Jersey Nets,BKN,,2012
 Brooklyn Nets,BKN,2013,
-Charlotte Hornets,NOP,,2002
+Boston Celtics,BOS,,
 Charlotte Bobcats,CHA,2005,2014
 Charlotte Hornets,CHA,2015,
 Chicago Bulls,CHI,,
+Chicago Stags,CHI_1946,1947,1950
 Cleveland Cavaliers,CLE,,
+Cleveland Rebels,CLE_1946,1947,1947
 Dallas Mavericks,DAL,,
-Denver Nuggets,DEN,,
+Denver Nuggets,DEN,1977,
+Denver Nuggets,DEN_1949,1950,1950
 Detroit Pistons,DET,,
+Fort Wayne Pistons,DET,1949,1957
+Detroit Falcons,DET_1946,1947,1947
 Golden State Warriors,GSW,,
+Philadelphia Warriors,GSW,1947,1962
+San Francisco Warriors,GSW,1963,1971
 Houston Rockets,HOU,,
+San Diego Rockets,HOU,1968,1971
 Indiana Pacers,IND,,
+Indianapolis Jets,IND_1948,1949,1949
+Indianapolis Olympians,IND_1949,1950,1953
 San Diego Clippers,LAC,,1984
-Los Angeles Clippers,LAC,1985,
+Buffalo Braves,LAC,1971,1978
 LA Clippers,LAC,1985,
+Los Angeles Clippers,LAC,1985,
 Los Angeles Lakers,LAL,,
+Minneapolis Lakers,LAL,1949,1960
 Vancouver Grizzlies,MEM,,2001
 Memphis Grizzlies,MEM,2002,
 Miami Heat,MIA,,
 Milwaukee Bucks,MIL,,
 Minnesota Timberwolves,MIN,,
+Charlotte Hornets,NOP,,2002
 New Orleans Hornets,NOP,2003,2013
 New Orleans/Oklahoma City Hornets,NOP,2006,2007
 New Orleans Pelicans,NOP,2014,
@@ -31,12 +48,28 @@ Seattle SuperSonics,OKC,,2008
 Oklahoma City Thunder,OKC,2009,
 Orlando Magic,ORL,,
 Philadelphia 76ers,PHI,,
+Syracuse Nationals,PHI,1950,1963
 Phoenix Suns,PHX,,
+Pittsburgh Ironmen,PIT_1946,1947,1947
 Portland Trail Blazers,POR,,
+Providence Steamrollers,PRO_1946,1947,1949
 Kansas City Kings,SAC,,1985
+Rochester Royals,SAC,1949,1957
+Cincinnati Royals,SAC,1958,1972
+Kansas City-Omaha Kings,SAC,1973,1975
 Sacramento Kings,SAC,1986,
 San Antonio Spurs,SAS,,
+Sheboygan Red Skins,SHE_1949,1950,1950
+St. Louis Bombers,STL_1946,1947,1950
 Toronto Raptors,TOR,,
+Toronto Huskies,TOR_1946,1947,1947
 Utah Jazz,UTA,,
+New Orleans Jazz,UTA,1975,1979
 Washington Bullets,WAS,,1997
+Chicago Packers,WAS,1962,1962
+Chicago Zephyrs,WAS,1963,1963
+Baltimore Bullets,WAS,1964,1973
+Capital Bullets,WAS,1974,1974
 Washington Wizards,WAS,1998,
+Washington Capitols,WAS_1946,1947,1951
+Waterloo Hawks,WAT_1949,1950,1950

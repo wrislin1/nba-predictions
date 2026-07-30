@@ -1,6 +1,6 @@
 {
   "references": {
-    "reference/franchises.csv": "aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb",
+    "reference/franchises.csv": "f862921d6f630e01c5e1c080b7c6b29e5aec3400a663b4542d28ef4f26a7d103",
     "reference/game_corrections.csv": "4fe5af540239bb1dfb1b08b99e256dfd88a8fe05531c092256a633a19c84e6e4",
     "reference/hoopr_snapshot.json": "167dfaa6e1d949e9f4812687ff74f2316610b1f016b070fd5bb4151e857ff1dc",
     "reference/venue_capacities.csv": "7fcd2cfee1485d60541e77b89e6817f37fd6d18261b5680a5442a4bbc4bdbb45"
@@ -619,9 +619,9 @@
   "tables": {
     "franchises": {
       "max_season": 2015,
-      "min_season": 1984,
-      "rows": 41,
-      "sha256": "532eaaf5dbbc2a472b61371e1981232c2b212fd589a7c8544c27a1cc451a7e32"
+      "min_season": 1947,
+      "rows": 74,
+      "sha256": "9217ce5aa52beb9c38cffed162ef53e4bf8e4a3d73dd48d4032dae94a1e8c4ed"
     },
     "games": {
       "max_season": 2026,
