@@ -745,6 +745,82 @@ exec "$REAL_RSYNC" "$@"
     assert list(pin_tmp.glob(".historical-archive-manifest.*")) == []
 
 
+@pytest.mark.parametrize(
+    "terminal_mutation",
+    ["missing_final_newline", "additional_final_newline"],
+)
+def test_archive_rejects_noncanonical_checksum_terminal_bytes(
+    tmp_path: Path,
+    terminal_mutation: str,
+) -> None:
+    """Would fail if checksum comparison stripped terminal newlines."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    destination = snapshot_path(repo, archive_root)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+if test "$dry_run" = true && test ! -e "$RACE_MARKER"; then
+  : > "$RACE_MARKER"
+  destination="${!#}"
+  staging_cache="${destination%/}"
+  staged_checksums="$(dirname "$staging_cache")/SHA256SUMS"
+  if test "$TERMINAL_MUTATION" = "missing_final_newline"; then
+    truncate -s -1 -- "$staged_checksums"
+  else
+    printf '\\n' >> "$staged_checksums"
+  fi
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    race_marker = tmp_path / "checksum-terminal-mutation"
+    pin_tmp = tmp_path / "pin-tmp"
+    pin_tmp.mkdir()
+
+    archived = archive(
+        repo,
+        archive_root,
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "RACE_MARKER": str(race_marker),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+            "TERMINAL_MUTATION": terminal_mutation,
+            "TMPDIR": str(pin_tmp),
+        },
+    )
+    published_terminal = None
+    checksum_status = None
+    if destination.exists():
+        published_terminal = (
+            destination / "SHA256SUMS"
+        ).read_bytes()[-2:]
+        checksum_status = subprocess.run(
+            ["sha256sum", "-c", "--status", "SHA256SUMS"],
+            cwd=destination,
+            check=False,
+        ).returncode
+
+    assert race_marker.exists()
+    assert archived.returncode != 0, (
+        f"published_terminal={published_terminal!r} "
+        f"checksum_status={checksum_status}"
+    )
+    assert not destination.exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+    assert list(pin_tmp.glob(".historical-archive-manifest.*")) == []
+
+
 def test_archive_rejects_symlinked_live_manifest(tmp_path: Path) -> None:
     """Would fail if pinning normalized a previously rejected manifest."""
     repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)

@@ -251,11 +251,17 @@ validate_live_manifest_pin() {
     }
 }
 
+checksum_inventory=
 staging=
 trusted_manifest=
 cleanup() {
   if test -n "${staging:-}" && test -d "$staging"; then
     rm -rf -- "$staging"
+  fi
+  if test -n "${checksum_inventory:-}" &&
+    test -e "$checksum_inventory"
+  then
+    rm -f -- "$checksum_inventory"
   fi
   if test -n "${trusted_manifest:-}" && test -e "$trusted_manifest"; then
     rm -f -- "$trusted_manifest"
@@ -349,23 +355,25 @@ test "$staged_manifest_sha" = "$manifest_sha" || {
     "$staging/historical_games_manifest.json" >&2
   exit 1
 }
-expected_checksums="$(< "$staging/SHA256SUMS")"
-actual_checksums="$(
+checksum_inventory="$(
+  mktemp "$archive_root/.historical-archive.inventory.XXXXXX"
+)"
+(
   cd "$staging"
   find -P historical_bref -mindepth 1 -maxdepth 1 -type f -print0 \
     | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum
-)"
-test "$actual_checksums" = "$expected_checksums" || {
-  printf 'staged historical checksum inventory changed: %s\n' \
-    "$staging/SHA256SUMS" >&2
-  exit 1
-}
+) > "$checksum_inventory"
 (
   cd "$staging"
   sha256sum -c --status SHA256SUMS
 ) || {
   printf 'staged historical checksum verification failed: %s\n' \
+    "$staging/SHA256SUMS" >&2
+  exit 1
+}
+cmp -s -- "$staging/SHA256SUMS" "$checksum_inventory" || {
+  printf 'staged historical checksum inventory changed: %s\n' \
     "$staging/SHA256SUMS" >&2
   exit 1
 }
@@ -375,6 +383,8 @@ test ! -d "$staging" || {
   exit 1
 }
 staging=
+rm -f -- "$checksum_inventory"
+checksum_inventory=
 rm -f -- "$trusted_manifest"
 trusted_manifest=
 trap - EXIT
