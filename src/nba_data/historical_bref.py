@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import re
+import stat
 import time
 from pathlib import Path
 from typing import Iterable
@@ -188,7 +189,14 @@ def parse_schedule_page(
         if not away_pts and not home_pts:
             continue
         box_href = _cell_href(row, "box_score_text")
-        box_match = BOXSCORE_PATTERN.fullmatch(box_href or "")
+        box_match = None
+        if box_href is not None and box_href.strip():
+            box_match = BOXSCORE_PATTERN.fullmatch(box_href)
+            if box_match is None:
+                raise ValueError(
+                    f"{schedule_url}: source row {source_row} has invalid "
+                    f"box-score href {box_href!r}"
+                )
         attendance, attendance_status = _attendance(_cell_text(row, "attendance"))
         remarks = _cell_text(row, "game_remarks")
         normalized_remarks = remarks.casefold()
@@ -360,12 +368,24 @@ def _request(session: requests.Session, url: str) -> bytes:
     return response.content
 
 
+def _validate_cache_root(cache_dir: Path) -> None:
+    try:
+        mode = cache_dir.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(mode):
+        raise ValueError(
+            f"historical cache root must be a real directory: {cache_dir}"
+        )
+
+
 def fetch(
     raw_dir: Path,
     seasons: Iterable[int] = HISTORICAL_SEASONS,
     sleep_s: float = 12,
 ) -> None:
     cache_dir = raw_dir / "historical_bref"
+    _validate_cache_root(cache_dir)
     session = requests.Session()
     session.headers.update({"User-Agent": bref.USER_AGENT})
     requested = False
@@ -425,6 +445,7 @@ def fetch(
 
 def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
     cache_dir = raw_dir / "historical_bref"
+    _validate_cache_root(cache_dir)
     index_path = cache_dir / index_filename(season)
     payload = cache.require_valid(
         index_path,

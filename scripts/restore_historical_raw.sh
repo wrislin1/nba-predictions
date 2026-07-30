@@ -71,6 +71,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 manifest="${NBA_HISTORICAL_RAW_MANIFEST:-$root/data/parquet/historical_games_manifest.json}"
 archive_root="${NBA_HISTORICAL_RAW_ARCHIVE_ROOT:-/mnt/nas/llm/documents/nba-predictions-archive}"
 destination="${NBA_HISTORICAL_RAW_DESTINATION:-$root/data/raw/historical_bref}"
+cache_manifest_validator="$root/scripts/archive_historical_raw_snapshot.sh"
 
 test -f "$manifest" || {
   printf 'missing historical manifest: %s\n' "$manifest" >&2
@@ -117,6 +118,8 @@ test "$actual_checksums" = "$expected_checksums" || {
   cd "$snapshot"
   sha256sum -c --status SHA256SUMS
 )
+bash "$cache_manifest_validator" --validate-cache-manifest \
+  "$snapshot/historical_bref" "$snapshot/historical_games_manifest.json"
 test ! -e "$destination" || {
   printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
   exit 1
@@ -133,6 +136,8 @@ cleanup() {
 trap cleanup EXIT
 rsync -a --checksum "$snapshot/historical_bref/" "$staging/"
 validate_historical_cache "$staging"
+bash "$cache_manifest_validator" --validate-cache-manifest \
+  "$staging" "$snapshot/historical_games_manifest.json"
 changes="$(
   rsync -a --checksum --dry-run --itemize-changes --delete \
     "$snapshot/historical_bref/" "$staging/"

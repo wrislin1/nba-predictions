@@ -30,20 +30,48 @@ def seed_historical_snapshot_fixture(
     archive_root.mkdir()
     cache_dir = repo / "data/raw/historical_bref"
     cache_dir.mkdir(parents=True)
-    for name, payload in {
+    bodies = {
         "BAA_1947_games.html": b"<html>index</html>",
-        "BAA_1947_games.html.meta.json": b'{"sha256": "seeded-index"}\n',
         "BAA_1947_games-november.html": b"<html>month</html>",
-        "BAA_1947_games-november.html.meta.json": (
-            b'{"sha256": "seeded-month"}\n'
-        ),
-    }.items():
+    }
+    pages = []
+    for name, payload in bodies.items():
         (cache_dir / name).write_bytes(payload)
+        month = "november" if "-november" in name else None
+        resource = (
+            "historical_schedule_month"
+            if month is not None
+            else "historical_schedule_index"
+        )
+        sha256 = hashlib.sha256(payload).hexdigest()
+        url = f"https://www.basketball-reference.com/leagues/{name}"
+        metadata = {
+            "provider": "basketball_reference",
+            "resource": resource,
+            "league": "BAA",
+            "season": 1947,
+            "url": url,
+            "sha256": sha256,
+        }
+        if month is not None:
+            metadata["month"] = month
+        (cache_dir / f"{name}.meta.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        pages.append({
+            "path": f"raw/historical_bref/{name}",
+            **metadata,
+            "month": month,
+        })
     manifest = repo / "data/parquet/historical_games_manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         json.dumps(
-            {"tables": {"historical_games": {"max_season": 1983}}},
+            {
+                "sources": {"basketball_reference": {"pages": pages}},
+                "tables": {"historical_games": {"max_season": 1983}},
+            },
             indent=2,
             sort_keys=True,
         )
@@ -73,6 +101,29 @@ def snapshot_path(repo: Path, archive_root: Path) -> Path:
     manifest = repo / "data/parquet/historical_games_manifest.json"
     sha12 = hashlib.sha256(manifest.read_bytes()).hexdigest()[:12]
     return archive_root / f"historical-raw-1983-{sha12}"
+
+
+def read_manifest(repo: Path) -> dict:
+    path = repo / "data/parquet/historical_games_manifest.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_manifest(repo: Path, manifest: dict) -> None:
+    path = repo / "data/parquet/historical_games_manifest.json"
+    path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def rewrite_snapshot_checksums(snapshot: Path) -> None:
+    lines = []
+    for path in sorted((snapshot / "historical_bref").iterdir()):
+        relative = path.relative_to(snapshot).as_posix()
+        lines.append(
+            f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {relative}\n"
+        )
+    (snapshot / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
 
 
 def archive(
@@ -113,6 +164,92 @@ def test_archive_and_restore_are_exact_inverses(tmp_path: Path) -> None:
     assert inventory(repo / "restored/historical_bref") == source_files
 
 
+def test_archive_rejects_body_bytes_that_differ_from_manifest_sha(
+    tmp_path: Path,
+) -> None:
+    """Would fail if archive trusted pairing without the manifest body hash."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    (
+        repo / "data/raw/historical_bref/BAA_1947_games.html"
+    ).write_bytes(b"<html>tampered index</html>")
+
+    archived = archive(repo, archive_root)
+
+    assert archived.returncode != 0
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
+@pytest.mark.parametrize(
+    "mismatch",
+    ["empty_manifest", "missing_pair", "extra_pair"],
+)
+def test_archive_requires_exact_manifest_body_inventory(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    """Would fail if archive did not require the manifest's exact body set."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    manifest = read_manifest(repo)
+    cache_dir = repo / "data/raw/historical_bref"
+    if mismatch == "empty_manifest":
+        manifest["sources"]["basketball_reference"]["pages"] = []
+        write_manifest(repo, manifest)
+    elif mismatch == "missing_pair":
+        (cache_dir / "BAA_1947_games-november.html").unlink()
+        (cache_dir / "BAA_1947_games-november.html.meta.json").unlink()
+    else:
+        (cache_dir / "BAA_1947_games-december.html").write_bytes(
+            b"<html>extra month</html>"
+        )
+        (cache_dir / "BAA_1947_games-december.html.meta.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+
+    archived = archive(repo, archive_root)
+
+    assert archived.returncode != 0
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("url", "https://attacker.invalid/boxscores.html"),
+        ("resource", "historical_schedule_index"),
+        ("league", "NBA"),
+        ("season", 1948),
+        ("month", "december"),
+        ("sha256", "0" * 64),
+    ],
+)
+def test_archive_rejects_sidecar_identity_that_differs_from_manifest(
+    tmp_path: Path,
+    field: str,
+    wrong_value: str | int,
+) -> None:
+    """Would fail if archive treated a structurally paired sidecar as valid."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    sidecar = (
+        repo
+        / "data/raw/historical_bref/"
+        "BAA_1947_games-november.html.meta.json"
+    )
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata[field] = wrong_value
+    sidecar.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    archived = archive(repo, archive_root)
+
+    assert archived.returncode != 0
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
 def test_restore_rejects_tampered_body_without_partial_destination(
     tmp_path: Path,
 ) -> None:
@@ -122,6 +259,24 @@ def test_restore_rejects_tampered_body_without_partial_destination(
     (snapshot_path(repo, archive_root) / "historical_bref/BAA_1947_games.html").write_bytes(
         b"tampered"
     )
+
+    restored = restore(repo, archive_root)
+
+    assert restored.returncode != 0
+    assert not (repo / "restored/historical_bref").exists()
+
+
+def test_restore_rejects_manifest_divergent_tampering_with_recomputed_checksums(
+    tmp_path: Path,
+) -> None:
+    """Would fail if restore trusted a self-consistent snapshot inventory."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    assert archive(repo, archive_root).returncode == 0
+    snapshot = snapshot_path(repo, archive_root)
+    (snapshot / "historical_bref/BAA_1947_games.html").write_bytes(
+        b"<html>self-consistent tampering</html>"
+    )
+    rewrite_snapshot_checksums(snapshot)
 
     restored = restore(repo, archive_root)
 

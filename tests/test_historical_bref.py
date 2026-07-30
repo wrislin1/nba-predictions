@@ -89,6 +89,49 @@ def test_parser_rejects_unknown_overtime_marker():
         )
 
 
+@pytest.mark.parametrize(
+    "href",
+    [
+        "https://attacker.invalid/boxscores/194611010TRH.html",
+        "/games/194611010TRH.html",
+        "/boxscores/19461101TRH.html",
+    ],
+)
+def test_parser_rejects_present_invalid_boxscore_href(href):
+    payload = (
+        FIXTURES / "BAA_1947_games-november.html"
+    ).read_text(encoding="utf-8")
+    payload = payload.replace(
+        "/boxscores/194611010TRH.html",
+        href,
+        1,
+    )
+
+    with pytest.raises(ValueError, match="invalid box-score href"):
+        historical_bref.parse_schedule_page(
+            payload.encode(),
+            season=1947,
+            schedule_url=(
+                "https://www.basketball-reference.com/leagues/"
+                "BAA_1947_games-november.html"
+            ),
+        )
+
+
+def test_parser_allows_absent_boxscore_href():
+    result = historical_bref.parse_schedule_page(
+        (FIXTURES / "BAA_1947_games-november.html").read_bytes(),
+        season=1947,
+        schedule_url=(
+            "https://www.basketball-reference.com/leagues/"
+            "BAA_1947_games-november.html"
+        ),
+    )
+
+    assert pd.isna(result.iloc[2]["boxscore_url"])
+    assert result.iloc[2]["game_id"].startswith("bref-fallback-")
+
+
 class FakeResponse:
     def __init__(self, content, status_code=200):
         self.content = content
@@ -139,6 +182,61 @@ def install_fetch_doubles(monkeypatch, session, sleeps):
     monkeypatch.setattr(
         historical_bref, "time", SimpleNamespace(sleep=sleeps.append)
     )
+
+
+def install_invalid_historical_cache_root(tmp_path, entry_kind):
+    cache_dir = tmp_path / "historical_bref"
+    if entry_kind == "symlink":
+        target = tmp_path / "symlink-target"
+        target.mkdir()
+        sentinel = target / "sentinel.txt"
+        sentinel.write_text("untouched\n", encoding="utf-8")
+        cache_dir.symlink_to(target, target_is_directory=True)
+        return cache_dir, target, sentinel
+    cache_dir.write_text("not a directory\n", encoding="utf-8")
+    return cache_dir, None, None
+
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "non_directory"])
+def test_fetch_rejects_invalid_historical_cache_root_without_following(
+    tmp_path,
+    monkeypatch,
+    entry_kind,
+):
+    cache_dir, target, sentinel = install_invalid_historical_cache_root(
+        tmp_path, entry_kind
+    )
+    session = FakeSession(fixture_response_map(1947))
+    install_fetch_doubles(monkeypatch, session, [])
+
+    with pytest.raises(ValueError, match="historical cache root"):
+        historical_bref.fetch(tmp_path, [1947])
+
+    assert session.calls == []
+    if target is not None:
+        assert list(target.iterdir()) == [sentinel]
+        assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+    else:
+        assert cache_dir.read_text(encoding="utf-8") == "not a directory\n"
+
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "non_directory"])
+def test_load_rejects_invalid_historical_cache_root_without_following(
+    tmp_path,
+    entry_kind,
+):
+    cache_dir, target, sentinel = install_invalid_historical_cache_root(
+        tmp_path, entry_kind
+    )
+
+    with pytest.raises(ValueError, match="historical cache root"):
+        historical_bref.load_season(tmp_path, 1947)
+
+    if target is not None:
+        assert list(target.iterdir()) == [sentinel]
+        assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+    else:
+        assert cache_dir.read_text(encoding="utf-8") == "not a directory\n"
 
 
 def test_fetch_caches_index_before_discovering_months(tmp_path, monkeypatch):
