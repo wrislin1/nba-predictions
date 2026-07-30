@@ -322,16 +322,26 @@ def _verified_duplicate_separator_frame(
         (regular_ids, "regular-season"),
         (postseason_ids, "postseason"),
     ):
-        matches = between.loc[between["game_id"].isin(game_ids)]
-        if (
-            len(matches) != len(game_ids)
-            or set(matches["game_id"]) != set(game_ids)
-            or matches["game_id"].duplicated().any()
-        ):
-            raise ValueError(
-                f"{schedule_url}: expected {expected_region} between-separator "
-                f"games {game_ids} exactly once"
-            )
+        for game_id in game_ids:
+            matches = frame.loc[frame["game_id"].eq(game_id)]
+            if (
+                len(matches) != 1
+                or not matches["source_row"].between(
+                    first_separator + 1, second_separator - 1
+                ).all()
+            ):
+                raise ValueError(
+                    f"{schedule_url}: expected {expected_region} game "
+                    f"{game_id} exactly once between separators"
+                )
+    expected_ids = frozenset((*regular_ids, *postseason_ids))
+    if len(between) != len(expected_ids) or frozenset(
+        between["game_id"]
+    ) != expected_ids:
+        raise ValueError(
+            f"{schedule_url}: between-separator game inventory must be "
+            f"exactly {tuple(sorted(expected_ids))}"
+        )
     return pd.concat(
         [output, between.loc[between["game_id"].isin(regular_ids)]],
         ignore_index=True,
@@ -429,13 +439,18 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
                 path, value, url
             ),
         )
+        separator_rows = _playoff_separator_source_rows(month_payload, page.url)
         if separator_found:
+            if separator_rows:
+                raise ValueError(
+                    f"{page.url}: postseason boundary after an earlier "
+                    "postseason boundary"
+                )
             continue
         frame = parse_schedule_page(
             month_payload, season=season, schedule_url=page.url
         )
         frame = _without_excluded_remarks(frame)
-        separator_rows = _playoff_separator_source_rows(month_payload, page.url)
         if separator_rows:
             if len(separator_rows) == 1:
                 selected = frame.loc[

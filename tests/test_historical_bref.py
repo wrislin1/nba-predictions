@@ -570,3 +570,79 @@ def test_audit_renderer_documents_verified_postseason_edge_cases():
     assert "does not count toward record" in rendered
     assert "1953 carryovers" in rendered
     assert "1947 and 1980 use a documented first-playoff-game fallback" in rendered
+
+
+@pytest.mark.integration
+def test_load_season_rejects_later_separator_after_boundary(monkeypatch):
+    original = historical_bref._playoff_separator_source_rows
+
+    def later_separator(payload, schedule_url):
+        if schedule_url.endswith("BAA_1948_games-april.html"):
+            return (1,)
+        return original(payload, schedule_url)
+
+    monkeypatch.setattr(
+        historical_bref, "_playoff_separator_source_rows", later_separator
+    )
+
+    with pytest.raises(ValueError, match="postseason boundary after"):
+        historical_bref.load_season(Path("data/raw"), 1948)
+
+
+@pytest.mark.integration
+def test_load_season_validates_later_month_duplicate_separator_drift(monkeypatch):
+    original = historical_bref._playoff_separator_source_rows
+
+    def later_duplicate(payload, schedule_url):
+        if schedule_url.endswith("BAA_1948_games-april.html"):
+            raise ValueError("unverified duplicate Playoffs separator rows (1, 2)")
+        return original(payload, schedule_url)
+
+    monkeypatch.setattr(
+        historical_bref, "_playoff_separator_source_rows", later_duplicate
+    )
+
+    with pytest.raises(ValueError, match="unverified duplicate Playoffs"):
+        historical_bref.load_season(Path("data/raw"), 1948)
+
+
+def _cached_1953_duplicate_separator_frame():
+    filename = "NBA_1953_games-march.html"
+    schedule_url = f"{historical_bref.BASE_URL}/leagues/{filename}"
+    frame = historical_bref.parse_schedule_page(
+        (Path("data/raw/historical_bref") / filename).read_bytes(),
+        season=1953,
+        schedule_url=schedule_url,
+    )
+    return frame, schedule_url
+
+
+@pytest.mark.integration
+def test_1953_duplicate_separator_rejects_curated_id_outside_its_region():
+    frame, schedule_url = _cached_1953_duplicate_separator_frame()
+    duplicate = frame.loc[
+        frame["game_id"].eq("bref-195303170SYR")
+    ].copy()
+    duplicate.loc[:, "source_row"] = 46
+    drifted = pd.concat([frame, duplicate], ignore_index=True)
+
+    with pytest.raises(ValueError, match="expected regular-season game"):
+        historical_bref._verified_duplicate_separator_frame(
+            drifted, schedule_url, (47, 51)
+        )
+
+
+@pytest.mark.integration
+def test_1953_duplicate_separator_rejects_unexpected_between_window_game():
+    frame, schedule_url = _cached_1953_duplicate_separator_frame()
+    unexpected = frame.loc[
+        frame["game_id"].eq("bref-195303170NYK")
+    ].copy()
+    unexpected.loc[:, "game_id"] = "bref-unexpected-between-window"
+    unexpected.loc[:, "source_row"] = 48
+    drifted = pd.concat([frame, unexpected], ignore_index=True)
+
+    with pytest.raises(ValueError, match="between-separator game inventory"):
+        historical_bref._verified_duplicate_separator_frame(
+            drifted, schedule_url, (47, 51)
+        )
