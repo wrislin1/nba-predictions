@@ -670,6 +670,81 @@ exec "$REAL_RSYNC" "$@"
     assert list(pin_tmp.glob(".historical-archive-manifest.*")) == []
 
 
+def test_archive_rejects_sidecar_changed_during_final_dry_run(
+    tmp_path: Path,
+) -> None:
+    """Would fail if final checks accepted stale staged SHA256SUMS."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    destination = snapshot_path(repo, archive_root)
+    sidecar_name = "BAA_1947_games.html.meta.json"
+    sidecar = (
+        repo / "data/raw/historical_bref" / sidecar_name
+    )
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["fetched_at"] = "2099-01-01T00:00:00Z"
+    replacement_sidecar = tmp_path / sidecar_name
+    replacement_sidecar.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+if test "$dry_run" = true && test ! -e "$RACE_MARKER"; then
+  : > "$RACE_MARKER"
+  destination="${!#}"
+  staging_cache="${destination%/}"
+  cp -- "$REPLACEMENT_SIDECAR" \
+    "$NBA_HISTORICAL_RAW_SOURCE/$SIDECAR_NAME"
+  cp -- "$REPLACEMENT_SIDECAR" "$staging_cache/$SIDECAR_NAME"
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    race_marker = tmp_path / "late-sidecar-mutation"
+    pin_tmp = tmp_path / "pin-tmp"
+    pin_tmp.mkdir()
+
+    archived = archive(
+        repo,
+        archive_root,
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "RACE_MARKER": str(race_marker),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+            "REPLACEMENT_SIDECAR": str(replacement_sidecar),
+            "SIDECAR_NAME": sidecar_name,
+            "TMPDIR": str(pin_tmp),
+        },
+    )
+    checksum_status = None
+    if destination.exists():
+        checksum_status = subprocess.run(
+            ["sha256sum", "-c", "--status", "SHA256SUMS"],
+            cwd=destination,
+            check=False,
+        ).returncode
+
+    assert race_marker.exists()
+    assert archived.returncode != 0, (
+        f"published_checksum_status={checksum_status}"
+    )
+    assert not destination.exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+    assert list(pin_tmp.glob(".historical-archive-manifest.*")) == []
+
+
 def test_archive_rejects_symlinked_live_manifest(tmp_path: Path) -> None:
     """Would fail if pinning normalized a previously rejected manifest."""
     repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)

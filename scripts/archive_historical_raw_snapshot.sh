@@ -349,6 +349,26 @@ test "$staged_manifest_sha" = "$manifest_sha" || {
     "$staging/historical_games_manifest.json" >&2
   exit 1
 }
+expected_checksums="$(< "$staging/SHA256SUMS")"
+actual_checksums="$(
+  cd "$staging"
+  find -P historical_bref -mindepth 1 -maxdepth 1 -type f -print0 \
+    | LC_ALL=C sort -z \
+    | xargs -0 -r sha256sum
+)"
+test "$actual_checksums" = "$expected_checksums" || {
+  printf 'staged historical checksum inventory changed: %s\n' \
+    "$staging/SHA256SUMS" >&2
+  exit 1
+}
+(
+  cd "$staging"
+  sha256sum -c --status SHA256SUMS
+) || {
+  printf 'staged historical checksum verification failed: %s\n' \
+    "$staging/SHA256SUMS" >&2
+  exit 1
+}
 mv -T -n "$staging" "$destination"
 test ! -d "$staging" || {
   printf 'refusing to overwrite existing snapshot: %s\n' "$destination" >&2
