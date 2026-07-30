@@ -113,6 +113,37 @@ def test_modern_type_remark_is_non_site_and_dedicated_remark_is_not_play_in(
     assert dedicated["game_type"] == "playoff"
 
 
+def test_dedicated_play_in_remark_remains_playoff(seeded_playoff_cache):
+    dedicated = seeded_playoff_cache / "playoff_bref/NBA_2020_games.html"
+    dedicated.unlink()
+    dedicated.with_name(dedicated.name + ".meta.json").unlink()
+    payload = (FIXTURES / "NBA_2020_games.html").read_bytes().replace(
+        b'<td data-stat="game_remarks"></td>',
+        b'<td data-stat="game_remarks">Play-In Game</td>',
+    )
+    cache.publish_bytes(
+        dedicated,
+        payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "playoff_schedule",
+            "league": "NBA",
+            "season": 2020,
+            "month": None,
+            "url": playoff_bref.playoff_url(2020),
+        },
+        lambda path: playoff_bref.validate_dedicated_page(path, 2020),
+    )
+
+    frame = playoff_bref.load_modern_season(seeded_playoff_cache, 2020)
+    dedicated_game = frame.loc[
+        frame["game_id"].eq("bref-202008170DEN")
+    ].iloc[0]
+
+    assert dedicated_game["game_type"] == "playoff"
+    assert dedicated_game["site_status"] == "home"
+
+
 def test_modern_union_rejects_duplicate_natural_results(seeded_playoff_cache):
     dedicated = seeded_playoff_cache / "playoff_bref/NBA_2020_games.html"
     dedicated.unlink()

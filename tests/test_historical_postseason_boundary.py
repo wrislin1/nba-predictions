@@ -106,6 +106,15 @@ def test_historical_duplicate_separators_keep_tiebreakers_in_complement(
     assert set(postseason.loc[
         postseason["game_type"].eq("playoff"), "game_id"
     ]) == {"bref-194803230STB", "bref-194803250STB", "bref-194804010BLB"}
+    april_game = postseason.loc[
+        postseason["game_id"].eq("bref-194804010BLB")
+    ].iloc[0]
+    assert (
+        april_game["away_team_name"],
+        april_game["away_pts"],
+        april_game["home_team_name"],
+        april_game["home_pts"],
+    ) == ("New York Knicks", 77, "Baltimore Bullets", 84)
     assert set(
         regular[["schedule_url", "source_row"]]
         .itertuples(index=False, name=None)
