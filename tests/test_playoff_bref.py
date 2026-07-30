@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import requests
 
@@ -84,6 +85,57 @@ def test_playoff_identity_is_deterministic():
     assert playoff_bref.playoff_filename(1984) == "NBA_1984_games.html"
     with pytest.raises(ValueError, match="1984..2026"):
         playoff_bref.playoff_url(1983)
+
+
+def test_modern_union_labels_dedicated_and_play_in_rows(seeded_playoff_cache):
+    frame = playoff_bref.load_modern_season(seeded_playoff_cache, 2020)
+
+    assert frame["game_type"].value_counts().to_dict() == {
+        "playoff": 1,
+        "play_in": 1,
+    }
+    assert set(frame["game_id"]) == {
+        "bref-202008150POR",
+        "bref-202008170DEN",
+    }
+    assert frame["game_id"].is_unique
+
+
+def test_modern_type_remark_is_non_site_and_dedicated_remark_is_not_play_in(
+    seeded_playoff_cache,
+):
+    frame = playoff_bref.load_modern_season(seeded_playoff_cache, 2020)
+    play_in = frame.loc[frame["game_id"].eq("bref-202008150POR")].iloc[0]
+    dedicated = frame.loc[frame["game_id"].eq("bref-202008170DEN")].iloc[0]
+
+    assert play_in["game_type"] == "play_in"
+    assert play_in["site_status"] == "home"
+    assert dedicated["game_type"] == "playoff"
+
+
+def test_modern_union_rejects_duplicate_natural_results(seeded_playoff_cache):
+    dedicated = seeded_playoff_cache / "playoff_bref/NBA_2020_games.html"
+    dedicated.unlink()
+    dedicated.with_name(dedicated.name + ".meta.json").unlink()
+    payload = (FIXTURES / "NBA_2020_games-august.html").read_bytes().replace(
+        b"202008150POR.html", b"202008150XXX.html"
+    )
+    cache.publish_bytes(
+        dedicated,
+        payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "playoff_schedule",
+            "league": "NBA",
+            "season": 2020,
+            "month": None,
+            "url": playoff_bref.playoff_url(2020),
+        },
+        lambda path: playoff_bref.validate_dedicated_page(path, 2020),
+    )
+
+    with pytest.raises(ValueError, match="duplicate result identities"):
+        playoff_bref.load_modern_season(seeded_playoff_cache, 2020)
 
 
 def test_seed_play_in_page_requires_and_preserves_verified_source(tmp_path):
@@ -328,3 +380,35 @@ def test_inventory_rejects_non_contract_entries(tmp_path, entry):
 
     with pytest.raises(cache.CacheIntegrityError, match="inventory"):
         playoff_bref.validate_cache_inventory(raw_dir, complete=False)
+
+
+@pytest.mark.integration
+def test_full_historical_complement_inventory(repo_data_dir):
+    frames = [
+        playoff_bref.load_historical_season(repo_data_dir / "raw", season)
+        for season in range(1947, 1984)
+    ]
+    games = pd.concat(frames, ignore_index=True)
+    assert len(games) == 1240
+    assert games["game_type"].value_counts().to_dict() == {
+        "playoff": 1231,
+        "tiebreaker": 8,
+        "voided": 1,
+    }
+    assert int(games["game_remarks"].fillna("").ne("").sum()) == 68
+    assert int(
+        games["game_remarks"]
+        .fillna("")
+        .str.casefold()
+        .str.startswith("at ")
+        .sum()
+    ) == 44
+    assert set(
+        games.loc[
+            games["game_type"].eq("tiebreaker"), "season"
+        ].value_counts().to_dict().items()
+    ) == {(1948, 2), (1950, 2), (1956, 2), (1957, 2)}
+    voided = games.loc[games["game_type"].eq("voided")].iloc[0]
+    assert voided["game_id"] == "bref-195211280MLH"
+    assert voided["game_date"].isoformat() == "1952-11-28"
+    assert voided["season"] == 1953

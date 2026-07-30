@@ -12,7 +12,7 @@ from lxml import etree, html
 import pandas as pd
 import requests
 
-from nba_data import bref, bref_schedule, cache
+from nba_data import bref, bref_schedule, cache, historical_bref
 
 
 BASE_URL = "https://www.basketball-reference.com"
@@ -26,6 +26,34 @@ PLAY_IN_MONTHS = {
 
 _DEDICATED_NAME = re.compile(r"^NBA_(\d{4})_games\.html$")
 _SEEDED_NAME = re.compile(r"^NBA_(\d{4})_games-([a-z]+)\.html$")
+
+HISTORICAL_NEUTRAL_REMARKS = frozenset({
+    "neutral site",
+    "at saint paul, mn",
+    "at 69th regiment armory",
+    "at madison, wi",
+    "at indianapolis, in",
+    "at oakland, ca",
+    "at chicago, il (chicago arena)",
+    "at washington, dc (national guard armory)",
+    "at daly city, ca",
+    "at kingdome",
+    "at elkhart, in",
+    "at detroit, mi (university of detroit fieldhouse)",
+    "at tempe, az",
+})
+HISTORICAL_NONSITE_REMARKS = frozenset({
+    "round robin",
+    "havlicek stole the ball",
+    "the willis reed game",
+    "the greatest game ever played",
+    "mother's day massacre",
+})
+TYPE_REMARKS = frozenset({
+    "play-in game",
+    "tiebreaker",
+    "protest; does not count toward record",
+})
 
 
 def playoff_url(season: int) -> str:
@@ -114,6 +142,152 @@ def validate_seeded_play_in_page(path: Path, season: int) -> None:
     remarks = frame["game_remarks"].astype("string").str.strip().str.casefold()
     if not bool(remarks.eq("play-in game").any()):
         raise ValueError(f"{url}: expected a completed play-in game row")
+
+
+def _source_keys(frame: pd.DataFrame) -> pd.Series:
+    return frame[["schedule_url", "source_row"]].apply(tuple, axis=1)
+
+
+def _require_unique(frame: pd.DataFrame, *, label: str) -> None:
+    source_keys = _source_keys(frame)
+    if bool(source_keys.duplicated().any()):
+        raise ValueError(f"{label}: duplicate source keys")
+    if bool(frame["game_id"].duplicated().any()):
+        raise ValueError(f"{label}: duplicate game IDs")
+
+
+def _require_unique_results(frame: pd.DataFrame, *, label: str) -> None:
+    result_columns = [
+        "game_date", "away_team_name", "home_team_name", "away_pts", "home_pts",
+    ]
+    if bool(frame.duplicated(result_columns).any()):
+        raise ValueError(f"{label}: duplicate result identities")
+
+
+def _normalize_type_remarks(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    normalized = result["game_remarks"].astype("string").str.strip().str.casefold()
+    result.loc[
+        normalized.isin(TYPE_REMARKS) & result["site_status"].eq("unknown"),
+        "site_status",
+    ] = "home"
+    return result
+
+
+def classify_historical_complement(frame: pd.DataFrame) -> pd.DataFrame:
+    """Classify the audited historical selector complement."""
+    result = frame.copy()
+    normalized = result["game_remarks"].astype("string").str.strip().str.casefold()
+    neutral = normalized.isin(HISTORICAL_NEUTRAL_REMARKS)
+    nonsite = normalized.isin(HISTORICAL_NONSITE_REMARKS)
+    tiebreaker = normalized.eq("tiebreaker")
+    voided = normalized.eq("protest; does not count toward record")
+    blank = normalized.isna() | normalized.eq("")
+    recognized = neutral | nonsite | tiebreaker | voided | blank
+    invalid = normalized.notna() & ~recognized
+    if bool(invalid.any()):
+        raise ValueError(
+            "unrecognized scoped game remark: "
+            f"{normalized.loc[invalid].iloc[0]}"
+        )
+    result["game_type"] = "playoff"
+    result.loc[tiebreaker, "game_type"] = "tiebreaker"
+    result.loc[voided, "game_type"] = "voided"
+    result.loc[neutral, "site_status"] = "neutral"
+    result.loc[
+        (nonsite | tiebreaker | voided) & result["site_status"].eq("unknown"),
+        "site_status",
+    ] = "home"
+    return result
+
+
+def load_historical_season(raw_dir: Path, season: int) -> pd.DataFrame:
+    """Load 1947–1983 games absent from the proven regular-season selector."""
+    regular = historical_bref.load_season(raw_dir, season)
+    cache_dir = raw_dir / "historical_bref"
+    index_payload = cache.require_valid(
+        cache_dir / historical_bref.index_filename(season),
+        lambda path: historical_bref.validate_index(path, season),
+    )
+    frames = []
+    for page in historical_bref.discover_month_pages(index_payload, season):
+        payload = cache.require_valid(
+            cache_dir / page.filename,
+            lambda path, value=season, url=page.url: historical_bref.validate_month(
+                path, value, url
+            ),
+        )
+        frames.append(bref_schedule.parse_schedule_page(
+            payload,
+            season=season,
+            league=historical_bref.league_for_season(season),
+            schedule_url=page.url,
+        ))
+    all_rows = bref_schedule.assign_game_ids(
+        pd.concat(frames, ignore_index=True).drop(columns=["game_id"])
+    )
+    _require_unique(regular, label=f"{season} regular selector")
+    _require_unique(all_rows, label=f"{season} historical schedule")
+    regular_keys = set(_source_keys(regular))
+    complement = all_rows.loc[~_source_keys(all_rows).isin(regular_keys)].copy()
+    complement_keys = set(_source_keys(complement))
+    if regular_keys & complement_keys:
+        raise ValueError(f"{season}: regular and postseason source keys overlap")
+    complement = classify_historical_complement(complement)
+    complement = bref_schedule.assign_game_ids(complement.drop(columns=["game_id"]))
+    _require_unique(complement, label=f"{season} historical complement")
+    return complement.sort_values(["game_date", "game_id"], kind="stable").reset_index(
+        drop=True
+    )
+
+
+def load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame:
+    """Load dedicated playoff rows and the approved modern play-in supplement."""
+    if season not in DEDICATED_SEASONS:
+        raise ValueError(f"modern playoff season must be 1984..2026: {season}")
+    cache_dir = raw_dir / "playoff_bref"
+    dedicated_path = cache_dir / playoff_filename(season)
+    dedicated = bref_schedule.parse_schedule_page(
+        cache.require_valid(
+            dedicated_path,
+            lambda path: validate_dedicated_page(path, season),
+        ),
+        season=season,
+        league="NBA",
+        schedule_url=playoff_url(season),
+    )
+    dedicated["game_type"] = "playoff"
+    frames = [_normalize_type_remarks(dedicated)]
+    if season in PLAY_IN_MONTHS:
+        play_in_path = cache_dir / _play_in_filename(season)
+        seeded = bref_schedule.parse_schedule_page(
+            cache.require_valid(
+                play_in_path,
+                lambda path: validate_seeded_play_in_page(path, season),
+            ),
+            season=season,
+            league="NBA",
+            schedule_url=_play_in_url(season),
+        )
+        normalized = seeded["game_remarks"].astype("string").str.strip().str.casefold()
+        play_in = seeded.loc[normalized.eq("play-in game")].copy()
+        play_in["game_type"] = "play_in"
+        frames.append(_normalize_type_remarks(play_in))
+    combined = pd.concat(frames, ignore_index=True)
+    combined = bref_schedule.assign_game_ids(combined.drop(columns=["game_id"]))
+    _require_unique(combined, label=f"{season} modern postseason")
+    _require_unique_results(combined, label=f"{season} modern postseason")
+    return combined.sort_values(["game_date", "game_id"], kind="stable").reset_index(
+        drop=True
+    )
+
+
+def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
+    if season in historical_bref.HISTORICAL_SEASONS:
+        return load_historical_season(raw_dir, season)
+    if season in DEDICATED_SEASONS:
+        return load_modern_season(raw_dir, season)
+    raise ValueError(f"playoff season must be 1947..2026: {season}")
 
 
 def _ensure_real_directory(path: Path, *, label: str) -> None:
