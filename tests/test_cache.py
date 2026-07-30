@@ -23,3 +23,11 @@ def test_changed_cache_fails_without_repair(tmp_path):
 
     with pytest.raises(cache.CacheIntegrityError, match="SHA-256"):
         cache.read_valid(path, lambda _: None)
+
+
+def test_cache_does_not_repair_an_incomplete_pair(tmp_path):
+    path = tmp_path / "response.json"
+    path.write_bytes(b"orphaned")
+
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        cache.require_valid(path, lambda _: None)
