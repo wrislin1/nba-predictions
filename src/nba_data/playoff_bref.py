@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 from typing import Iterable
 
+from lxml import etree, html
 import pandas as pd
 import requests
 
@@ -61,11 +62,42 @@ def _validate_frame(frame: pd.DataFrame, *, label: str) -> None:
         raise ValueError(f"{label}: every row must be box-score-backed")
 
 
+def _cell_text(row, stat_name: str) -> str:
+    cells = row.xpath(
+        f"./th[@data-stat='{stat_name}'] | "
+        f"./td[@data-stat='{stat_name}']"
+    )
+    if not cells:
+        return ""
+    return " ".join("".join(cells[0].itertext()).split())
+
+
+def _reject_unfinalized_rows(payload: bytes, *, url: str) -> None:
+    try:
+        root = html.fromstring(payload)
+    except (TypeError, ValueError, etree.ParserError) as exc:
+        raise ValueError(f"{url}: invalid HTML") from exc
+    tables = root.xpath("//table[@id='schedule']")
+    if len(tables) != 1:
+        return
+    for source_row, row in enumerate(tables[0].xpath("./tbody/tr"), start=1):
+        if not _cell_text(row, "date_game"):
+            continue
+        away_pts = _cell_text(row, "visitor_pts")
+        home_pts = _cell_text(row, "home_pts")
+        if not away_pts and not home_pts:
+            raise ValueError(
+                f"{url}: source row {source_row} is an unfinalized schedule row"
+            )
+
+
 def validate_dedicated_page(path: Path, season: int) -> None:
     """Require a completed, box-score-backed dedicated playoff schedule."""
     url = playoff_url(season)
+    payload = path.read_bytes()
+    _reject_unfinalized_rows(payload, url=url)
     frame = bref_schedule.parse_schedule_page(
-        path.read_bytes(), season=season, league="NBA", schedule_url=url
+        payload, season=season, league="NBA", schedule_url=url
     )
     _validate_frame(frame, label=url)
 
@@ -302,6 +334,8 @@ def fetch(
     sleep_s: float = 12,
 ) -> None:
     """Acquire missing dedicated pages, after verifying any play-in source."""
+    if sleep_s < 12:
+        raise ValueError("sleep_s must be at least 12 seconds")
     cache_dir = raw_dir / "playoff_bref"
     _ensure_real_directory(cache_dir, label="playoff cache root")
     validate_cache_inventory(raw_dir, complete=False)

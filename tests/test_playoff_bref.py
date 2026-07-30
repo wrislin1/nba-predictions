@@ -62,6 +62,20 @@ def install_session(monkeypatch, session, sleeps):
     monkeypatch.setattr(playoff_bref.time, "sleep", sleeps.append)
 
 
+def dedicated_page_with_unfinalized_row() -> bytes:
+    return (FIXTURES / "NBA_1984_games.html").read_bytes().replace(
+        b"</tbody>",
+        (
+            b"<tr>"
+            b"<th data-stat='date_game'>Fri, Apr 20, 1984</th>"
+            b"<td data-stat='visitor_pts'></td>"
+            b"<td data-stat='home_pts'></td>"
+            b"</tr></tbody>"
+        ),
+        1,
+    )
+
+
 def test_playoff_identity_is_deterministic():
     assert playoff_bref.playoff_url(1984) == (
         "https://www.basketball-reference.com/playoffs/"
@@ -178,6 +192,14 @@ def test_dedicated_validator_requires_completed_box_scored_rows(tmp_path):
         playoff_bref.validate_dedicated_page(path, 1984)
 
 
+def test_dedicated_validator_rejects_a_future_row_after_completed_games(tmp_path):
+    path = tmp_path / "NBA_1984_games.html"
+    path.write_bytes(dedicated_page_with_unfinalized_row())
+
+    with pytest.raises(ValueError, match="unfinalized schedule row"):
+        playoff_bref.validate_dedicated_page(path, 1984)
+
+
 def test_seeded_validator_requires_a_play_in_row(tmp_path):
     path = tmp_path / "NBA_2020_games-august.html"
     path.write_bytes((FIXTURES / path.name).read_bytes())
@@ -209,21 +231,28 @@ def test_fetch_resumes_and_sleeps_only_between_requests(tmp_path, monkeypatch):
     assert session.headers["User-Agent"] == bref.USER_AGENT
 
 
+def test_fetch_rejects_a_cadence_below_twelve_seconds(tmp_path, monkeypatch):
+    session = FakeSession()
+    install_session(monkeypatch, session, [])
+
+    with pytest.raises(ValueError, match="at least 12"):
+        playoff_bref.fetch(tmp_path / "raw", seasons=(1984,), sleep_s=11.99)
+
+    assert session.calls == []
+
+
 @pytest.mark.parametrize(
     ("response", "error", "message"),
     [
         (FakeResponse(b"blocked", 403), None, "HTTP 403"),
         (FakeResponse(b"rate limited", 429), None, "HTTP 429"),
         (None, requests.exceptions.SSLError("bad certificate"), "SSLError"),
+        (FakeResponse(b""), None, "invalid HTML"),
         (FakeResponse(b"<html></html>"), None, "schedule table"),
         (
-            FakeResponse(
-                (FIXTURES / "NBA_1984_games.html").read_bytes().replace(
-                    b">113<", b"><", 1
-                )
-            ),
+            FakeResponse(dedicated_page_with_unfinalized_row()),
             None,
-            "invalid literal",
+            "unfinalized schedule row",
         ),
         (
             FakeResponse(
