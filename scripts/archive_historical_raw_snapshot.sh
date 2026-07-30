@@ -271,7 +271,7 @@ test "$staged_manifest_sha" = "$manifest_sha" || {
 rsync -a --checksum "$source/" "$staging/historical_bref/"
 validate_historical_cache_manifest "$source" "$manifest"
 validate_historical_cache_manifest \
-  "$staging/historical_bref" "$staging/historical_games_manifest.json"
+  "$staging/historical_bref" "$manifest"
 (
   cd "$staging"
   find -P historical_bref -mindepth 1 -maxdepth 1 -type f -print0 \
@@ -285,6 +285,19 @@ changes="$(
 )"
 test -z "$changes" || {
   printf 'historical archive differs from source:\n%s\n' "$changes" >&2
+  exit 1
+}
+cmp -s "$manifest" "$staging/historical_games_manifest.json" || {
+  printf 'staged historical manifest differs from trusted manifest: %s\n' \
+    "$staging/historical_games_manifest.json" >&2
+  exit 1
+}
+staged_manifest_sha="$(
+  sha256sum "$staging/historical_games_manifest.json" | cut -d' ' -f1
+)"
+test "$staged_manifest_sha" = "$manifest_sha" || {
+  printf 'staged historical manifest hash mismatch: %s\n' \
+    "$staging/historical_games_manifest.json" >&2
   exit 1
 }
 test ! -e "$destination" || {

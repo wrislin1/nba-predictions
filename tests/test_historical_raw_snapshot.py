@@ -462,6 +462,55 @@ def test_archive_failure_removes_only_its_stage_without_publishing(
     assert list(archive_root.glob(".historical-archive.*")) == []
 
 
+def test_archive_rejects_staged_manifest_changed_during_cache_copy(
+    tmp_path: Path,
+) -> None:
+    """Would fail if publication trusted a copy-time manifest replacement."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+if test "$dry_run" = false && test ! -e "$RACE_MARKER"; then
+  : > "$RACE_MARKER"
+  destination="${!#}"
+  staging_cache="${destination%/}"
+  staged_manifest="$(
+    dirname "$staging_cache"
+  )/historical_games_manifest.json"
+  jq '.copy_time_replacement = true' "$staged_manifest" \
+    > "$staged_manifest.replacement"
+  mv -- "$staged_manifest.replacement" "$staged_manifest"
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+
+    archived = archive(
+        repo,
+        archive_root,
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "RACE_MARKER": str(tmp_path / "race-triggered"),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+        },
+    )
+
+    assert archived.returncode != 0
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
 @pytest.mark.parametrize("entry_kind", ["symlink", "nested_dir", "fifo"])
 def test_archive_rejects_non_flat_non_regular_source_entries(
     tmp_path: Path,
