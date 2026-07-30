@@ -381,8 +381,9 @@ bash scripts/restore_raw.sh
 
 The modern archive is named
 `slice2a-raw-<games.max_season>-<first-12-hex-of-modern-manifest-sha256>` and
-is bound to `build_manifest.json`. Its restore also verifies the complete
-manifest/checksum inventory and refuses an existing destination. Neither
-recovery path substitutes for the other: the historical scripts operate only
-on `historical_bref`, while `scripts/restore_raw.sh` remains the Slice 2A
-modern restore.
+provides manifest binding to `build_manifest.json`. Its restore verifies that
+binding and the complete regular-file checksum inventory, then refuses an
+existing destination. It does not attest other filesystem entry types.
+Neither recovery path substitutes for the other: the historical scripts
+operate only on `historical_bref`, while `scripts/restore_raw.sh` remains the
+Slice 2A modern restore.

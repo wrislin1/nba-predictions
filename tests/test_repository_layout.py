@@ -341,6 +341,13 @@ def test_historical_documentation_matches_the_delivered_contract() -> None:
     ):
         assert command in dictionary
 
+    modern_recovery = dictionary.split(
+        "The modern recovery flow remains separate:", maxsplit=1
+    )[1]
+    assert "manifest binding" in modern_recovery
+    assert "complete regular-file checksum inventory" in modern_recovery
+    assert "complete manifest/checksum inventory" not in modern_recovery
+
     expected_links = {
         "../analysis/covid_hca/historical_trend.md",
         "../data/parquet/build_manifest.json",
