@@ -1,15 +1,38 @@
 # Game-data dictionary
 
-This is the contract for the committed Slice 2A publication. It covers
-regular-season games from ending season 1984 (1983-84) through ending season
-2026 (2025-26): 49,117 `games` rows and 98,234 `team_games` rows. A season
-number is always its ending year. The exact publication, row counts, table
-hashes, source cache paths, source SHA-256 values, validation results, and
-dependency versions are recorded in the committed
-[build manifest](../data/parquet/build_manifest.json); it is the authority if
-this page and an artifact ever differ.
+This is the contract for the two committed regular-season result
+publications. `historical_games.parquet` contains 19,405 BAA/NBA games for
+ending seasons 1947–1983. The modern publication begins at ending season 1984
+and runs through 2026 with 49,117 `games` rows and 98,234 `team_games` rows.
+A season number is always its ending year, so the handoff has no overlap or
+gap.
 
-Related decisions are in the [revival design](superpowers/specs/2026-07-29-nba-repo-revival-covid-hca-design.md), the [Slice 2A plan](superpowers/plans/2026-07-29-slice2a-game-data-pipeline.md), and the corrected [source audit](audits/2026-07-29-slice2-source-spike.md).
+The committed [historical manifest](../data/parquet/historical_games_manifest.json)
+and [modern build manifest](../data/parquet/build_manifest.json) record the
+exact row counts, table hashes, verified relative source paths and SHA-256
+values, validation results, reference hashes, and dependency versions. Each
+manifest is authoritative for its publication if this page and an artifact
+ever differ.
+
+Historical collection and classification decisions are in the approved
+[historical results design](superpowers/specs/2026-07-29-historical-game-results-design.md)
+and the verified
+[historical source spike](audits/2026-07-29-historical-bref-source-spike.md).
+The independent validation inputs are the
+[season-count reference](../data/reference/historical_season_counts.csv) and
+[site-correction ledger](../data/reference/historical_site_corrections.csv).
+The resulting descriptive series is documented in the
+[historical trend report](../analysis/covid_hca/historical_trend.md).
+Sports Reference's
+[bot-traffic policy](https://www.sports-reference.com/bot-traffic.html) and
+[data-use policy](https://www.sports-reference.com/data_use.html) govern
+historical source access.
+
+Modern decisions remain documented in the
+[revival design](superpowers/specs/2026-07-29-nba-repo-revival-covid-hca-design.md),
+the [Slice 2A plan](superpowers/plans/2026-07-29-slice2a-game-data-pipeline.md),
+and the corrected
+[modern source audit](audits/2026-07-29-slice2-source-spike.md).
 
 ## Tables and physical types
 
@@ -59,6 +82,65 @@ One paired game row, with final attendance, venue, and capacity enrichment.
 | attendance_coverage_exemption_reason | large_string nullable | Audited no-fan bubble exemption only |
 | capacity | int64 nullable | Season-aware venue capacity |
 | capacity_source_url, capacity_note | large_string nullable | Capacity provenance and exception note |
+
+### `historical_games.parquet`
+
+One results-level row per BAA/NBA regular-season game for ending seasons
+1947–1983. These are the exact Arrow/Parquet columns and physical types:
+
+| Column | Type | Meaning |
+|---|---|---|
+| game_id | large_string | Stable Basketball Reference-derived identifier |
+| season | int64 | Ending season, exactly 1947 through 1983 |
+| league | large_string | `BAA` for 1947–1949 and `NBA` for 1950–1983 |
+| game_date | date32[day] | Scheduled game date |
+| away_team_name | large_string | Source-era visitor name |
+| home_team_name | large_string | Source-era designated-home name |
+| away_franchise_id | large_string | Stable organizational-lineage code for the visitor |
+| home_franchise_id | large_string | Stable organizational-lineage code for the designated home team |
+| away_pts | int64 | Final visitor score |
+| home_pts | int64 | Final designated-home score |
+| home_margin | int64 | `home_pts - away_pts`, regardless of site classification |
+| overtime_periods | int64 | `0` for regulation; otherwise the parsed overtime count |
+| site_status | large_string | `home`, `neutral`, or `unknown` |
+| venue_name | large_string nullable | Reported arena/site; null when the source cell is blank |
+| attendance | int64 nullable | Reported attendance; null when the source cell is blank |
+| attendance_status | large_string | `reported_positive`, `reported_zero`, or `missing` |
+| boxscore_url | large_string nullable | Preserved rich-statistics source link when present |
+| schedule_url | large_string | Verified schedule page that produced the row |
+
+Team-name columns preserve the names printed for that source era; franchise-ID
+columns normalize those names to stable organizational lineages. The names
+therefore remain suitable for historical display while IDs support
+longitudinal grouping. A game with a box-score link uses
+`bref-<box-score-slug>` as its stable `game_id`. If the link is absent, the ID
+is deterministically formed as
+`bref-fallback-YYYYMMDD-<away-slug>-at-<home-slug>-NN`, using normalized
+source values and a within-date matchup ordinal. Reordering input pages does
+not change that fallback.
+
+Visitor and designated-home columns always establish score orientation;
+`site_status` separately describes the site evidence. `home` means the row
+has the normal designated-home relationship and no conflicting neutral
+signal. `neutral` requires an explicit source signal or provenance-backed
+entry in the correction ledger. `unknown` preserves unresolved or
+contradictory evidence. Primary home-court summaries include only `home`;
+neutral and unknown games remain published and are counted separately.
+
+A blank attendance cell is null with `attendance_status=missing`; a literal
+source zero is retained as integer `0` with
+`attendance_status=reported_zero`, never treated as a blank. A positive value
+uses `reported_positive`. Blank venue cells remain null and are not inferred.
+The historical manifest's per-season `boxscore_link_coverage`,
+`venue_coverage`, and `attendance_raw_coverage` are respectively the fractions
+of rows with non-null `boxscore_url`, `venue_name`, and `attendance`. These
+coverage measures describe source completeness; they do not impute values.
+
+The historical boundary is exactly ending seasons 1947–1983. The modern
+`games.parquet` contract starts at ending season 1984. The historical product
+contains schedule-level results and preserved box-score URLs only; collecting
+rich historical team/player box scores is future separate scope requiring its
+own design and review.
 
 ### `franchises.parquet`
 
@@ -211,6 +293,34 @@ jq '.sources.basketball_reference, .references' data/parquet/build_manifest.json
 
 ## Commands and safe source access
 
+### Historical results
+
+From a repository checkout, the historical operator flow is:
+
+```bash
+# The only network command in the historical workflow.
+python -m nba_data fetch-historical
+
+# Offline: requires the complete, verified 1947–1983 cache.
+python -m nba_data build-historical
+```
+
+`fetch-historical` serially caches Basketball Reference league schedule/index
+and month pages before parsing them. It uses ordinary TLS verification, a
+browser-identifying user agent, no parallel requests, and at least 12 seconds
+between requests; it stops on HTTP, TLS, rate-limit, block-page, or schema
+failure. It does not collect individual box-score pages. `--season
+<ending-season>` may restrict an audit fetch, but the command above is the
+complete-cache path.
+
+`build-historical` performs no network access. It verifies every cached body
+against its metadata sidecar, rejects orphaned or unexpected files, requires
+all 37 ending seasons, validates curated season counts independently, and
+atomically publishes the historical Parquet/manifest pair. The verified raw
+cache lives at `data/raw/historical_bref/` and remains untracked.
+
+### Modern results
+
 ```bash
 # Cache all providers, or one ending season (2020..2026).
 .venv/bin/python -m nba_data fetch [--season 2024]
@@ -229,20 +339,50 @@ empty, unspecified (`0.0.0.0`/`::`), or loopback answer with an AdGuard query
 log/allowlist diagnostic. Correct the DNS/AdGuard policy, then retry with
 ordinary certificate validation; TLS bypasses are not an approved remedy.
 
-## Recovery snapshot
+## Independent recovery snapshots
 
-After a successful build, archive the untracked raw cache exactly once:
+Historical raw recovery is independent of the Slice 2A modern snapshot:
 
 ```bash
-bash scripts/archive_raw_snapshot.sh
+# Create the immutable historical snapshot after a successful publication.
+bash scripts/archive_historical_raw_snapshot.sh
+
+# Restore only data/raw/historical_bref; that target must not exist.
+bash scripts/restore_historical_raw.sh
 ```
 
-The script derives a unique NAS destination from `games.max_season` and the
-first 12 hex characters of the manifest SHA-256, refuses if that path already
-exists, copies the manifest and raw tree, writes and verifies `SHA256SUMS`,
-then uses checksum-based rsync dry-run comparison. It never overwrites a prior
-snapshot. If `data/raw/` is lost, run `bash scripts/restore_raw.sh`. The
-restore command derives the exact snapshot from the committed manifest,
-verifies that the snapshot manifest and complete `SHA256SUMS` inventory match,
-stages all raw sources (including legacy inputs and reconciliation pages), and
-refuses to replace an existing raw directory.
+Both commands default to
+`/mnt/nas/llm/documents/nba-predictions-archive`, overridable with
+`NBA_HISTORICAL_RAW_ARCHIVE_ROOT`. The committed historical manifest supplies
+the ending season and its own SHA-256 binds the archive name:
+`historical-raw-1983-<first-12-hex-of-manifest-sha256>`. The archive command
+refuses an existing final path, stages the cache and an exact copy of
+`historical_games_manifest.json`, inventories every HTML body and metadata
+sidecar in `SHA256SUMS`, verifies every checksum and a checksum-based tree
+comparison, then publishes the immutable directory atomically.
+
+Restore derives that exact snapshot from the current committed manifest. It
+requires the snapshot manifest to match byte for byte, rejects incomplete,
+extra, deleted, changed, or non-regular cache entries through a complete
+checksum inventory and structure checks, and verifies the staged copy before
+an atomic rename. The destination defaults to
+`data/raw/historical_bref/` and must be absent: restore never merges with or
+replaces an existing cache.
+
+The modern recovery flow remains separate:
+
+```bash
+# Archive modern Slice 2A raw sources; historical_bref is excluded.
+bash scripts/archive_raw_snapshot.sh
+
+# Restore the complete modern Slice 2A data/raw snapshot.
+bash scripts/restore_raw.sh
+```
+
+The modern archive is named
+`slice2a-raw-<games.max_season>-<first-12-hex-of-modern-manifest-sha256>` and
+is bound to `build_manifest.json`. Its restore also verifies the complete
+manifest/checksum inventory and refuses an existing destination. Neither
+recovery path substitutes for the other: the historical scripts operate only
+on `historical_bref`, while `scripts/restore_raw.sh` remains the Slice 2A
+modern restore.

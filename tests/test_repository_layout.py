@@ -201,16 +201,33 @@ def test_readme_documents_the_new_contract() -> None:
         "## Revival roadmap",
     ):
         assert heading in readme
+    normalized = " ".join(readme.lower().split())
+    assert re.search(
+        r"results-level baa/nba history.*1947–2026.*delivered",
+        normalized,
+    )
+    assert re.search(
+        r"rich historical team/player box scores.*future"
+        r".*separately reviewed",
+        normalized,
+    )
 
 
 def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
     required = {
+        "analysis/covid_hca/data/home_court_by_season.csv",
+        "analysis/covid_hca/figures/home_court_trend_1947_2026.png",
+        "analysis/covid_hca/historical_trend.md",
+        "data/parquet/historical_games.parquet",
+        "data/parquet/historical_games_manifest.json",
+        "data/reference/historical_season_counts.csv",
+        "data/reference/historical_site_corrections.csv",
         "docs/data-dictionary.md",
+        "docs/audits/2026-07-29-historical-bref-source-spike.md",
         "scripts/archive_raw_snapshot.sh",
         "scripts/archive_historical_raw_snapshot.sh",
         "scripts/restore_historical_raw.sh",
         "data/parquet/build_manifest.json",
-        "data/parquet/historical_games_manifest.json",
         "data/parquet/franchises.parquet",
         "data/parquet/games.parquet",
         "data/parquet/team_games.parquet",
@@ -234,6 +251,124 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
     rendered = json.dumps(manifest, sort_keys=True)
     assert "/home/" not in rendered
     assert "/main/" not in rendered
+
+    historical_manifest = json.loads(
+        (ROOT / "data/parquet/historical_games_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    rendered_historical = json.dumps(historical_manifest, sort_keys=True)
+    assert "/home/" not in rendered_historical
+    assert "fetched_at" not in rendered_historical
+    assert (
+        len(historical_manifest["validation"]["games_by_season"])
+        == 37
+    )
+    def collect_source_paths(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "path":
+                    yield child
+                yield from collect_source_paths(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from collect_source_paths(child)
+
+    source_paths = list(
+        collect_source_paths(historical_manifest["sources"])
+    )
+    assert source_paths
+    assert all(
+        not Path(path).is_absolute() and ".." not in Path(path).parts
+        for path in source_paths
+    )
+
+    tracked_historical = subprocess.run(
+        ["git", "ls-files", "data/raw/historical_bref"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked_historical == []
+
+
+def test_historical_documentation_matches_the_delivered_contract() -> None:
+    dictionary_path = ROOT / "docs/data-dictionary.md"
+    dictionary = dictionary_path.read_text(encoding="utf-8")
+    heading = "### `historical_games.parquet`"
+    assert heading in dictionary
+    section = dictionary.split(heading, maxsplit=1)[1]
+    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    documented_schema = {}
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip().strip("`") for cell in line.split("|")[1:-1]]
+        if (
+            len(cells) >= 2
+            and cells[0] not in {"Column", "---"}
+            and set(cells[0]) != {"-"}
+        ):
+            documented_schema[cells[0]] = cells[1]
+    assert documented_schema == {
+        "game_id": "large_string",
+        "season": "int64",
+        "league": "large_string",
+        "game_date": "date32[day]",
+        "away_team_name": "large_string",
+        "home_team_name": "large_string",
+        "away_franchise_id": "large_string",
+        "home_franchise_id": "large_string",
+        "away_pts": "int64",
+        "home_pts": "int64",
+        "home_margin": "int64",
+        "overtime_periods": "int64",
+        "site_status": "large_string",
+        "venue_name": "large_string nullable",
+        "attendance": "int64 nullable",
+        "attendance_status": "large_string",
+        "boxscore_url": "large_string nullable",
+        "schedule_url": "large_string",
+    }
+
+    for command in (
+        "python -m nba_data fetch-historical",
+        "python -m nba_data build-historical",
+        "bash scripts/archive_historical_raw_snapshot.sh",
+        "bash scripts/restore_historical_raw.sh",
+        "bash scripts/restore_raw.sh",
+    ):
+        assert command in dictionary
+
+    expected_links = {
+        "../analysis/covid_hca/historical_trend.md",
+        "../data/parquet/build_manifest.json",
+        "../data/parquet/historical_games_manifest.json",
+        "../data/reference/historical_season_counts.csv",
+        "../data/reference/historical_site_corrections.csv",
+        "audits/2026-07-29-historical-bref-source-spike.md",
+        "superpowers/specs/2026-07-29-historical-game-results-design.md",
+        "https://www.sports-reference.com/bot-traffic.html",
+        "https://www.sports-reference.com/data_use.html",
+    }
+    documented_links = set(re.findall(r"\[[^]]+\]\(([^)]+)\)", dictionary))
+    assert expected_links <= documented_links
+    for link in expected_links:
+        if link.startswith("https://"):
+            continue
+        assert (dictionary_path.parent / link).resolve().is_file()
+
+    analysis_readme = (
+        ROOT / "analysis/covid_hca/README.md"
+    ).read_text(encoding="utf-8")
+    assert (
+        "MPLBACKEND=Agg .venv/bin/python "
+        "analysis/covid_hca/build_historical_trend.py"
+    ) in analysis_readme
+    assert "fixed-effects" in analysis_readme
+    assert "site_status" in analysis_readme
+    assert "attendance_status" in analysis_readme
 
 
 def seed_raw_snapshot(tmp_path: Path) -> tuple[Path, Path, Path]:

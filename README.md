@@ -7,6 +7,12 @@ three controlled slices. Slice 1 preserves the original work and establishes a
 small, portable, analysis-first repository. The archived dashboard and models
 are historical artifacts, not maintained predictions.
 
+Results-level BAA/NBA history for ending seasons 1947–2026 is delivered as
+two validated publications with a reproducible long-run home-court trend.
+The rich historical team/player box scores remain future work in a
+separately reviewed phase; the 1947–1983 delivery intentionally preserves
+box-score links without collecting those pages.
+
 ## What is preserved
 
 The verified archive contains the complete original repository and local data
@@ -25,7 +31,10 @@ audit.
 
 - `src/nba_data/` — maintained ingestion and transformation code.
 - `data/parquet/` — curated, reproducible analytical tables.
-- `analysis/covid_hca/` — the planned COVID-era home-court analysis.
+- `data/reference/` — reviewed mappings, expected counts, and correction
+  ledgers used by validation.
+- `analysis/covid_hca/` — the delivered 1947–2026 descriptive home-court
+  trend and the planned COVID-era causal analysis.
 - `tests/` — repository and pipeline contracts.
 - `scripts/` — deterministic maintenance and verification commands.
 - `archive/notebooks/` — unchanged capstone notebooks kept for provenance.
@@ -72,17 +81,25 @@ documented in [the preservation audit](docs/audits/2026-07-29-pre-rewrite.md).
 The supported game-data contract, including fields, sources, pinned hashes,
 validation gates, and recovery procedure, is in the
 [data dictionary](docs/data-dictionary.md). The committed
-[build manifest](data/parquet/build_manifest.json) is the authoritative
-machine-readable provenance ledger for this exact publication.
+[modern build manifest](data/parquet/build_manifest.json) and
+[historical build manifest](data/parquet/historical_games_manifest.json) are
+the authoritative machine-readable provenance ledgers for their exact
+publications. Historical raw schedule pages remain untracked and have an
+independent immutable recovery snapshot; the data dictionary documents the
+network, offline-build, archive, and restore commands.
 
 ## Revival roadmap
 
 1. Slice 1: rescue the authored project, archive local data, and remove the
    committed Windows environment from Git history.
-2. Slice 2: implement validated, cached ingestion for 2019-20 through 2025-26.
-3. Slice 3: publish the reproducible COVID-era home-court-advantage analysis.
+2. Slice 2: delivered validated modern results through 2025-26 and
+   results-level BAA/NBA history back to 1946-47.
+3. Slice 3: delivered the descriptive 1947–2026 trend; the modern COVID
+   fixed-effects analysis is the next causal-analysis task.
 
 The approved methodology and safety boundaries are in the
+[historical results design](docs/superpowers/specs/2026-07-29-historical-game-results-design.md)
+and the
 [COVID HCA revival design](docs/superpowers/specs/2026-07-29-nba-repo-revival-covid-hca-design.md).
 
 ## Historical caveats
