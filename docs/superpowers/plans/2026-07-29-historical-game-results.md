@@ -1,6 +1,36 @@
 # Historical BAA/NBA Game Results Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+## Status — 2026-07-30
+
+**Complete.** Tasks 1–12 are implemented + hardened on
+`historical-game-results`; final implementation head `a889c82` passed
+independent whole-branch review with no remaining findings.
+
+- ✅ Default verification — 460 tests passed with zero skips.
+- ✅ Historical publication — 19,405 regular-season games for ending seasons
+  1947–1983; all 37 seasons match independent curated totals.
+- ✅ Modern boundary — 49,117 modern games begin at ending season 1984 and
+  the combined result panel spans 1947–2026.
+- ✅ Reproducibility — modern, historical, and trend products rebuild
+  byte-identically.
+- ✅ Recovery — the immutable 622-file historical snapshot restores exactly,
+  validates against its pinned manifest, and passes its canonical
+  `SHA256SUMS` inventory.
+
+### Landing commits
+
+| Area | Commits |
+|---|---|
+| Source adapter, postseason filtering, and source audit | `d909f6c`, `fdbe938`, `423caa0` |
+| Franchise identity and curated references | `a8ecda8`, `9b82fb1`, `4e21651` |
+| Assembly and validation gates | `958eadb`, `73a4b82`, `ed96193` |
+| Attested publication and full historical collection | `72cc7c6`, `18085f2`, `1155c00`, `f5e6f8e`, `a6541ce`, `ee9d49e`, `08c238a` |
+| Independent raw recovery | `de2a9e1`, `66122d1` |
+| Long-run analysis and deterministic deliverables | `2be4b91`, `d37b4d4` |
+| Documentation and dependency provenance | `ca395c4`, `554ac5d`, `2f8b602`, `cabe2a6` |
+| Final review hardening | `5cdf791`, `bba8173`, `9a2123b`, `db19a87`, `5495197`, `b012e51`, `fb0fd28`, `235e3c2`, `8a2cee6`, `4a12bf6`, `a889c82` |
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Completed steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Publish a provenance-complete BAA/NBA regular-season game table for ending seasons 1947–1983 and reproducible home-court trend outputs spanning 1947–2026 without weakening or reshaping the existing modern game products.
 
@@ -251,7 +281,7 @@ fields are validation/classification evidence and are not published.
   `parse_schedule_page(payload: bytes, *, season: int, schedule_url: str) -> pd.DataFrame`;
   `load_season(raw_dir: Path, season: int) -> pd.DataFrame`.
 
-- [ ] **Step 1: Commit exact small source fixtures**
+- [x] **Step 1: Commit exact small source fixtures**
 
 Use stat-keyed HTML instead of positional columns. The 1947 month fixture must
 contain a regulation row with blank attendance, an overtime row with positive
@@ -403,7 +433,7 @@ def test_parser_accepts_only_the_explicit_neutral_marker():
     assert result["site_status"].tolist() == ["home", "neutral"]
 ```
 
-- [ ] **Step 2: Write failing discovery, parser, and cache tests**
+- [x] **Step 2: Write failing discovery, parser, and cache tests**
 
 ```python
 from pathlib import Path
@@ -487,7 +517,7 @@ def test_parser_allows_absent_boxscore_href():
     assert result.iloc[2]["game_id"].startswith("bref-fallback-")
 ```
 
-- [ ] **Step 3: Run the focused tests and confirm the red state**
+- [x] **Step 3: Run the focused tests and confirm the red state**
 
 Run:
 
@@ -497,7 +527,7 @@ Run:
 
 Expected: collection fails because `nba_data.historical_bref` does not exist.
 
-- [ ] **Step 4: Implement season rules, discovery, and stat-keyed parsing**
+- [x] **Step 4: Implement season rules, discovery, and stat-keyed parsing**
 
 Create the module with these constants and value objects:
 
@@ -777,7 +807,7 @@ def _assign_game_ids(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 ```
 
-- [ ] **Step 5: Add strict index/month validators and polite cache fetch**
+- [x] **Step 5: Add strict index/month validators and polite cache fetch**
 
 ```python
 def validate_index(path: Path, season: int) -> None:
@@ -894,7 +924,7 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
     ).reset_index(drop=True)
 ```
 
-- [ ] **Step 6: Add fetch error/cadence/cache tests**
+- [x] **Step 6: Add fetch error/cadence/cache tests**
 
 Use the `FakeResponse`/`FakeSession` pattern from `tests/test_bref.py`. Assert:
 
@@ -919,7 +949,7 @@ test_fallback_ids_are_stable_across_input_order
 test_parser_rejects_unknown_overtime_marker
 ```
 
-- [ ] **Step 7: Add the two historical CLI commands**
+- [x] **Step 7: Add the two historical CLI commands**
 
 Modify parser construction and dispatch:
 
@@ -976,7 +1006,7 @@ Add CLI tests asserting `fetch-historical --season 1947 --season 1960
 `historical_build.run(data_dir)`, and modern `fetch` still calls only its
 three existing providers.
 
-- [ ] **Step 8: Run tests and commit the adapter**
+- [x] **Step 8: Run tests and commit the adapter**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_bref.py tests/test_cli.py -v
@@ -1003,7 +1033,7 @@ Expected: all focused tests pass and no test performs a real request.
   `render_markdown(audits: list[dict]) -> str`; a committed source audit whose
   values are regenerated from checksum-valid local caches.
 
-- [ ] **Step 1: Write the failing offline audit test**
+- [x] **Step 1: Write the failing offline audit test**
 
 `scripts/` is not a package; load the audit module by file path (the same
 `parents[1]` convention `tests/test_verify_repository.py` uses for script
@@ -1084,7 +1114,7 @@ def test_audit_reports_source_shape_and_ambiguities(tmp_path):
     assert audit["teams"] == sorted(audit["teams"])
 ```
 
-- [ ] **Step 2: Verify the audit test fails**
+- [x] **Step 2: Verify the audit test fails**
 
 Run:
 
@@ -1094,7 +1124,7 @@ Run:
 
 Expected: fail because `scripts.audit_historical_source` does not exist.
 
-- [ ] **Step 3: Implement deterministic audit rendering**
+- [x] **Step 3: Implement deterministic audit rendering**
 
 ```python
 from collections import Counter
@@ -1216,7 +1246,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 4: Run the real spike through one rate-limited process**
+- [x] **Step 4: Run the real spike through one rate-limited process**
 
 First confirm AdGuard is no longer sinking the host:
 
@@ -1236,7 +1266,7 @@ Then run:
 Expected: the first command fetches missing pages at a 12-second cadence and
 the second command performs no network I/O.
 
-- [ ] **Step 5: Turn spike observations into regression assertions**
+- [x] **Step 5: Turn spike observations into regression assertions**
 
 Add cached integration tests with the exact generated game totals and source
 team-name sets:
@@ -1258,7 +1288,7 @@ If a generated audit total differs from one of these independently known
 totals, stop. Diagnose page discovery, incomplete caches, or regular-season
 filtering; do not edit the expected value to match a faulty parser.
 
-- [ ] **Step 6: Verify and commit the spike audit**
+- [x] **Step 6: Verify and commit the spike audit**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_bref.py -v
@@ -1288,7 +1318,7 @@ caches are ignored, and the audit contains all three exact seasons.
   `FRANCHISE_IDS` containing 30 current and 15 defunct lineage IDs; refreshed
   modern dimension/manifest with unchanged `games` and `team_games` bytes.
 
-- [ ] **Step 1: Write failing lineage and collision tests**
+- [x] **Step 1: Write failing lineage and collision tests**
 
 ```python
 @pytest.mark.parametrize(
@@ -1319,16 +1349,17 @@ def test_reference_contains_current_and_defunct_organizations():
     assert len(frozenset(ref["franchise_id"])) == 45
 ```
 
-- [ ] **Step 2: Run the tests and confirm the mappings are absent**
+- [x] **Step 2: Run the tests and confirm the mappings are absent**
 
 ```bash
 .venv/bin/python -m pytest tests/test_franchises.py -v
 ```
 
-Expected: historical aliases raise `UnknownTeamError`, and the two reused
-names cannot yet distinguish unrelated eras.
+Expected at this RED step: historical aliases raise `UnknownTeamError`, and
+the two reused names resolve ambiguously across unrelated eras before bounded
+mappings are added.
 
-- [ ] **Step 3: Add exact surviving-lineage aliases**
+- [x] **Step 3: Add exact surviving-lineage aliases**
 
 Add these bounded rows to `data/reference/franchises.csv`:
 
@@ -1359,7 +1390,7 @@ Change the current `Denver Nuggets` row to:
 Denver Nuggets,DEN,1977,
 ```
 
-- [ ] **Step 4: Add exact defunct-organization aliases**
+- [x] **Step 4: Add exact defunct-organization aliases**
 
 ```csv
 Anderson Packers,AND_1949,1950,1950
@@ -1388,7 +1419,7 @@ cp data/reference/franchises.csv src/nba_data/reference/franchises.csv
 cmp data/reference/franchises.csv src/nba_data/reference/franchises.csv
 ```
 
-- [ ] **Step 5: Assert every spike source name resolves exactly once**
+- [x] **Step 5: Assert every spike source name resolves exactly once**
 
 ```python
 @pytest.mark.integration
@@ -1404,7 +1435,7 @@ def test_every_spike_source_name_resolves_once(season):
     }
 ```
 
-- [ ] **Step 6: Rebuild the modern dimension and prove game bytes did not move**
+- [x] **Step 6: Rebuild the modern dimension and prove game bytes did not move**
 
 ```bash
 sha256sum data/parquet/games.parquet data/parquet/team_games.parquet > /tmp/historical-modern-game-hashes
@@ -1417,7 +1448,7 @@ Expected: both saved game hashes report `OK`; only
 `franchises.parquet` and the modern manifest change among existing modern
 products.
 
-- [ ] **Step 7: Verify and commit the identity expansion**
+- [x] **Step 7: Verify and commit the identity expansion**
 
 ```bash
 .venv/bin/python -m pytest tests/test_franchises.py tests/test_repository_layout.py -q
@@ -1442,7 +1473,7 @@ git commit -m "feat: map historical BAA and NBA franchises"
   `apply_site_corrections(games: pd.DataFrame, corrections: pd.DataFrame) -> pd.DataFrame`;
   `HistoricalValidationError(ValueError)`.
 
-- [ ] **Step 1: Write failing reference-contract tests**
+- [x] **Step 1: Write failing reference-contract tests**
 
 ```python
 from pathlib import Path
@@ -1481,7 +1512,7 @@ def test_site_correction_changes_only_status():
     assert result.loc[0, ["home_pts", "away_pts"]].tolist() == [66, 68]
 ```
 
-- [ ] **Step 2: Verify the focused tests fail**
+- [x] **Step 2: Verify the focused tests fail**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py -v
@@ -1489,7 +1520,7 @@ def test_site_correction_changes_only_status():
 
 Expected: fail because the reference loaders do not exist.
 
-- [ ] **Step 3: Create the independently curated season-count reference**
+- [x] **Step 3: Create the independently curated season-count reference**
 
 Create:
 
@@ -1540,7 +1571,7 @@ derives an expected count from schedule rows. Verify 37 unique seasons,
 19,405 total games, sample totals `331`, `300`, and `943`, BAA only for
 1947–1949, and NBA thereafter.
 
-- [ ] **Step 4: Create the correction ledger with a valid empty state**
+- [x] **Step 4: Create the correction ledger with a valid empty state**
 
 Start with the exact header:
 
@@ -1552,7 +1583,7 @@ Rows are added only when a source URL directly documents the selected
 `home` or `neutral` status. `unknown` is a published source state, not a
 correction value, so the ledger permits only `home` and `neutral`.
 
-- [ ] **Step 5: Implement strict reference loaders**
+- [x] **Step 5: Implement strict reference loaders**
 
 ```python
 from pathlib import Path
@@ -1659,7 +1690,7 @@ def apply_site_corrections(
     return output
 ```
 
-- [ ] **Step 6: Add malformed-reference and orphan-correction tests**
+- [x] **Step 6: Add malformed-reference and orphan-correction tests**
 
 Cover exact failures:
 
@@ -1674,7 +1705,7 @@ test_corrections_reject_blank_source_or_note
 test_apply_corrections_rejects_orphan_game_id
 ```
 
-- [ ] **Step 7: Verify and commit references**
+- [x] **Step 7: Verify and commit references**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py -v
@@ -1699,7 +1730,7 @@ git commit -m "feat: curate historical publication references"
   `assemble(data_dir: Path) -> tuple[pd.DataFrame, dict]`;
   `validate(games: pd.DataFrame, expected_counts: dict[int, int]) -> dict`.
 
-- [ ] **Step 1: Write a complete two-season assembly fixture**
+- [x] **Step 1: Write a complete two-season assembly fixture**
 
 Add helpers that produce source-normalized rows with all internal evidence:
 
@@ -1780,7 +1811,7 @@ def assembled_game_frame():
 `assembled_game_frame` must pass `validate(games, {1947: 1})` unchanged so
 each Step 7 mutation isolates exactly one gate.
 
-- [ ] **Step 2: Write failing schema and gate tests**
+- [x] **Step 2: Write failing schema and gate tests**
 
 ```python
 def test_assemble_resolves_lineage_and_orients_margin(monkeypatch, tmp_path):
@@ -1813,7 +1844,7 @@ def test_validation_rejects_wrong_season_count():
         historical_build.validate(games, {1947: 2})
 ```
 
-- [ ] **Step 3: Verify the new tests fail**
+- [x] **Step 3: Verify the new tests fail**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py -v
@@ -1822,7 +1853,7 @@ def test_validation_rejects_wrong_season_count():
 Expected: fail because `assemble`, `validate`, and publication schema
 constants are absent.
 
-- [ ] **Step 4: Define and enforce the exact schema**
+- [x] **Step 4: Define and enforce the exact schema**
 
 Add `import hashlib` at module scope, then define:
 
@@ -1877,7 +1908,7 @@ def _enforce_schema(frame: pd.DataFrame) -> pd.DataFrame:
     ).reset_index(drop=True)
 ```
 
-- [ ] **Step 5: Assemble all seasons and retain parser evidence for gates**
+- [x] **Step 5: Assemble all seasons and retain parser evidence for gates**
 
 ```python
 def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict]:
@@ -1923,7 +1954,7 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict]:
 Keep `evidence` out of the published frame. Pass it to validation so the
 overtime marker agreement gate does not depend on a hidden global.
 
-- [ ] **Step 6: Implement one diagnostic pass covering every gate**
+- [x] **Step 6: Implement one diagnostic pass covering every gate**
 
 Use:
 
@@ -2013,7 +2044,7 @@ report = {
 Populate each coverage mapping for every season with a literal float
 `notna().mean()`. Do not impose a minimum.
 
-- [ ] **Step 7: Add parameterized gate tests**
+- [x] **Step 7: Add parameterized gate tests**
 
 Each mutation gets its own assertion with the exact diagnostic substring:
 
@@ -2043,7 +2074,7 @@ Add separate tests for duplicate IDs, league boundary, team equality,
 attendance/status disagreement, overtime marker disagreement, and multiple
 diagnostics in one exception.
 
-- [ ] **Step 8: Verify and commit the gated frame**
+- [x] **Step 8: Verify and commit the gated frame**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py -v
@@ -2074,7 +2105,7 @@ git commit -m "feat: assemble and validate historical games"
   `run(data_dir: Path) -> None`; modern publisher preservation of the complete
   historical pair and an explicit modern-reference allowlist.
 
-- [ ] **Step 1: Write failing raw-inventory and sidecar-binding tests**
+- [x] **Step 1: Write failing raw-inventory and sidecar-binding tests**
 
 Add a helper that publishes one verified index/month cache pair through the
 real cache utilities (same shape as Task 2's
@@ -2166,7 +2197,7 @@ Also cover an orphan sidecar, checksum mismatch, duplicate metadata URL,
 unexpected file, wrong provider/resource/league/season/month, and an index
 whose discovered month set differs from cached pages.
 
-- [ ] **Step 2: Write failed-publication rollback and preservation tests**
+- [x] **Step 2: Write failed-publication rollback and preservation tests**
 
 ```python
 def test_run_preserves_prior_historical_pair_when_validation_fails(
@@ -2203,7 +2234,7 @@ In `tests/test_historical_build.py`, seed a modern `games.parquet` whose
 minimum ending season is 1985 and assert `historical_build.run` raises
 `modern publication must begin at ending season 1984`.
 
-- [ ] **Step 3: Verify the provenance/publication tests fail**
+- [x] **Step 3: Verify the provenance/publication tests fail**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py tests/test_build_gates.py -k "historical or preserve" -v
@@ -2211,7 +2242,7 @@ minimum ending season is 1985 and assert `historical_build.run` raises
 
 Expected: fail because provenance and pair-preservation behavior are absent.
 
-- [ ] **Step 4: Implement exact cache-pair inventory and attestation**
+- [x] **Step 4: Implement exact cache-pair inventory and attestation**
 
 For every file in `data/raw/historical_bref`, classify a body or
 `.meta.json` sidecar. Reject `.part`, directories, unknown suffixes, and
@@ -2250,7 +2281,7 @@ Return stable path order and omit `fetched_at`:
 
 Here `metadata` is the checksum-verified sidecar object for that body.
 
-- [ ] **Step 5: Build a deterministic manifest in a stage directory**
+- [x] **Step 5: Build a deterministic manifest in a stage directory**
 
 At `historical_build` module scope add `import json`, `import os`,
 `import shutil`, `import tempfile`, and `from nba_data import build`
@@ -2363,7 +2394,7 @@ Before hashing, require the checkout franchise bytes to match
 records Python plus direct runtime packages and omits host paths and
 timestamps.
 
-- [ ] **Step 6: Implement recoverable two-file replacement**
+- [x] **Step 6: Implement recoverable two-file replacement**
 
 `_publish_historical_pair` verifies the stage contains exactly the two product
 names. It moves any prior complete pair into a temporary rollback directory,
@@ -2419,7 +2450,7 @@ one filesystem. Step 8's rollback test must monkeypatch a *selective*
 `os.replace` wrapper that fails only on the second stage-to-output move and
 delegates every other call, so the restore path itself still works.
 
-- [ ] **Step 7: Preserve the historical pair during a modern directory swap**
+- [x] **Step 7: Preserve the historical pair during a modern directory swap**
 
 In `src/nba_data/build.py` add:
 
@@ -2486,7 +2517,7 @@ Add a regression test that writes
 `reference/historical_season_counts.csv`, runs the modern publication fixture,
 and asserts that filename is absent from `build_manifest.json`.
 
-- [ ] **Step 8: Add deterministic manifest and rollback tests**
+- [x] **Step 8: Add deterministic manifest and rollback tests**
 
 Assert:
 
@@ -2502,7 +2533,7 @@ Run the fixture build twice and compare both product hashes. Monkeypatch
 `os.replace` to fail after the first historical product move and assert the
 old pair is fully restored.
 
-- [ ] **Step 9: Verify and commit the publisher**
+- [x] **Step 9: Verify and commit the publisher**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_build.py tests/test_build_gates.py -v
@@ -2527,7 +2558,7 @@ git commit -m "feat: publish attested historical game data"
 - Produces: complete verified raw cache, one committed row per historical
   regular-season game, and cached integration coverage for every season.
 
-- [ ] **Step 1: Fetch all missing historical pages**
+- [x] **Step 1: Fetch all missing historical pages**
 
 Run one process so the 12-second cadence spans season boundaries:
 
@@ -2540,7 +2571,7 @@ uses ordinary TLS and stops on the first access/schema failure. Resume the same
 command after resolving a transient provider-side failure; valid cache hits
 are not refetched.
 
-- [ ] **Step 2: Add every-season cached integration coverage**
+- [x] **Step 2: Add every-season cached integration coverage**
 
 ```python
 @pytest.mark.integration
@@ -2565,7 +2596,7 @@ Add a second integration test collecting every distinct
 `franchises.resolve`. An unknown alias is fixed in the franchise reference
 with a historically correct bound; it is never normalized by fuzzy matching.
 
-- [ ] **Step 3: Inspect nonblank remarks without changing parser rules**
+- [x] **Step 3: Inspect nonblank remarks without changing parser rules**
 
 Run:
 
@@ -2579,7 +2610,7 @@ site, add its real game ID, selected `home` or `neutral` value, direct source
 URL, and a specific explanatory note to the ledger. Rows without adequate
 evidence stay `unknown`; do not infer status from arena names or city strings.
 
-- [ ] **Step 4: Run the full historical build**
+- [x] **Step 4: Run the full historical build**
 
 ```bash
 .venv/bin/python -m nba_data build-historical
@@ -2590,14 +2621,14 @@ untouched. Any count discrepancy is investigated against index discovery,
 month inventory, and the independent season-summary count before changing
 code or references.
 
-- [ ] **Step 5: Verify exact panel properties**
+- [x] **Step 5: Verify exact panel properties**
 
 ```bash
 .venv/bin/python -c "import json, pandas as pd; from pathlib import Path; p=Path('data/parquet'); g=pd.read_parquet(p/'historical_games.parquet'); m=json.loads((p/'historical_games_manifest.json').read_text(encoding='utf-8')); assert tuple(sorted(g.season.unique())) == tuple(range(1947, 1984)); assert g.game_id.is_unique; assert int(g.season.min()) == 1947; assert int(g.season.max()) == 1983; assert len(g) == sum(m['validation']['games_by_season'].values()); print(len(g))"
 .venv/bin/python -m pytest tests/test_historical_bref.py tests/test_historical_build.py -v
 ```
 
-- [ ] **Step 6: Prove offline byte determinism**
+- [x] **Step 6: Prove offline byte determinism**
 
 ```bash
 sha256sum data/parquet/historical_games.parquet data/parquet/historical_games_manifest.json > /tmp/historical-first-build.sha256
@@ -2607,7 +2638,7 @@ sha256sum -c /tmp/historical-first-build.sha256
 
 Expected: both hashes report `OK`.
 
-- [ ] **Step 7: Commit curated corrections and products**
+- [x] **Step 7: Commit curated corrections and products**
 
 ```bash
 git add tests/test_historical_bref.py data/reference/historical_site_corrections.csv data/parquet/historical_games.parquet data/parquet/historical_games_manifest.json
@@ -2659,7 +2690,7 @@ restore copy; and an archive stage manifest changed during copy. Each race
 test must prove nonzero exit, no published/partial destination, and removal of
 only the temporary stage.
 
-- [ ] **Step 1: Write failing archive/restore inverse tests**
+- [x] **Step 1: Write failing archive/restore inverse tests**
 
 Seed a temporary repository with a manifest and two cache pairs, and invoke
 the checkout's scripts by absolute path (the temporary repository has no
@@ -2782,7 +2813,7 @@ Add tests that tamper with a body, delete a sidecar, change the snapshot
 manifest, pre-create the restore target, and pre-create the archive target.
 Every case must exit nonzero without a partial restored directory.
 
-- [ ] **Step 2: Run tests and confirm scripts are missing**
+- [x] **Step 2: Run tests and confirm scripts are missing**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_raw_snapshot.py -v
@@ -2790,7 +2821,7 @@ Every case must exit nonzero without a partial restored directory.
 
 Expected: fail because both historical scripts do not exist.
 
-- [ ] **Step 3: Implement the historical archive**
+- [x] **Step 3: Implement the historical archive**
 
 The following excerpt records the original baseline only. It is not complete
 without the final-review manifest/cache validator, pre/post-copy validation,
@@ -2847,7 +2878,7 @@ test -z "$changes" || {
 printf 'verified historical raw snapshot: %s\n' "$destination"
 ```
 
-- [ ] **Step 4: Implement exact verified restore**
+- [x] **Step 4: Implement exact verified restore**
 
 The restore script derives the same snapshot name, verifies the copied
 manifest byte-for-byte, recomputes the complete sorted checksum inventory
@@ -2941,7 +2972,7 @@ trap - EXIT
 printf 'verified historical raw restore: %s\n' "$destination"
 ```
 
-- [ ] **Step 5: Keep modern snapshots independent**
+- [x] **Step 5: Keep modern snapshots independent**
 
 In `scripts/archive_raw_snapshot.sh`, add the same
 `NBA_RAW_ARCHIVE_ROOT` override used by restore and exclude the historical
@@ -2955,7 +2986,7 @@ rsync -a --checksum --exclude='/historical_bref/' \
 The historical cache is attested only by its historical manifest and cannot
 be silently bundled into a later Slice 2A snapshot.
 
-- [ ] **Step 6: Verify, create the real NAS snapshot, and commit scripts**
+- [x] **Step 6: Verify, create the real NAS snapshot, and commit scripts**
 
 ```bash
 .venv/bin/python -m pytest tests/test_historical_raw_snapshot.py tests/test_repository_layout.py -v
@@ -2988,7 +3019,7 @@ checksum inventory passes.
   `cluster_bootstrap_mean_margin(groups: dict[str, np.ndarray], *, seed: int, resamples: int = 5000) -> tuple[float, float]`;
   `summarize_by_season(panel: pd.DataFrame, *, seed: int = 1947, resamples: int = 5000) -> pd.DataFrame`.
 
-- [ ] **Step 1: Declare NumPy as a direct runtime dependency**
+- [x] **Step 1: Declare NumPy as a direct runtime dependency**
 
 Add `numpy` to `requirements.in` and the `[project].dependencies` list. Then
 compile **without** `--upgrade`: NumPy is already pinned transitively
@@ -3007,7 +3038,7 @@ git diff requirements.txt
 Expected: the `requirements.txt` diff touches only NumPy's classification
 comment lines; no pinned version changes.
 
-- [ ] **Step 2: Write failing union-boundary and orientation tests**
+- [x] **Step 2: Write failing union-boundary and orientation tests**
 
 Define the three fixture helpers in `tests/test_home_court.py` first. Each
 writes only the columns `load_results_panel` selects or derives:
@@ -3112,7 +3143,7 @@ def test_union_rejects_gap_or_overlap(tmp_path):
         home_court.load_results_panel(tmp_path)
 ```
 
-- [ ] **Step 3: Write failing site-exclusion and weighted-trend tests**
+- [x] **Step 3: Write failing site-exclusion and weighted-trend tests**
 
 ```python
 def test_summary_excludes_neutral_and_unknown_from_home_estimands():
@@ -3150,7 +3181,7 @@ def test_trailing_window_is_game_weighted_not_season_weighted():
     ].item() == 0.25
 ```
 
-- [ ] **Step 4: Verify analysis tests fail**
+- [x] **Step 4: Verify analysis tests fail**
 
 ```bash
 .venv/bin/python -m pytest tests/test_home_court.py -v
@@ -3158,7 +3189,7 @@ def test_trailing_window_is_game_weighted_not_season_weighted():
 
 Expected: fail because `nba_data.home_court` does not exist.
 
-- [ ] **Step 5: Implement the compatible result union**
+- [x] **Step 5: Implement the compatible result union**
 
 ```python
 from pathlib import Path
@@ -3222,7 +3253,7 @@ elsewhere: the historical build gates 1947–1983 through
 real panel spans exactly 1947–2026. Do not hard-code 2026 here; the modern
 table grows every season.
 
-- [ ] **Step 6: Implement Wilson and fixed-seed cluster-bootstrap intervals**
+- [x] **Step 6: Implement Wilson and fixed-seed cluster-bootstrap intervals**
 
 ```python
 def wilson_interval(
@@ -3270,7 +3301,7 @@ def cluster_bootstrap_mean_margin(
 The bootstrap resamples home-franchise clusters within each season. Repeated
 clusters repeat all their games, preserving within-franchise dependence.
 
-- [ ] **Step 7: Implement season summaries and game-weighted trailing windows**
+- [x] **Step 7: Implement season summaries and game-weighted trailing windows**
 
 Return columns in this exact order:
 
@@ -3315,14 +3346,14 @@ summary["trailing_5_mean_home_margin"] = (
 
 Drop `_home_margin_sum` before returning `SUMMARY_COLUMNS`.
 
-- [ ] **Step 8: Add exact interval and determinism tests**
+- [x] **Step 8: Add exact interval and determinism tests**
 
 Assert Wilson bounds contain the observed proportion and stay in `[0, 1]`.
 Call `summarize_by_season` twice with the same seed and use
 `pd.testing.assert_frame_equal`. Call it with a different seed and assert
 point estimates are unchanged.
 
-- [ ] **Step 9: Verify and commit analysis primitives**
+- [x] **Step 9: Verify and commit analysis primitives**
 
 ```bash
 .venv/bin/python -m pytest tests/test_home_court.py -v
@@ -3351,7 +3382,7 @@ git commit -m "feat: summarize long-run home-court advantage"
   `run(data_dir: Path, output_dir: Path) -> None`; three deterministic
   committed outputs.
 
-- [ ] **Step 1: Write failing render smoke and determinism tests**
+- [x] **Step 1: Write failing render smoke and determinism tests**
 
 `analysis/` is not a package; load the report module by file path in
 `tests/test_historical_report.py` and build a constant full-span summary
@@ -3443,7 +3474,7 @@ def test_report_run_writes_three_deterministic_products(
     }
 ```
 
-- [ ] **Step 2: Verify the report test fails**
+- [x] **Step 2: Verify the report test fails**
 
 ```bash
 MPLBACKEND=Agg .venv/bin/python -m pytest tests/test_historical_report.py -v
@@ -3451,7 +3482,7 @@ MPLBACKEND=Agg .venv/bin/python -m pytest tests/test_historical_report.py -v
 
 Expected: fail because the report module does not exist.
 
-- [ ] **Step 3: Implement the two-panel figure**
+- [x] **Step 3: Implement the two-panel figure**
 
 Use the noninteractive backend before importing pyplot:
 
@@ -3490,7 +3521,7 @@ figure.savefig(
 plt.close(figure)
 ```
 
-- [ ] **Step 4: Implement a data-derived, noncausal report**
+- [x] **Step 4: Implement a data-derived, noncausal report**
 
 `render_report` reads exact rows to report the inaugural estimate, the
 historical maximum and minimum five-season win trends, the 1983 boundary, the
@@ -3524,7 +3555,7 @@ classification quality changes across eras, 1984–2019 inherits the legacy
 home-designation assumption, and the later COVID fixed-effects analysis—not
 this chart—defines the causal estimand.
 
-- [ ] **Step 5: Implement one-command output generation**
+- [x] **Step 5: Implement one-command output generation**
 
 ```python
 def run(data_dir: Path, output_dir: Path) -> None:
@@ -3549,7 +3580,7 @@ The command-line entry defaults to `data/` and `analysis/covid_hca/` relative
 to the source checkout, and accepts explicit `--data-dir` and `--output-dir`
 for tests or installed use.
 
-- [ ] **Step 6: Render the real outputs twice**
+- [x] **Step 6: Render the real outputs twice**
 
 ```bash
 MPLBACKEND=Agg .venv/bin/python analysis/covid_hca/build_historical_trend.py
@@ -3561,7 +3592,7 @@ sha256sum -c /tmp/historical-analysis-first.sha256
 Expected: all three hashes report `OK`, CSV seasons are exactly 1947–2026,
 and the report's numeric statements agree with the CSV.
 
-- [ ] **Step 7: Verify and commit deliverables**
+- [x] **Step 7: Verify and commit deliverables**
 
 ```bash
 MPLBACKEND=Agg .venv/bin/python -m pytest tests/test_home_court.py tests/test_historical_report.py -v
@@ -3585,7 +3616,7 @@ git commit -m "analysis: publish historical home-court trends"
 - Produces: one authoritative operator path for fetch, offline build, restore,
   and analysis reproduction.
 
-- [ ] **Step 1: Write failing layout/documentation assertions**
+- [x] **Step 1: Write failing layout/documentation assertions**
 
 Extend the required delivery set:
 
@@ -3609,7 +3640,7 @@ Assert the historical manifest contains no `/home/`, no `fetched_at`, exactly
 37 season counts, and only relative source paths. Assert `git ls-files
 data/raw/historical_bref` is empty.
 
-- [ ] **Step 2: Run the focused layout test and observe missing docs**
+- [x] **Step 2: Run the focused layout test and observe missing docs**
 
 ```bash
 .venv/bin/python -m pytest tests/test_repository_layout.py -v
@@ -3617,7 +3648,7 @@ data/raw/historical_bref` is empty.
 
 Expected: fail until the documentation names the new contract and commands.
 
-- [ ] **Step 3: Document the historical table and manifest**
+- [x] **Step 3: Document the historical table and manifest**
 
 Add a `historical_games.parquet` section to the data dictionary with all 18
 columns, exact types, source-era name versus lineage ID distinction, stable
@@ -3640,7 +3671,7 @@ is offline and cache-complete. Link the approved design, source spike, both
 manifests, Sports Reference policies, season counts, correction ledger, and
 historical trend report.
 
-- [ ] **Step 4: Document independent recovery**
+- [x] **Step 4: Document independent recovery**
 
 State:
 
@@ -3653,14 +3684,14 @@ The restore target must be absent. Explain snapshot naming, manifest binding,
 complete checksum verification, the default NAS root, and why
 `scripts/restore_raw.sh` remains the separate Slice 2A restore.
 
-- [ ] **Step 5: Update project and analysis status**
+- [x] **Step 5: Update project and analysis status**
 
 README marks results-level history 1947–2026 as delivered while historical
 rich box scores remain a future separately reviewed phase. The analysis README
 explains how to regenerate the CSV/PNG/report and preserves the modern COVID
 fixed-effects analysis as the next causal-analysis task.
 
-- [ ] **Step 6: Verify and commit documentation**
+- [x] **Step 6: Verify and commit documentation**
 
 ```bash
 .venv/bin/python -m pytest tests/test_repository_layout.py tests/test_verify_repository.py -v
@@ -3681,7 +3712,7 @@ git commit -m "docs: document historical results and recovery"
 - Produces: a clean, reviewed feature branch ready for
   `superpowers:finishing-a-development-branch`.
 
-- [ ] **Step 1: Run the full default suite with integration tests enabled**
+- [x] **Step 1: Run the full default suite with integration tests enabled**
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -3690,7 +3721,7 @@ git commit -m "docs: document historical results and recovery"
 Expected: zero failures and zero skips. Every collected historical season is
 read from verified cache.
 
-- [ ] **Step 2: Run repository and shell verification**
+- [x] **Step 2: Run repository and shell verification**
 
 ```bash
 .venv/bin/python scripts/verify_repository.py
@@ -3702,7 +3733,7 @@ bash -n scripts/restore_historical_raw.sh
 
 Expected: all commands exit zero.
 
-- [ ] **Step 3: Rebuild all committed data products and analysis**
+- [x] **Step 3: Rebuild all committed data products and analysis**
 
 ```bash
 .venv/bin/python -m nba_data build
@@ -3714,7 +3745,7 @@ git status --short
 Expected: modern build preserves the historical pair; all three commands
 produce no tracked diff.
 
-- [ ] **Step 4: Run explicit acceptance assertions**
+- [x] **Step 4: Run explicit acceptance assertions**
 
 ```bash
 .venv/bin/python -c "import json, pandas as pd; from pathlib import Path; p=Path('data/parquet'); h=pd.read_parquet(p/'historical_games.parquet'); g=pd.read_parquet(p/'games.parquet'); hm=json.loads((p/'historical_games_manifest.json').read_text(encoding='utf-8')); assert tuple(range(1947,1984)) == tuple(sorted(h.season.unique())); assert int(g.season.min()) == 1984; assert h.game_id.is_unique; assert not h[['game_date','league','away_team_name','home_team_name','away_franchise_id','home_franchise_id','away_pts','home_pts']].isna().any().any(); assert len(h) == sum(hm['validation']['games_by_season'].values()); assert set(h.site_status.unique()) <= {'home','neutral','unknown'}; print({'historical_games': len(h), 'modern_games': len(g)})"
@@ -3724,7 +3755,7 @@ rg -n "verify=False|ssl=False|CERT_NONE|disable_warnings" src scripts tests
 
 Expected: the Python command exits zero; both text searches print nothing.
 
-- [ ] **Step 5: Verify NAS recovery without replacing the live cache**
+- [x] **Step 5: Verify NAS recovery without replacing the live cache**
 
 Use a temporary destination:
 
@@ -3736,7 +3767,7 @@ cmp data/raw/historical_bref/BAA_1947_games.html /tmp/nba-historical-raw-restore
 After the comparison, remove only the explicit temporary restore directory
 through the normal workspace cleanup process.
 
-- [ ] **Step 6: Request independent code review**
+- [x] **Step 6: Request independent code review**
 
 Invoke `superpowers:requesting-code-review`. Give the reviewer:
 
@@ -3750,13 +3781,13 @@ season gates, pair rollback/preservation, site exclusions, interval math,
 determinism, and recovery.
 ```
 
-- [ ] **Step 7: Process findings rigorously**
+- [x] **Step 7: Process findings rigorously**
 
 Invoke `superpowers:receiving-code-review`. Reproduce each claimed failure,
 add a failing regression test for confirmed defects, implement the narrow fix,
 rerun the focused and full suites, and commit each coherent correction.
 
-- [ ] **Step 8: Final clean-state verification**
+- [x] **Step 8: Final clean-state verification**
 
 ```bash
 .venv/bin/python -m pytest -q
@@ -3772,20 +3803,20 @@ branch is clean and unmerged.
 
 ## Final Acceptance Checklist
 
-- [ ] Source spike documents 1947, 1960, and 1983 through one adapter.
-- [ ] All 37 ending seasons 1947–1983 match independent curated totals.
-- [ ] BAA/NBA boundary and regular-season-only discovery are explicit.
-- [ ] Every source team resolves one season-valid surviving or defunct lineage.
-- [ ] Historical table contains no fabricated modern statistics.
-- [ ] Attendance null/zero and venue null semantics are preserved.
-- [ ] Neutral and unknown games are published but excluded from home estimands.
-- [ ] Raw body/sidecar inventory and metadata identity match exactly.
-- [ ] Historical Parquet and manifest are byte-identical across offline builds.
-- [ ] Modern game/team-game bytes remain unchanged and modern rebuilds preserve the historical pair.
-- [ ] Historical NAS archive and restore are verified exact inverses.
-- [ ] Result union has an exact 1983/1984 boundary and spans 1947–2026.
-- [ ] Wilson, cluster-bootstrap, and game-weighted trailing calculations pass deterministic tests.
-- [ ] CSV, figure, and written trend regenerate byte-identically.
-- [ ] Default tests pass with zero skipped cached integration tests.
-- [ ] Repository contains no raw historical file, host path, mutable generated timestamp, or TLS bypass.
-- [ ] Rich historical team/player box scores remain outside this delivery.
+- [x] Source spike documents 1947, 1960, and 1983 through one adapter.
+- [x] All 37 ending seasons 1947–1983 match independent curated totals.
+- [x] BAA/NBA boundary and regular-season-only discovery are explicit.
+- [x] Every source team resolves one season-valid surviving or defunct lineage.
+- [x] Historical table contains no fabricated modern statistics.
+- [x] Attendance null/zero and venue null semantics are preserved.
+- [x] Neutral and unknown games are published but excluded from home estimands.
+- [x] Raw body/sidecar inventory and metadata identity match exactly.
+- [x] Historical Parquet and manifest are byte-identical across offline builds.
+- [x] Modern game/team-game bytes remain unchanged and modern rebuilds preserve the historical pair.
+- [x] Historical NAS archive and restore are verified exact inverses.
+- [x] Result union has an exact 1983/1984 boundary and spans 1947–2026.
+- [x] Wilson, cluster-bootstrap, and game-weighted trailing calculations pass deterministic tests.
+- [x] CSV, figure, and written trend regenerate byte-identically.
+- [x] Default tests pass with zero skipped cached integration tests.
+- [x] Repository contains no raw historical file, host path, mutable generated timestamp, or TLS bypass.
+- [x] Rich historical team/player box scores remain outside this delivery.
