@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+import warnings
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -632,6 +633,40 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
+def _restore_historical_products(
+    rollback_dir: Path,
+    moved_prior: list[str],
+    output_dir: Path,
+) -> None:
+    """Restore prior products without consuming the retained recovery data."""
+    restoration_dir = None
+    complete_pair = len(moved_prior) == len(HISTORICAL_PRODUCTS)
+    try:
+        restoration_dir = Path(
+            tempfile.mkdtemp(
+                prefix=".historical-restoration-",
+                dir=output_dir.parent,
+            )
+        )
+        for name in moved_prior:
+            shutil.copy2(rollback_dir / name, restoration_dir / name)
+        for name in moved_prior:
+            os.replace(restoration_dir / name, output_dir / name)
+    except OSError as restoration_error:
+        retained = (
+            "complete recovery pair"
+            if complete_pair
+            else "recovery data"
+        )
+        raise HistoricalValidationError(
+            "historical publication restoration failed; "
+            f"{retained} retained at {rollback_dir}"
+        ) from restoration_error
+    finally:
+        if restoration_dir is not None and restoration_dir.exists():
+            shutil.rmtree(restoration_dir, ignore_errors=True)
+
+
 def _publish_historical_pair(
     stage_dir: Path, output_dir: Path
 ) -> Path | None:
@@ -681,15 +716,11 @@ def _publish_historical_pair(
             published.append(name)
     except OSError:
         if rollback_dir is not None:
-            try:
-                for name in moved_prior:
-                    if (rollback_dir / name).exists():
-                        os.replace(rollback_dir / name, output_dir / name)
-            except OSError as restoration_error:
-                raise HistoricalValidationError(
-                    "historical publication restoration failed; "
-                    f"recovery data retained at {rollback_dir}"
-                ) from restoration_error
+            _restore_historical_products(
+                rollback_dir,
+                moved_prior,
+                output_dir,
+            )
             try:
                 shutil.rmtree(rollback_dir)
             except OSError as cleanup_error:
@@ -765,7 +796,17 @@ def run(data_dir: Path) -> None:
             ) + "\n",
             encoding="utf-8",
         )
-        _publish_historical_pair(stage_dir, data_dir / "parquet")
+        retained_rollback = _publish_historical_pair(
+            stage_dir,
+            data_dir / "parquet",
+        )
+        if retained_rollback is not None:
+            warnings.warn(
+                "historical publication committed; prior pair retained at "
+                f"{retained_rollback}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     finally:
         if stage_dir.exists():
             shutil.rmtree(stage_dir)

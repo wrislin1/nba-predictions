@@ -652,7 +652,9 @@ def test_publish_historical_pair_retains_recovery_after_restoration_failure(
             if publication_moves == 2:
                 raise OSError("seeded publication failure")
         if (
-            source.parent.name.startswith(".historical-rollback-")
+            source.parent.name.startswith(
+                (".historical-rollback-", ".historical-restoration-")
+            )
             and destination.parent == output
         ):
             raise OSError("seeded restoration failure")
@@ -665,6 +667,63 @@ def test_publish_historical_pair_retains_recovery_after_restoration_failure(
     with pytest.raises(
         historical_build.HistoricalValidationError,
         match="historical publication restoration failed",
+    ) as caught:
+        historical_build._publish_historical_pair(stage, output)
+
+    recovery_dirs = list(tmp_path.glob(".historical-rollback-*"))
+    assert len(recovery_dirs) == 1
+    recovery_dir = recovery_dirs[0]
+    assert str(recovery_dir) in str(caught.value)
+    assert {
+        name: (recovery_dir / name).read_bytes() for name in old
+    } == old
+
+
+def test_publish_retains_complete_pair_after_second_restoration_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if partial restoration split the prior recovery pair."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    old = {}
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        old[name] = b"old " + name.encode()
+        (output / name).write_bytes(old[name])
+        (stage / name).write_bytes(b"new " + name.encode())
+    real_replace = os.replace
+    publication_moves = 0
+    restoration_moves = 0
+
+    def fail_publication_then_second_restoration(source, destination):
+        nonlocal publication_moves, restoration_moves
+        source = Path(source)
+        destination = Path(destination)
+        if source.parent == stage and destination.parent == output:
+            publication_moves += 1
+            if publication_moves == 2:
+                raise OSError("seeded publication failure")
+        if (
+            source.parent.name.startswith(
+                (".historical-rollback-", ".historical-restoration-")
+            )
+            and destination.parent == output
+        ):
+            restoration_moves += 1
+            if restoration_moves == 2:
+                raise OSError("seeded second restoration failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        historical_build.os,
+        "replace",
+        fail_publication_then_second_restoration,
+    )
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="complete recovery pair retained",
     ) as caught:
         historical_build._publish_historical_pair(stage, output)
 
@@ -709,6 +768,55 @@ def test_publish_historical_pair_retains_prior_after_commit_cleanup_failure(
     assert {
         name: (recovery_dir / name).read_bytes() for name in old
     } == old
+
+
+def test_run_warns_when_committed_prior_pair_cleanup_is_retained(
+    monkeypatch, tmp_path
+):
+    """Would fail if run hid a retained recovery path after commit."""
+    monkeypatch.setattr(
+        historical_build.historical_bref, "HISTORICAL_SEASONS", (1947,)
+    )
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1984]}).to_parquet(output / "games.parquet")
+    seed_historical_references(tmp_path, {1947: 1})
+    games = assembled_game_frame()
+    report = historical_build.validate(games, {1947: 1})
+    retained = tmp_path / ".historical-rollback-retained"
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (games.copy(), report.copy()),
+    )
+    monkeypatch.setattr(
+        historical_build,
+        "_raw_provenance",
+        lambda data_dir: {"basketball_reference": {"pages": []}},
+    )
+    monkeypatch.setattr(
+        historical_build,
+        "_reference_provenance",
+        lambda data_dir: {},
+    )
+    monkeypatch.setattr(
+        historical_build.build,
+        "_dependency_versions",
+        lambda project_root: {},
+    )
+    monkeypatch.setattr(
+        historical_build,
+        "_publish_historical_pair",
+        lambda stage_dir, output_dir: retained,
+    )
+
+    with pytest.warns(
+        RuntimeWarning,
+        match=f"prior pair retained at {retained}",
+    ):
+        result = historical_build.run(tmp_path)
+
+    assert result is None
 
 
 @pytest.mark.parametrize("kind", ["file", "symlink"])
