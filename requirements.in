@@ -5,6 +5,7 @@ linearmodels
 lxml
 matplotlib
 nba_api
+numpy
 openpyxl
 pandas
 pyarrow

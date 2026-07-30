@@ -221,6 +221,7 @@ notebook-shim==0.2.4
     #   notebook
 numpy==2.5.1
     # via
+    #   -r requirements.in
     #   contourpy
     #   formulaic
     #   linearmodels

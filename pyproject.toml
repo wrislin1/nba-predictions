@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
   "lxml",
   "nba-api",
+  "numpy",
   "pandas",
   "pyarrow",
   "requests",
