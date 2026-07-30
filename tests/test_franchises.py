@@ -55,6 +55,14 @@ def test_reference_contains_current_and_defunct_organizations():
     assert len(frozenset(ref["franchise_id"])) == 45
 
 
+def test_new_york_nets_resolve_only_in_their_1977_nba_season():
+    assert franchises.resolve("New York Nets", 1977) == "BKN"
+
+    for season in (1976, 1978):
+        with pytest.raises(franchises.UnknownTeamError):
+            franchises.resolve("New York Nets", season)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("season", [1947, 1960, 1983])
 def test_every_spike_source_name_resolves_once(season):
