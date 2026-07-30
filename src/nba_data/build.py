@@ -1613,10 +1613,16 @@ def _copy_historical_publication(
     present = {
         name
         for name in PRESERVED_HISTORICAL_FILES
-        if (output_dir / name).is_file()
+        if (output_dir / name).exists() or (output_dir / name).is_symlink()
     }
     if present and present != set(PRESERVED_HISTORICAL_FILES):
         raise ValidationError("historical publication pair is incomplete")
+    if any(
+        (output_dir / name).is_symlink()
+        or not (output_dir / name).is_file()
+        for name in present
+    ):
+        raise ValidationError("non-regular historical publication product")
     for name in sorted(present):
         shutil.copyfile(output_dir / name, stage_dir / name)
     return present

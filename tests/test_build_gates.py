@@ -2175,6 +2175,31 @@ def test_run_rejects_incomplete_historical_publication_pair(monkeypatch, tmp_pat
     assert orphan.read_bytes() == b"orphaned historical bytes"
 
 
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_modern_preservation_rejects_non_regular_historical_inputs(tmp_path, kind):
+    """Would fail if a modern swap silently dropped a non-file historical input."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    for name in build.PRESERVED_HISTORICAL_FILES:
+        (output / name).write_bytes(b"historical")
+    target = output / build.PRESERVED_HISTORICAL_FILES[0]
+    target.unlink()
+    if kind == "directory":
+        target.mkdir()
+    else:
+        replacement = tmp_path / "historical-product"
+        replacement.write_bytes(b"historical")
+        target.symlink_to(replacement)
+
+    with pytest.raises(
+        build.ValidationError,
+        match="non-regular historical publication product",
+    ):
+        build._copy_historical_publication(output, stage)
+
+
 def test_modern_manifest_omits_historical_only_references(monkeypatch, tmp_path):
     """Would fail if historical reference changes mutated modern attestation."""
     data_dir = tmp_path / "data"

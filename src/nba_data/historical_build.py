@@ -468,7 +468,11 @@ def _raw_provenance(data_dir: Path) -> dict:
     bodies = set()
     sidecars = set()
     for path in sorted(cache_dir.iterdir()):
-        if path.is_dir() or path.name.endswith(".part"):
+        if path.is_symlink() or not path.is_file():
+            raise HistoricalValidationError(
+                f"non-regular historical cache entry: {path.name}"
+            )
+        if path.name.endswith(".part"):
             raise HistoricalValidationError(
                 f"unexpected historical cache entry: {path.name}"
             )
@@ -580,14 +584,14 @@ def _raw_provenance(data_dir: Path) -> dict:
                 "month": month,
                 "url": url,
             }
+            identity = (
+                metadata.get("resource"), metadata.get("league"),
+                metadata.get("season"), metadata.get("month"),
+            )
+            if identity in identities or metadata.get("url") in urls:
+                raise HistoricalValidationError("duplicate historical cache identity")
             if any(metadata.get(key) != value for key, value in expected.items()):
                 raise HistoricalValidationError("historical cache metadata mismatch")
-            identity = (
-                metadata["resource"], metadata["league"], metadata["season"],
-                metadata.get("month"),
-            )
-            if identity in identities or metadata["url"] in urls:
-                raise HistoricalValidationError("duplicate historical cache identity")
             identities.add(identity)
             urls.add(metadata["url"])
             pages.append({
@@ -628,31 +632,57 @@ def _publish_historical_pair(stage_dir: Path, output_dir: Path) -> None:
             "historical stage must contain exactly "
             f"{sorted(HISTORICAL_PRODUCTS)}"
         )
-    existing = [
-        name for name in HISTORICAL_PRODUCTS if (output_dir / name).exists()
-    ]
+    if any(
+        (stage_dir / name).is_symlink()
+        or not (stage_dir / name).is_file()
+        for name in HISTORICAL_PRODUCTS
+    ):
+        raise HistoricalValidationError(
+            "non-regular historical publication product"
+        )
+    existing = [name for name in HISTORICAL_PRODUCTS if (
+        (output_dir / name).exists() or (output_dir / name).is_symlink()
+    )]
     if existing and len(existing) != len(HISTORICAL_PRODUCTS):
         raise HistoricalValidationError("historical publication pair is incomplete")
-    rollback_dir = None
-    if existing:
-        rollback_dir = Path(
-            tempfile.mkdtemp(
-                prefix=".historical-rollback-", dir=output_dir.parent
-            )
+    if any(
+        (output_dir / name).is_symlink()
+        or not (output_dir / name).is_file()
+        for name in existing
+    ):
+        raise HistoricalValidationError(
+            "non-regular historical publication product"
         )
-        for name in HISTORICAL_PRODUCTS:
-            os.replace(output_dir / name, rollback_dir / name)
+    rollback_dir = None
+    moved_prior = []
+    published = []
     try:
+        if existing:
+            rollback_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=".historical-rollback-", dir=output_dir.parent
+                )
+            )
+            for name in HISTORICAL_PRODUCTS:
+                os.replace(output_dir / name, rollback_dir / name)
+                moved_prior.append(name)
         for name in HISTORICAL_PRODUCTS:
             os.replace(stage_dir / name, output_dir / name)
+            published.append(name)
     except OSError:
         if rollback_dir is not None:
-            for name in HISTORICAL_PRODUCTS:
+            for name in moved_prior:
                 if (rollback_dir / name).exists():
                     os.replace(rollback_dir / name, output_dir / name)
+        else:
+            for name in published:
+                path = output_dir / name
+                if path.exists():
+                    path.unlink()
         raise
-    if rollback_dir is not None:
-        shutil.rmtree(rollback_dir)
+    finally:
+        if rollback_dir is not None and rollback_dir.exists():
+            shutil.rmtree(rollback_dir)
 
 
 def run(data_dir: Path) -> None:
@@ -677,6 +707,7 @@ def run(data_dir: Path) -> None:
         )
         reread = pd.read_parquet(parquet_path)
         build._assert_staged_frame(reread, games, "historical_games")
+        pd.testing.assert_frame_equal(reread, games, check_like=False)
         reread_report = validate(
             reread,
             load_expected_counts(

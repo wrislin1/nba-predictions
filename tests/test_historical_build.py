@@ -397,6 +397,94 @@ def test_raw_provenance_rejects_metadata_url_mismatch(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("resource", "wrong", id="resource"),
+        pytest.param("league", "NBA", id="league"),
+        pytest.param("season", 1983, id="season"),
+        pytest.param("month", "december", id="month"),
+    ],
+)
+def test_raw_provenance_rejects_each_month_sidecar_identity_field(
+    tmp_path, field, value
+):
+    """Would fail if a historical month sidecar could claim another identity."""
+    seed_verified_historical_cache(tmp_path)
+    sidecar = (
+        tmp_path / "raw/historical_bref/"
+        "BAA_1947_games-november.html.meta.json"
+    )
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata[field] = value
+    sidecar.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="historical cache metadata mismatch",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
+@pytest.mark.parametrize("duplicate", ["identity", "url"])
+def test_raw_provenance_rejects_duplicate_month_metadata(tmp_path, duplicate):
+    """Would fail if two discovered pages shared sidecar identity or URL."""
+    seed_verified_historical_cache(tmp_path)
+    cache_dir = tmp_path / "raw/historical_bref"
+    index = cache_dir / "BAA_1947_games.html"
+    index.write_bytes(
+        SEED_INDEX_HTML.replace(
+            b"</body>",
+            b'<a href="/leagues/BAA_1947_games-december.html">December</a></body>',
+        )
+    )
+    index_meta = json.loads(
+        index.with_name(index.name + ".meta.json").read_text(encoding="utf-8")
+    )
+    index_meta["sha256"] = hashlib.sha256(index.read_bytes()).hexdigest()
+    index.with_name(index.name + ".meta.json").write_text(
+        json.dumps(index_meta) + "\n", encoding="utf-8"
+    )
+    december = cache_dir / "BAA_1947_games-december.html"
+    cache.publish_bytes(
+        december,
+        SEED_MONTH_FIXTURE.read_bytes(),
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": "BAA",
+            "season": 1947,
+            "month": "december",
+            "url": (
+                "https://www.basketball-reference.com/leagues/"
+                "BAA_1947_games-december.html"
+            ),
+        },
+        lambda path: historical_bref.validate_month(
+            path,
+            1947,
+            "https://www.basketball-reference.com/leagues/"
+            "BAA_1947_games-december.html",
+        ),
+    )
+    sidecar = cache_dir / "BAA_1947_games-november.html.meta.json"
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    if duplicate == "identity":
+        metadata["month"] = "december"
+    else:
+        metadata["url"] = (
+            "https://www.basketball-reference.com/leagues/"
+            "BAA_1947_games-december.html"
+        )
+    sidecar.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="duplicate historical cache identity",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         pytest.param("orphan_sidecar", id="orphan-sidecar"),
@@ -470,6 +558,145 @@ def test_publish_historical_pair_restores_complete_pair_after_replace_failure(
         historical_build._publish_historical_pair(stage, output)
 
     assert {name: (output / name).read_bytes() for name in old} == old
+
+
+def test_publish_historical_pair_restores_empty_output_after_second_move_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if a first publication left a one-file product after failure."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        (stage / name).write_bytes(name.encode())
+    real_replace = os.replace
+    moves = 0
+
+    def fail_second_publication_move(source, destination):
+        nonlocal moves
+        if Path(source).parent == stage and Path(destination).parent == output:
+            moves += 1
+            if moves == 2:
+                raise OSError("seeded publication failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        historical_build.os, "replace", fail_second_publication_move
+    )
+
+    with pytest.raises(OSError, match="seeded publication failure"):
+        historical_build._publish_historical_pair(stage, output)
+
+    assert not any((output / name).exists() for name in historical_build.HISTORICAL_PRODUCTS)
+    assert list(tmp_path.glob(".historical-rollback-*")) == []
+
+
+def test_publish_historical_pair_restores_prior_after_second_backup_failure(
+    monkeypatch, tmp_path
+):
+    """Would fail if backing up the second old product split a prior pair."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    old = {}
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        old[name] = b"old " + name.encode()
+        (output / name).write_bytes(old[name])
+        (stage / name).write_bytes(b"new " + name.encode())
+    real_replace = os.replace
+    backups = 0
+
+    def fail_second_backup_move(source, destination):
+        nonlocal backups
+        if Path(source).parent == output and Path(destination).parent.name.startswith(
+            ".historical-rollback-"
+        ):
+            backups += 1
+            if backups == 2:
+                raise OSError("seeded backup failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(historical_build.os, "replace", fail_second_backup_move)
+
+    with pytest.raises(OSError, match="seeded backup failure"):
+        historical_build._publish_historical_pair(stage, output)
+
+    assert {name: (output / name).read_bytes() for name in old} == old
+    assert list(tmp_path.glob(".historical-rollback-*")) == []
+
+
+@pytest.mark.parametrize("target", ["body", "sidecar"])
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_raw_provenance_rejects_non_regular_cache_entry(tmp_path, target, kind):
+    """Would fail if a symlink or directory could be checksum-attested as raw data."""
+    seed_verified_historical_cache(tmp_path)
+    body = tmp_path / "raw/historical_bref/BAA_1947_games-november.html"
+    path = body if target == "body" else body.with_name(body.name + ".meta.json")
+    if kind == "directory":
+        path.unlink()
+        path.mkdir()
+    else:
+        replacement = tmp_path / f"replacement-{target}"
+        replacement.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(replacement)
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="non-regular historical cache entry",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "kind", ["stage-directory", "stage-symlink", "prior-directory", "prior-symlink"]
+)
+def test_publish_historical_pair_rejects_non_regular_products(tmp_path, kind):
+    """Would fail if publisher products could be directories instead of files."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    for name in historical_build.HISTORICAL_PRODUCTS:
+        (stage / name).write_bytes(b"stage")
+        (output / name).write_bytes(b"prior")
+    target = stage if kind.startswith("stage") else output
+    product = target / historical_build.HISTORICAL_PRODUCTS[0]
+    product.unlink()
+    if kind.endswith("directory"):
+        product.mkdir()
+    else:
+        replacement = tmp_path / f"replacement-{kind}"
+        replacement.write_bytes(b"product")
+        product.symlink_to(replacement)
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="non-regular historical publication product",
+    ):
+        historical_build._publish_historical_pair(stage, output)
+
+
+def test_publish_historical_pair_rejects_orphan_stage_or_prior_pair(tmp_path):
+    """Would fail if direct publisher callers could pass a one-file pair."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    (stage / historical_build.HISTORICAL_PRODUCTS[0]).write_bytes(b"stage")
+
+    with pytest.raises(historical_build.HistoricalValidationError):
+        historical_build._publish_historical_pair(stage, output)
+
+    (stage / historical_build.HISTORICAL_PRODUCTS[1]).write_bytes(b"stage")
+    (output / historical_build.HISTORICAL_PRODUCTS[0]).write_bytes(b"prior")
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="historical publication pair is incomplete",
+    ):
+        historical_build._publish_historical_pair(stage, output)
 
 
 def test_run_rejects_modern_publication_starting_after_1984(monkeypatch, tmp_path):
@@ -569,6 +796,50 @@ def test_run_publishes_deterministic_attested_historical_manifest(
     assert manifest["tables"]["historical_games"]["max_season"] == 1983
     assert "fetched_at" not in json.dumps(manifest)
     assert "/home/" not in json.dumps(manifest)
+
+
+def test_run_rejects_reordered_historical_parquet_after_reread(
+    monkeypatch, tmp_path
+):
+    """Would fail if Parquet reordering could pass frame and report checks."""
+    monkeypatch.setattr(
+        historical_build.historical_bref, "HISTORICAL_SEASONS", (1947,)
+    )
+    seed_verified_historical_cache(tmp_path)
+    seed_historical_references(tmp_path, {1947: 2})
+    reference_dir = tmp_path / "reference"
+    (reference_dir / "franchises.csv").write_bytes(
+        historical_build.franchises.REFERENCE.read_bytes()
+    )
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1984]}).to_parquet(output / "games.parquet")
+    games = assembled_game_frame()
+    second = games.copy()
+    second.loc[0, "game_id"] = "bref-194611020TRH"
+    games = pd.concat([games, second], ignore_index=True).astype(
+        historical_build.HISTORICAL_DTYPES
+    )
+    report = historical_build.validate(games, {1947: 2})
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (games.copy(), report.copy()),
+    )
+    real_read_parquet = historical_build.pd.read_parquet
+
+    def reordered_read_parquet(path, *args, **kwargs):
+        frame = real_read_parquet(path, *args, **kwargs)
+        if Path(path).name == "historical_games.parquet":
+            return frame.iloc[::-1].reset_index(drop=True)
+        return frame
+
+    monkeypatch.setattr(
+        historical_build.pd, "read_parquet", reordered_read_parquet
+    )
+
+    with pytest.raises(AssertionError):
+        historical_build.run(tmp_path)
 
 
 def test_assemble_resolves_lineage_and_orients_margin(monkeypatch, tmp_path):
