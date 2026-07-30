@@ -98,7 +98,7 @@ def test_requirements_are_utf8_and_pinned() -> None:
     assert REQUIRED_REQUIREMENTS <= names
 
 
-def test_build_manifest_dependencies_match_direct_requirements() -> None:
+def test_build_manifests_dependencies_match_direct_requirements() -> None:
     direct_names = set()
     for line in (ROOT / "requirements.in").read_text(
         encoding="utf-8"
@@ -109,14 +109,18 @@ def test_build_manifest_dependencies_match_direct_requirements() -> None:
         match = re.match(r"([A-Za-z0-9_.-]+)", requirement)
         if match is not None:
             direct_names.add(match.group(1))
-    manifest = json.loads(
-        (ROOT / "data/parquet/build_manifest.json").read_text(
-            encoding="utf-8"
+    for manifest_name in (
+        "build_manifest.json",
+        "historical_games_manifest.json",
+    ):
+        manifest = json.loads(
+            (ROOT / "data/parquet" / manifest_name).read_text(
+                encoding="utf-8"
+            )
         )
-    )
 
-    assert set(manifest["versions"]["dependencies"]) == direct_names
-    assert "numpy" in manifest["versions"]["dependencies"]
+        assert set(manifest["versions"]["dependencies"]) == direct_names
+        assert "numpy" in manifest["versions"]["dependencies"]
 
 
 def test_packaged_reference_assets_match_publication_reference() -> None:
