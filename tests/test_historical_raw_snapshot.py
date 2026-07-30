@@ -369,6 +369,77 @@ exec "$REAL_RSYNC" "$@"
     assert list((repo / "restored").glob(".historical-restore.*")) == []
 
 
+@pytest.mark.parametrize("mutation_phase", ["copy", "dry_run"])
+def test_restore_rejects_live_manifest_changed_during_restore(
+    tmp_path: Path,
+    mutation_phase: str,
+) -> None:
+    """Would fail if restore trusted a manifest that could change mid-run."""
+    repo, archive_root, source_files = seed_historical_snapshot_fixture(
+        tmp_path
+    )
+    assert archive(repo, archive_root).returncode == 0
+    snapshot = snapshot_path(repo, archive_root)
+    snapshot_files = inventory(snapshot)
+    replacement_manifest = tmp_path / "replacement-manifest.json"
+    replacement = read_manifest(repo)
+    replacement["restore_race_mutation"] = mutation_phase
+    replacement_manifest.write_text(
+        json.dumps(replacement, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+should_mutate=false
+if test "$MANIFEST_MUTATION_PHASE" = "copy" && test "$dry_run" = false; then
+  should_mutate=true
+fi
+if test "$MANIFEST_MUTATION_PHASE" = "dry_run" && test "$dry_run" = true; then
+  should_mutate=true
+fi
+if test "$should_mutate" = true && test ! -e "$RACE_MARKER"; then
+  : > "$RACE_MARKER"
+  cp -- "$REPLACEMENT_MANIFEST" "$NBA_HISTORICAL_RAW_MANIFEST"
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    pin_tmp = tmp_path / "pin-tmp"
+    pin_tmp.mkdir()
+
+    restored = restore(
+        repo,
+        archive_root,
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "MANIFEST_MUTATION_PHASE": mutation_phase,
+            "RACE_MARKER": str(tmp_path / "race-triggered"),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+            "REPLACEMENT_MANIFEST": str(replacement_manifest),
+            "TMPDIR": str(pin_tmp),
+        },
+    )
+
+    assert restored.returncode != 0
+    assert not (repo / "restored/historical_bref").exists()
+    assert list((repo / "restored").glob(".historical-restore.*")) == []
+    assert list(pin_tmp.glob(".historical-restore-manifest.*")) == []
+    assert inventory(repo / "data/raw/historical_bref") == source_files
+    assert inventory(snapshot) == snapshot_files
+
+
 def test_restore_rejects_deleted_sidecar_without_partial_destination(
     tmp_path: Path,
 ) -> None:

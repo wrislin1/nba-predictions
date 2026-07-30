@@ -118,19 +118,64 @@ validate_snapshot_payload() {
     "$candidate/historical_bref" "$trusted_manifest"
 }
 
+validate_live_manifest_pin() {
+  local live_manifest="$1"
+  local pinned_manifest="$2"
+  local expected_sha="$3"
+  local live_sha
+  local pinned_sha
+
+  pinned_sha="$(sha256sum "$pinned_manifest" | cut -d' ' -f1)"
+  test "$pinned_sha" = "$expected_sha" || {
+    printf 'historical manifest pin changed during restore: %s\n' \
+      "$pinned_manifest" >&2
+    return 1
+  }
+  live_sha="$(sha256sum "$live_manifest" | cut -d' ' -f1)"
+  test "$live_sha" = "$expected_sha" &&
+    cmp -s "$live_manifest" "$pinned_manifest" || {
+      printf 'historical manifest changed during restore: %s\n' \
+        "$live_manifest" >&2
+      return 1
+    }
+}
+
+staging=
+trusted_manifest=
+cleanup() {
+  if test -n "${staging:-}" && test -d "$staging"; then
+    rm -rf -- "$staging"
+  fi
+  if test -n "${trusted_manifest:-}" && test -e "$trusted_manifest"; then
+    rm -f -- "$trusted_manifest"
+  fi
+}
+trap cleanup EXIT
+
 test -f "$manifest" || {
   printf 'missing historical manifest: %s\n' "$manifest" >&2
   exit 1
 }
-ending_season="$(jq -er '.tables.historical_games.max_season' "$manifest")"
+trusted_manifest="$(
+  mktemp "${TMPDIR:-/tmp}/.historical-restore-manifest.XXXXXX"
+)"
+cp -- "$manifest" "$trusted_manifest"
+chmod 400 "$trusted_manifest"
+trusted_manifest_sha="$(sha256sum "$trusted_manifest" | cut -d' ' -f1)"
+validate_live_manifest_pin \
+  "$manifest" "$trusted_manifest" "$trusted_manifest_sha"
+
+ending_season="$(
+  jq -er '.tables.historical_games.max_season' "$trusted_manifest"
+)"
 test "$ending_season" = 1983 || {
   printf 'unexpected historical ending season: %s\n' "$ending_season" >&2
   exit 1
 }
-manifest_sha="$(sha256sum "$manifest" | cut -d' ' -f1)"
+manifest_sha="$trusted_manifest_sha"
 snapshot="$archive_root/historical-raw-${ending_season}-${manifest_sha:0:12}"
 
-validate_snapshot_payload "$snapshot" "$manifest"
+validate_snapshot_payload "$snapshot" "$trusted_manifest"
 test ! -e "$destination" || {
   printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
   exit 1
@@ -139,20 +184,16 @@ test ! -e "$destination" || {
 destination_parent="$(dirname "$destination")"
 mkdir -p "$destination_parent"
 staging="$(mktemp -d "$destination_parent/.historical-restore.XXXXXX")"
-cleanup() {
-  if test -n "${staging:-}" && test -d "$staging"; then
-    rm -rf -- "$staging"
-  fi
-}
-trap cleanup EXIT
 rsync -a --checksum "$snapshot/historical_bref/" "$staging/"
 bash "$cache_manifest_validator" --validate-cache-manifest \
-  "$staging" "$manifest"
-validate_snapshot_payload "$snapshot" "$manifest"
+  "$staging" "$trusted_manifest"
+validate_snapshot_payload "$snapshot" "$trusted_manifest"
 changes="$(
   rsync -a --checksum --dry-run --itemize-changes --delete \
     "$snapshot/historical_bref/" "$staging/"
 )"
+validate_live_manifest_pin \
+  "$manifest" "$trusted_manifest" "$trusted_manifest_sha"
 test -z "$changes" || {
   printf 'restored historical cache differs:\n%s\n' "$changes" >&2
   exit 1
@@ -161,11 +202,15 @@ test ! -e "$destination" || {
   printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
   exit 1
 }
+validate_live_manifest_pin \
+  "$manifest" "$trusted_manifest" "$trusted_manifest_sha"
 mv -T -n "$staging" "$destination"
 test ! -d "$staging" || {
   printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
   exit 1
 }
 staging=
+rm -f -- "$trusted_manifest"
+trusted_manifest=
 trap - EXIT
 printf 'verified historical raw restore: %s\n' "$destination"
