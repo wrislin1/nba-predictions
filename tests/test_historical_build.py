@@ -464,10 +464,78 @@ def test_validation_reports_invalid_dtype_without_crashing():
 
 def test_validation_reports_duplicate_columns_without_crashing():
     games = assembled_game_frame()
+    games.loc[0, "away_pts"] = -1
     games = pd.concat([games, games[["season"]]], axis=1)
 
     with pytest.raises(
         historical_build.HistoricalValidationError,
-        match="publication schema",
+        match="publication schema.*negative score",
     ):
         historical_build.validate(games, {1947: 1})
+
+
+@pytest.mark.parametrize("value", ["1946-11-01", pd.Timestamp("1946-11-01")])
+def test_validation_rejects_non_date_game_date(value):
+    games = assembled_game_frame()
+    games.loc[0, "game_date"] = value
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="non-date game_date",
+    ):
+        historical_build.validate(games, {1947: 1})
+
+
+@pytest.mark.parametrize(
+    ("season", "league"),
+    [(1946, "BAA"), (1984, "NBA")],
+)
+def test_validation_rejects_league_outside_historical_era(season, league):
+    games = assembled_game_frame()
+    games.loc[0, "season"] = season
+    games.loc[0, "league"] = league
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="league outside historical era",
+    ):
+        historical_build.validate(games, {season: 1})
+
+
+def overtime_evidence(game_id="bref-194611010TRH", periods=0, marker=""):
+    return pd.DataFrame([{
+        "game_id": game_id,
+        "overtime_marker": marker,
+        "overtime_periods": periods,
+        "game_remarks": "",
+    }])
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        pd.DataFrame(columns=[
+            "game_id", "overtime_marker", "overtime_periods", "game_remarks",
+        ]),
+        overtime_evidence(game_id="bref-extra"),
+    ],
+)
+def test_validation_requires_exact_overtime_evidence_game_ids(evidence):
+    games = assembled_game_frame()
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="overtime evidence game_id alignment",
+    ):
+        historical_build.validate(games, {1947: 1}, evidence=evidence)
+
+
+def test_validation_compares_published_overtime_to_aligned_evidence():
+    games = assembled_game_frame()
+    evidence = overtime_evidence(periods=1, marker="OT")
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="overtime periods disagreement",
+    ):
+        historical_build.validate(games, {1947: 1}, evidence=evidence)

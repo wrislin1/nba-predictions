@@ -1,5 +1,6 @@
 """Validation helpers for the historical publication pipeline."""
 
+from datetime import date
 import hashlib
 from pathlib import Path
 
@@ -149,6 +150,9 @@ def apply_site_corrections(
 def _enforce_schema(frame: pd.DataFrame) -> pd.DataFrame:
     """Publish the ordered, typed historical-game contract only."""
     output = frame.loc[:, HISTORICAL_COLUMNS].copy()
+    output["game_date"] = pd.to_datetime(
+        output["game_date"], errors="raise"
+    ).dt.date
     for column, dtype in HISTORICAL_DTYPES.items():
         output[column] = output[column].astype(dtype)
     return output.sort_values(
@@ -218,35 +222,33 @@ def validate(
 ) -> dict:
     """Validate all publication gates and return a deterministic audit report."""
     errors = []
-    if games.columns.has_duplicates:
-        raise HistoricalValidationError(
-            "historical columns and dtypes differ from publication schema"
+    unique_columns = games.loc[:, ~games.columns.duplicated(keep="first")]
+    schema_ok = (
+        not games.columns.has_duplicates
+        and games.columns.tolist() == HISTORICAL_COLUMNS
+        and all(
+            column in games and str(games[column].dtype) == dtype
+            for column, dtype in HISTORICAL_DTYPES.items()
         )
-
-    schema_ok = games.columns.tolist() == HISTORICAL_COLUMNS and all(
-        column in games and str(games[column].dtype) == dtype
-        for column, dtype in HISTORICAL_DTYPES.items()
     )
-    frame = games.reindex(columns=HISTORICAL_COLUMNS).copy()
+    if not schema_ok:
+        errors.append("historical columns and dtypes differ from publication schema")
+
+    frame = unique_columns.reindex(columns=HISTORICAL_COLUMNS).copy()
     for column in (
         "season", "away_pts", "home_pts", "home_margin",
         "overtime_periods", "attendance",
     ):
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    games_by_season = (
-        {
-            int(season): int(count)
-            for season, count in frame.groupby("season", sort=True).size().items()
-        }
-    )
+    games_by_season = {
+        int(season): int(count)
+        for season, count in frame.groupby("season", sort=True).size().items()
+    }
     if games_by_season != expected_counts:
         errors.append(
             "historical game counts: "
             f"actual={games_by_season}, expected={expected_counts}"
         )
-
-    if not schema_ok:
-        errors.append("historical columns and dtypes differ from publication schema")
 
     actual_seasons = set(frame["season"].dropna().tolist())
     expected_seasons = set(expected_counts)
@@ -262,6 +264,16 @@ def validate(
         != expected_leagues.astype("string")
     ):
         errors.append("league/season disagreement")
+    baa_outside_era = (
+        frame["league"].eq("BAA")
+        & ~frame["season"].between(1947, 1949, inclusive="both")
+    )
+    nba_outside_era = (
+        frame["league"].eq("NBA")
+        & ~frame["season"].between(1950, 1983, inclusive="both")
+    )
+    if _has_any(baa_outside_era | nba_outside_era):
+        errors.append("league outside historical era")
 
     if _has_any(frame["game_id"].isna()):
         errors.append("null game_id")
@@ -274,6 +286,10 @@ def validate(
     ]
     if any(_has_any(frame[column].isna()) for column in required):
         errors.append("null required game value")
+    if not frame["game_date"].dropna().map(
+        lambda value: type(value) is date
+    ).all():
+        errors.append("non-date game_date")
     if _has_any(frame["away_team_name"] == frame["home_team_name"]):
         errors.append("identical source teams")
     if _has_any(frame["away_franchise_id"] == frame["home_franchise_id"]):
@@ -291,14 +307,53 @@ def validate(
         errors.append("negative overtime")
 
     if evidence is not None:
-        for row in evidence.itertuples(index=False):
-            try:
-                parsed = historical_bref._overtime_periods(row.overtime_marker)
-            except ValueError:
-                parsed = None
-            if parsed != row.overtime_periods:
-                errors.append("overtime marker disagreement")
-                break
+        evidence_columns = [
+            "game_id", "overtime_marker", "overtime_periods", "game_remarks",
+        ]
+        if (
+            evidence.columns.has_duplicates
+            or not set(evidence_columns) <= set(evidence.columns)
+        ):
+            errors.append("overtime evidence columns")
+        else:
+            overtime_evidence = evidence.loc[:, evidence_columns].copy()
+            evidence_ids = overtime_evidence["game_id"]
+            game_ids = frame["game_id"]
+            aligned = (
+                evidence_ids.notna().all()
+                and game_ids.notna().all()
+                and evidence_ids.is_unique
+                and game_ids.is_unique
+                and len(evidence_ids) == len(game_ids)
+                and set(evidence_ids) == set(game_ids)
+            )
+            if not aligned:
+                errors.append("overtime evidence game_id alignment")
+            else:
+                overtime_evidence["overtime_periods"] = pd.to_numeric(
+                    overtime_evidence["overtime_periods"], errors="coerce"
+                )
+                parsed_periods = []
+                for marker in overtime_evidence["overtime_marker"]:
+                    try:
+                        parsed_periods.append(
+                            historical_bref._overtime_periods(str(marker))
+                        )
+                    except ValueError:
+                        parsed_periods.append(None)
+                if _has_any(
+                    overtime_evidence["overtime_periods"]
+                    != pd.Series(parsed_periods, index=overtime_evidence.index)
+                ):
+                    errors.append("overtime marker disagreement")
+                evidence_periods = overtime_evidence.set_index("game_id")[
+                    "overtime_periods"
+                ]
+                if _has_any(
+                    frame["overtime_periods"]
+                    != frame["game_id"].map(evidence_periods)
+                ):
+                    errors.append("overtime periods disagreement")
 
     if _has_any(frame["attendance"] < 0):
         errors.append("negative attendance")
