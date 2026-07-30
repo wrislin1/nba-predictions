@@ -61,6 +61,10 @@ cbbf167aa36a7b908f59c20243ae3cf8a5b91944c53cd5539fb838674afbf8e6  data/parquet/g
 ### Create
 
 ```text
+tests/conftest.py
+    Shared pytest fixtures: repo_data_dir (Task 1), plus
+    historical_boundary_cache and seeded_playoff_cache (Task 4).
+
 src/nba_data/bref_schedule.py
     Source-neutral parsing, normalization, overtime decoding, and stable BREF
     game-ID assignment for one schedule table.
@@ -86,6 +90,12 @@ tests/fixtures/playoff_bref/NBA_1984_games.html
 tests/fixtures/playoff_bref/NBA_2020_games.html
 tests/fixtures/playoff_bref/NBA_2020_games-august.html
     Small sanitized dedicated/play-in schedule-table fixtures.
+
+tests/fixtures/historical_postseason_boundary/BAA_1948_games.html
+tests/fixtures/historical_postseason_boundary/BAA_1948_games-march.html
+tests/fixtures/historical_postseason_boundary/BAA_1948_games-april.html
+    Sanitized duplicate-separator season with tiebreakers between the two
+    Playoffs separator rows (Task 4).
 
 tests/fixtures/playoff_non_interference_sha256.json
     Fixed seven-artifact pre-feature hash baseline.
@@ -309,6 +319,7 @@ the final playoff manifest is committed and two offline builds are identical.
 
 **Files:**
 
+- Create: `tests/conftest.py`
 - Create: `tests/fixtures/playoff_non_interference_sha256.json`
 - Create: `tests/fixtures/playoff_bref/NBA_1984_games.html`
 - Create: `tests/fixtures/playoff_bref/NBA_2020_games.html`
@@ -319,9 +330,9 @@ the final playoff manifest is committed and two offline builds are identical.
 **Interfaces:**
 
 - Consumes: the seven fixed SHA-256 values in Global Constraints.
-- Produces: `BASELINE_PATH: Path`, `PUBLICATION_BASELINE: tuple[str, ...]`,
-  `sha256_file(path: Path) -> str`, and committed fixture pages used by Tasks
-  2–4.
+- Produces: `BASELINE_PATH: Path`,
+  `sha256_file(path: Path) -> str`, the shared `repo_data_dir` pytest
+  fixture, and committed fixture pages used by Tasks 2–4.
 
 - [ ] **Step 1: Create the exact baseline ledger**
 
@@ -339,7 +350,26 @@ Write `tests/fixtures/playoff_non_interference_sha256.json`:
 }
 ```
 
-- [ ] **Step 2: Write the failing fixed-hash and layout tests**
+- [ ] **Step 2: Write the shared conftest and the failing fixed-hash and layout tests**
+
+There is no `tests/conftest.py` today. Create it with exactly:
+
+```python
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def repo_data_dir() -> Path:
+    return REPO_ROOT / "data"
+```
+
+Integration tests in Tasks 4–7 receive the verified repository cache through
+`repo_data_dir`; Task 4 later extends this file with two cache-seeding
+fixtures.
 
 Add this core to `tests/test_playoff_non_interference.py`:
 
@@ -351,9 +381,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = (
     REPO_ROOT / "tests/fixtures/playoff_non_interference_sha256.json"
-)
-PUBLICATION_BASELINE = tuple(
-    sorted(json.loads(BASELINE_PATH.read_text(encoding="utf-8")))
 )
 
 
@@ -468,7 +495,8 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/fixtures/playoff_non_interference_sha256.json \
+git add tests/conftest.py \
+  tests/fixtures/playoff_non_interference_sha256.json \
   tests/fixtures/playoff_bref \
   tests/test_playoff_non_interference.py \
   tests/test_repository_layout.py
@@ -980,7 +1008,11 @@ git commit -m "feat: acquire verified playoff schedule cache"
 
 **Files:**
 
+- Create: `tests/fixtures/historical_postseason_boundary/BAA_1948_games.html`
+- Create: `tests/fixtures/historical_postseason_boundary/BAA_1948_games-march.html`
+- Create: `tests/fixtures/historical_postseason_boundary/BAA_1948_games-april.html`
 - Modify: `src/nba_data/playoff_bref.py`
+- Modify: `tests/conftest.py`
 - Modify: `tests/test_playoff_bref.py`
 - Modify: `tests/test_historical_postseason_boundary.py`
 
@@ -992,11 +1024,116 @@ git commit -m "feat: acquire verified playoff schedule cache"
   `bref_schedule.parse_schedule_page(...)`, and verified cache pairs from
   Task 3.
 - Produces:
+  `classify_historical_complement(frame: pd.DataFrame) -> pd.DataFrame`,
   `load_historical_season(raw_dir: Path, season: int) -> pd.DataFrame`,
-  `load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame`, and
-  `load_season(raw_dir: Path, season: int) -> pd.DataFrame`.
+  `load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame`,
+  `load_season(raw_dir: Path, season: int) -> pd.DataFrame`, and the
+  shared `historical_boundary_cache` and `seeded_playoff_cache` conftest
+  fixtures.
 - Internal frames retain `overtime_marker`, `game_remarks`, `source_row`, and
   `boxscore_slug` as validation evidence; these are not publication columns.
+
+- [ ] **Step 0: Add the duplicate-separator fixture season and shared cache fixtures**
+
+Derive the three 1948 fixture pages from the verified originals in
+`data/raw/historical_bref/`, following the sanitization style of the existing
+1947/1960/1961 boundary fixtures: trim the index page so it links only the
+March and April month pages (the 1947 fixture index shows this pattern), keep
+each month page's single `<table id="schedule">` including both `Playoffs`
+separator rows and both `Tiebreaker` remark rows in March, and strip
+navigation, scripts, comments, and advertising. The March page must retain
+rows on both sides of the first separator and the tiebreakers between the two
+separators; the April page carries only playoff rows.
+
+Extend `tests/conftest.py` with exactly:
+
+```python
+@pytest.fixture
+def historical_boundary_cache(tmp_path):
+    from nba_data import cache, historical_bref
+
+    fixtures = REPO_ROOT / "tests/fixtures/historical_postseason_boundary"
+    for season in (1947, 1948, 1960, 1961):
+        league = historical_bref.league_for_season(season)
+        index = fixtures / f"{league}_{season}_games.html"
+        cache_dir = tmp_path / "historical_bref"
+        cache.publish_bytes(
+            cache_dir / index.name,
+            index.read_bytes(),
+            {},
+            lambda path, value=season: historical_bref.validate_index(
+                path, value
+            ),
+        )
+        for page in historical_bref.discover_month_pages(
+            index.read_bytes(), season
+        ):
+            source = fixtures / page.filename
+            cache.publish_bytes(
+                cache_dir / page.filename,
+                source.read_bytes(),
+                {},
+                lambda path, value=season, url=page.url: (
+                    historical_bref.validate_month(path, value, url)
+                ),
+            )
+    return tmp_path
+
+
+@pytest.fixture
+def seeded_playoff_cache(tmp_path):
+    import hashlib
+
+    from nba_data import cache, playoff_bref
+
+    fixtures = REPO_ROOT / "tests/fixtures/playoff_bref"
+    raw_dir = tmp_path / "raw"
+    for season in (1984, 2020):
+        name = playoff_bref.playoff_filename(season)
+        cache.publish_bytes(
+            raw_dir / "playoff_bref" / name,
+            (fixtures / name).read_bytes(),
+            {
+                "provider": "basketball_reference",
+                "resource": "playoff_schedule",
+                "league": "NBA",
+                "season": season,
+                "month": None,
+                "url": playoff_bref.playoff_url(season),
+            },
+            lambda path, value=season: (
+                playoff_bref.validate_dedicated_page(path, value)
+            ),
+        )
+    play_in_payload = (fixtures / "NBA_2020_games-august.html").read_bytes()
+    cache.publish_bytes(
+        raw_dir / "playoff_bref/NBA_2020_games-august.html",
+        play_in_payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "play_in_schedule_month",
+            "league": "NBA",
+            "season": 2020,
+            "month": "august",
+            "url": (
+                "https://www.basketball-reference.com/leagues/"
+                "NBA_2020_games-august.html"
+            ),
+            "seeded_from": "raw/bref/NBA_2020_games-august.html",
+            "seed_operation": "verified_cache_copy",
+            "source_sha256": hashlib.sha256(play_in_payload).hexdigest(),
+        },
+        lambda path: playoff_bref.validate_seeded_play_in_page(path, 2020),
+    )
+    return raw_dir
+```
+
+The imports live inside the fixture bodies so collecting the suite before
+Task 3's module exists never fails. `historical_boundary_cache` returns the
+directory containing `historical_bref/`; `seeded_playoff_cache` returns the
+`raw` directory containing `playoff_bref/` — the value Task 10's audit test
+passes indirectly by handing `tmp_path` to `audit_cache()` as the data
+directory.
 
 - [ ] **Step 1: Write failing historical-complement tests**
 
@@ -1025,17 +1162,26 @@ def test_historical_rows_are_exact_regular_selector_complement(
     assert set(postseason["game_type"]) == {"playoff"}
 ```
 
-Add tests using the verified duplicate-separator fixtures to prove:
+Add a 1948 test on `historical_boundary_cache` proving the duplicate-separator
+layout: the two March tiebreakers land in the complement as `tiebreaker`, the
+remaining complement rows are `playoff`, and no regular selector row enters
+the result.
 
-- tiebreakers between duplicate separators are `tiebreaker`;
-- `bref-195211280MLH` is `voided`;
-- 1953 carryover playoff regions remain included;
+Add unit tests for `classify_historical_complement()` on small synthetic
+frames (one row per case, built with the internal-frame columns) proving:
+
+- exact `Protest; does not count toward record` is `voided` and exact
+  `Tiebreaker` is `tiebreaker`, both case-insensitively;
 - every approved location remark is `playoff` with `site_status == "neutral"`;
 - `Round Robin` and the four approved game nicknames are `playoff` without
   changing a valid home-site result to unknown;
+- blank and null remarks are `playoff` with site status untouched; and
 - an unrecognized nonempty complement remark raises
-  `ValueError("unrecognized scoped game remark")`; and
-- no regular selector row enters the result.
+  `ValueError("unrecognized scoped game remark")`.
+
+The 1953 voided-game identity (`bref-195211280MLH`) and carryover regions are
+asserted against the real verified cache by the Step 7 integration census; no
+1953 fixture season is committed.
 
 - [ ] **Step 2: Write failing modern classification tests**
 
@@ -1088,8 +1234,10 @@ For 1947–1983:
 4. Select rows whose source key is absent from `regular_keys`.
 5. Require unique source keys in both frames and assert the two sets are
    disjoint.
-6. Normalize `game_remarks` with
-   `.astype("string").str.strip().str.casefold()`.
+6. Implement steps 6–8 in the produced helper
+   `classify_historical_complement(frame)`, which returns a copy with
+   `game_type` set and `site_status` adjusted. It normalizes `game_remarks`
+   with `.astype("string").str.strip().str.casefold()`.
 7. Define these exact audited non-type allowlists:
 
 ```python
@@ -1121,7 +1269,8 @@ HISTORICAL_NONSITE_REMARKS = frozenset({
    `tiebreaker` as `tiebreaker`, and blank/null or either audited allowlist as
    `playoff`. Set `site_status = "neutral"` for the neutral allowlist. For the
    non-site allowlist and type remarks, change parser-produced `unknown` to
-   `home`. Reject every other nonempty remark.
+   `home`. Reject every other nonempty remark with
+   `ValueError("unrecognized scoped game remark: ...")`.
 9. Re-run `assign_game_ids()` on the selected rows so fallback ordinals depend
    only on the published panel.
 
@@ -1221,6 +1370,8 @@ Expected: PASS with 1,240 rows and exact type counts.
 
 ```bash
 git add src/nba_data/playoff_bref.py \
+  tests/conftest.py \
+  tests/fixtures/historical_postseason_boundary \
   tests/test_playoff_bref.py \
   tests/test_historical_postseason_boundary.py
 git commit -m "feat: classify historical and modern postseason games"
@@ -3231,7 +3382,7 @@ Expected: restore prints a verified destination and both comparisons exit 0.
 **Files:**
 
 - Modify: `README.md:28-96`
-- Modify: `docs/data-dictionary.md:1-30,300-410`
+- Modify: `docs/data-dictionary.md:1-30,300-400`
 - Modify: `tests/test_repository_layout.py`
 - Modify: `docs/superpowers/plans/2026-07-30-playoff-game-results.md`
 
