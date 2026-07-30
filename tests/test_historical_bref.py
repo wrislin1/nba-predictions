@@ -41,7 +41,7 @@ def test_discovery_accepts_month_pages_and_rejects_playoffs():
     assert all("playoffs" not in page.url for page in pages)
 
 
-def test_parser_preserves_missing_zero_and_overtime_semantics():
+def test_historical_parser_wrapper_preserves_missing_zero_and_overtime_semantics():
     result = historical_bref.parse_schedule_page(
         (FIXTURES / "BAA_1947_games-november.html").read_bytes(),
         season=1947,

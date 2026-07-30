@@ -13,7 +13,7 @@ import warnings
 import pandas as pd
 import pyarrow.parquet as pq
 
-from nba_data import build, cache, franchises, historical_bref
+from nba_data import bref_schedule, build, cache, franchises, historical_bref
 
 
 COUNT_COLUMNS = [
@@ -352,7 +352,7 @@ def validate(
                 for marker in overtime_evidence["overtime_marker"]:
                     try:
                         parsed_periods.append(
-                            historical_bref._overtime_periods(str(marker))
+                            bref_schedule.overtime_periods(str(marker))
                         )
                     except ValueError:
                         parsed_periods.append(None)

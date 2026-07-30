@@ -1188,6 +1188,31 @@ def test_validation_rejects_overtime_marker_disagreement():
         historical_build.validate(games, {1947: 1}, evidence=evidence)
 
 
+def test_validation_uses_shared_overtime_parser_not_historical_wrapper(
+    monkeypatch,
+):
+    """Would fail if validation called the compatibility wrapper instead."""
+    games = assembled_game_frame()
+    games.loc[0, "overtime_periods"] = 2
+    evidence = pd.DataFrame([{
+        "game_id": games.loc[0, "game_id"],
+        "overtime_marker": "2OT",
+        "overtime_periods": 2,
+        "game_remarks": "",
+    }])
+
+    def unexpected_historical_wrapper(marker):
+        raise AssertionError(f"unexpected historical wrapper call: {marker}")
+
+    monkeypatch.setattr(
+        historical_build.historical_bref,
+        "_overtime_periods",
+        unexpected_historical_wrapper,
+    )
+
+    historical_build.validate(games, {1947: 1}, evidence=evidence)
+
+
 def test_validation_accumulates_multiple_diagnostics():
     games = assembled_game_frame()
     games.loc[0, "away_pts"] = -1
