@@ -646,3 +646,28 @@ def test_1953_duplicate_separator_rejects_unexpected_between_window_game():
         historical_bref._verified_duplicate_separator_frame(
             drifted, schedule_url, (47, 51)
         )
+
+
+@pytest.mark.integration
+def test_load_season_rejects_excluded_remark_duplicate_curated_1953_id(
+    monkeypatch,
+):
+    original = historical_bref.parse_schedule_page
+
+    def duplicate_after_separator(payload, *, season, schedule_url):
+        frame = original(payload, season=season, schedule_url=schedule_url)
+        if schedule_url.endswith("NBA_1953_games-march.html"):
+            duplicate = frame.loc[
+                frame["game_id"].eq("bref-195303170SYR")
+            ].copy()
+            duplicate.loc[:, "source_row"] = 52
+            duplicate.loc[:, "game_remarks"] = "Tiebreaker"
+            frame = pd.concat([frame, duplicate], ignore_index=True)
+        return frame
+
+    monkeypatch.setattr(
+        historical_bref, "parse_schedule_page", duplicate_after_separator
+    )
+
+    with pytest.raises(ValueError, match="expected regular-season game"):
+        historical_bref.load_season(Path("data/raw"), 1953)

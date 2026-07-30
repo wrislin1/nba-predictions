@@ -450,7 +450,6 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
         frame = parse_schedule_page(
             month_payload, season=season, schedule_url=page.url
         )
-        frame = _without_excluded_remarks(frame)
         if separator_rows:
             if len(separator_rows) == 1:
                 selected = frame.loc[
@@ -460,10 +459,11 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
                 selected = _verified_duplicate_separator_frame(
                     frame, page.url, separator_rows
                 )
+            selected = _without_excluded_remarks(selected)
             parsed_pages.append((page, selected))
             separator_found = True
             continue
-        parsed_pages.append((page, frame))
+        parsed_pages.append((page, _without_excluded_remarks(frame)))
     if not separator_found:
         boundary = CURATED_PLAYOFF_BOUNDARIES.get(season)
         if boundary is None:
