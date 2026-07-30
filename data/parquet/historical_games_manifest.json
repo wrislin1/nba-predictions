@@ -1,0 +1,3502 @@
+{
+  "references": {
+    "reference/franchises.csv": "729987a37acc0cbf8c5933b963ef8860f972993704196f416bea67ed561242be",
+    "reference/historical_season_counts.csv": "625900c39a173809b1d70729f8c524c60edadb389df6b1ea5b18f1962d3a48c3",
+    "reference/historical_site_corrections.csv": "5d3bff04884f2c4909881010be6a936a61c206a28762311b787926d8d8683dd5"
+  },
+  "schema_version": 1,
+  "sources": {
+    "basketball_reference": {
+      "pages": [
+        {
+          "league": "BAA",
+          "month": "april",
+          "path": "raw/historical_bref/BAA_1947_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "42599298f40723c0482b91f963b2f80c50008a173f88e1027b3df7d7c88ac3fb",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-april.html"
+        },
+        {
+          "league": "BAA",
+          "month": "december",
+          "path": "raw/historical_bref/BAA_1947_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "93ce3ff57867bba3eff4c63427fb4dfe7ac64f0c427fe40ba7c60cea7b112398",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-december.html"
+        },
+        {
+          "league": "BAA",
+          "month": "february",
+          "path": "raw/historical_bref/BAA_1947_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "b0ec2f92e734312e1ec94ebdaec61276eec46ccfab873953745bde04774a8e38",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-february.html"
+        },
+        {
+          "league": "BAA",
+          "month": "january",
+          "path": "raw/historical_bref/BAA_1947_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "85ac0e60de0c68441d07f782239b9efa8a7b2b76021a90c82ded5cccda1999cf",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-january.html"
+        },
+        {
+          "league": "BAA",
+          "month": "march",
+          "path": "raw/historical_bref/BAA_1947_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "b0c976c2563ffeecfb44183febf808e6a40bf66333cc8018addc9d5491691c0a",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-march.html"
+        },
+        {
+          "league": "BAA",
+          "month": "november",
+          "path": "raw/historical_bref/BAA_1947_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1947,
+          "sha256": "ce985478981ffb4caa65dd850fd8d15c82af5c75f8ef82e507776766f6288f4f",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games-november.html"
+        },
+        {
+          "league": "BAA",
+          "month": null,
+          "path": "raw/historical_bref/BAA_1947_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1947,
+          "sha256": "ce985478981ffb4caa65dd850fd8d15c82af5c75f8ef82e507776766f6288f4f",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1947_games.html"
+        },
+        {
+          "league": "BAA",
+          "month": "april",
+          "path": "raw/historical_bref/BAA_1948_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "5e1f30fd0a6740892f422307e62c64df4a6a1ff9d2a876af877cc715cf2ea12b",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-april.html"
+        },
+        {
+          "league": "BAA",
+          "month": "december",
+          "path": "raw/historical_bref/BAA_1948_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "2befb20f8591192ec9fee399b92c239dd920b1865ae462cabd8d6e77b4aac78d",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-december.html"
+        },
+        {
+          "league": "BAA",
+          "month": "february",
+          "path": "raw/historical_bref/BAA_1948_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "53e2a315848e83febee4515c9d6ac829604d8cd3826d1b0a31d917776950b59e",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-february.html"
+        },
+        {
+          "league": "BAA",
+          "month": "january",
+          "path": "raw/historical_bref/BAA_1948_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "c670ad5d94eaec8d0470cb0185a277705b828329cb15205d1d83a987018c1a63",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-january.html"
+        },
+        {
+          "league": "BAA",
+          "month": "march",
+          "path": "raw/historical_bref/BAA_1948_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "2578313a3dee094569d39c49644fa7bd3bb56ba18a27d8aa4f891fabe15f2333",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-march.html"
+        },
+        {
+          "league": "BAA",
+          "month": "november",
+          "path": "raw/historical_bref/BAA_1948_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1948,
+          "sha256": "331c5b763d5dca2d0a0b3d4989a630e82b89c2ddfc78c4a5d7afa4bd4bc9dbec",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games-november.html"
+        },
+        {
+          "league": "BAA",
+          "month": null,
+          "path": "raw/historical_bref/BAA_1948_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1948,
+          "sha256": "331c5b763d5dca2d0a0b3d4989a630e82b89c2ddfc78c4a5d7afa4bd4bc9dbec",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1948_games.html"
+        },
+        {
+          "league": "BAA",
+          "month": "april",
+          "path": "raw/historical_bref/BAA_1949_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "257ee5e8e7d987b95864f061f6b907b4fcb7b867d07acec26a886da4c11a2ca5",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-april.html"
+        },
+        {
+          "league": "BAA",
+          "month": "december",
+          "path": "raw/historical_bref/BAA_1949_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "00713aad401e2a3f9c8b3099e60c69d4db035cbbd550ef8df0bc2b18b0c16aaa",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-december.html"
+        },
+        {
+          "league": "BAA",
+          "month": "february",
+          "path": "raw/historical_bref/BAA_1949_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "6a8d59115d1c86a052297fcb33536fe0faeaaf6580760b28ea767744b3821f0f",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-february.html"
+        },
+        {
+          "league": "BAA",
+          "month": "january",
+          "path": "raw/historical_bref/BAA_1949_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "61ebae24cb7773b8d1d5f746218f651bcd3b54be3b39559a3d3cfa65c116467e",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-january.html"
+        },
+        {
+          "league": "BAA",
+          "month": "march",
+          "path": "raw/historical_bref/BAA_1949_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "a66e98cfe3c145e5bd18f9cfef8b236cdc8d66be27f4a144be21a19616b45876",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-march.html"
+        },
+        {
+          "league": "BAA",
+          "month": "november",
+          "path": "raw/historical_bref/BAA_1949_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1949,
+          "sha256": "9007160e827905c108f6a2df1339c35852cae3ea3c8185f55d9dba3f3f282ce5",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games-november.html"
+        },
+        {
+          "league": "BAA",
+          "month": null,
+          "path": "raw/historical_bref/BAA_1949_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1949,
+          "sha256": "9007160e827905c108f6a2df1339c35852cae3ea3c8185f55d9dba3f3f282ce5",
+          "url": "https://www.basketball-reference.com/leagues/BAA_1949_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1950_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "30d002384a3b38b1a7643747a14cf5beef30ddcdbf232230e69769192cef6e6b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1950_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "429dd266f92da8c243f9d444cb1e6e6ea779f414dc4bfa1fd9323a4086c878f4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1950_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "4ed8dd35034a9175ce6dea6cf267f1c4a03f946c1de629b86e5be88ffeec9982",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1950_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "5d841b981c4188399affbb048e558108a8cfdb4a348c5a7e450cce755a4969b2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1950_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "09769cdd2cb774f2e43c451254a847f93b21b0a50f00fb8d65f94eccf32e6c67",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1950_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "a7b7bb3d3f1ff0ba172479dde337d0b1e0965127f936e51944d0914398798cbc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1950_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1950,
+          "sha256": "3320c7b56366bd584fdb53ca2307144c77b9ce7f88cb2814f368c72c9316e84e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1950_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1950,
+          "sha256": "3320c7b56366bd584fdb53ca2307144c77b9ce7f88cb2814f368c72c9316e84e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1950_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1951_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "1035e2ecd9fa2dfccb343f6e0c485f304f6d6566dd01ff394c626a8831d3e908",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1951_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "7cf35601f340239e7747f8202e52b6eb823e4505fc3a5594a5f9d2895ae72334",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1951_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "f03cda12eb12b2a9c24d50cf322b41191c98a6eb776d2d0018fd4564acaef2b6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1951_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "f6fc65f9b83c3da05eef91c6473cffc188968dfcdad65d5f88a340911e4bbce0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1951_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "25ce78ee3efba89e5610764694cbe660f5c80bd9993987dfb05fe7d8bdd28678",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1951_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "f02a75677e4604f541cf8d644fe024dfae59d3b01140e4dee8a17ada5be13c65",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1951_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1951,
+          "sha256": "c34655beaceebe804daebb5842671932aec5de45428e0ae3d7f1b2498628b3ad",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1951_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1951,
+          "sha256": "c34655beaceebe804daebb5842671932aec5de45428e0ae3d7f1b2498628b3ad",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1951_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1952_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "c28c471f0bb94ca8a675d080fca31e7f1e1e87847803d018d49ed8315868f9b2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1952_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "a5a06f2a467d84b10a256a9a947c3a8b1d0a5e8df406f60f695c20d17699a4e1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1952_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "1522636742ae393809d0406480ce268ea4c586b06ebe09c34893d10ecd0ec715",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1952_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "0f6613a1916850f32da94a8558c3c9356f47479c53508ec8abffdc902d8b5bb1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1952_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "24e45dd89a77f300189d11b0c218d9174da48c66bc6f3d4fc742238e89793ee7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1952_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1952,
+          "sha256": "736f5250483bb5ee65ad5528bbe3b34ca8d031cc6f73977ee725203faf3b1333",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1952_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1952,
+          "sha256": "736f5250483bb5ee65ad5528bbe3b34ca8d031cc6f73977ee725203faf3b1333",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1952_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1953_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "0b9452e1d3a9bc01af4f16c25f88f29adcbc80b95a48752ddad2a289b969665a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1953_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "eaeddb5af8922069e929f7e5153bf0be076365e7a7efe7412b69ec06103d9252",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1953_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "085073c6875768920cd4046db090e560a8407a6be368a4495e9bb016d6f25bd9",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1953_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "4576cf0e29bbf8a5265f4b14a2ff6a51b582dee5249ba9680345c9c719e07dde",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1953_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "f33a3233ea8f1e0982f8142cd1e671364092796b8edd7d16ed183a917fb89301",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1953_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "a8d81c86439f56003de715522d2ca98d0c2718ed98d3e0fd65b35e5e19c70272",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1953_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1953,
+          "sha256": "0129149a6946e8efbe0e99cb5c258251c91c0f6444d7b4521edbe98906ab37d6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1953_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1953,
+          "sha256": "0129149a6946e8efbe0e99cb5c258251c91c0f6444d7b4521edbe98906ab37d6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1953_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1954_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "175c8b0375014073a96eb032453f65a32b7618780e3d0d770aa87ba0a112d9c5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1954_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "c7bc51fa24a151477c5f4f2ea06a8f107f93b3ea42aa60de55693fe7031239c7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1954_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "d9e00c0159c9927321877ccd4091161f4116d6bd809f98f16d7f627dfd694311",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1954_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "07ec7b8921799c7ffe62832934fa1e0f05d8559d4773096e380f369cec91e822",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1954_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "6d2019184b666c4603527c72937fa6c72f745d3a1937ad39356a4f393ff4f7e9",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1954_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "0ccf1608432646fed112eb147355962c66f3d91828ecec85426e5615c6e01d7d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1954_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1954,
+          "sha256": "b3d5f0d7d3a864ca739379447e152556378c165f5458cd660ffa0feaea3e3397",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1954_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1954,
+          "sha256": "b3d5f0d7d3a864ca739379447e152556378c165f5458cd660ffa0feaea3e3397",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1954_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1955_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "e620da31af1e6fe7086edbe88f15c4f8a45234cd2aac288c55c03c89b5648250",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1955_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "6f3c886f2f03fac1c2da92422e87544457d23bc0784b24923406df57c6118d8b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1955_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "23f98f7a2e1cdc4e900a1cc4a08fde176fbc13950e9724fcf84ea959bd5c8ac2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1955_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "7f3b8c02f7e4ba1eac286291f8cbbfd64f9ce1f85b0fe03ac76ea27cac6ac635",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1955_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "a574bfb1df2b210172ff3b5443103655c25418aee9d402c79d16edb59eeaaf74",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1955_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "6fecb8cc1dccd3dc561be50272b93ae68196b64e6195f9d2b34a19d43d7ce5f6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1955_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1955,
+          "sha256": "7144cb7d2a4a9277e0e603d10fe1e84a92c99677e5be1907fc81b5f5745f8f9e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1955_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1955,
+          "sha256": "7144cb7d2a4a9277e0e603d10fe1e84a92c99677e5be1907fc81b5f5745f8f9e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1955_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1956_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "7756cb78e7a821631f1f4426913116f3455c5fe8781926bc0abbe468821e74a3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1956_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "d19872aba633f2818ec531061e9b4ed257f2d78d41bb3d64cd13e777768b83fb",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1956_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "09dfb250e7c314811e8a1513df3c1eaeec007a2ea04610d1a1c7a27a8fa0d872",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1956_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "06e6b96dbe4cf45c2f503d300db0e849590e2440e79b16322f0c15e167b81238",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1956_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "bdc276143aceea175b5309ef1c6bffeef0a73481cb007843eb06f320d1c40dd3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1956_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1956,
+          "sha256": "12e86a0950573874d0674fa6954c4212fa2471946bf773999a0aed30fd8aa9c4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1956_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1956,
+          "sha256": "12e86a0950573874d0674fa6954c4212fa2471946bf773999a0aed30fd8aa9c4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1956_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1957_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "96059b46edeaeecfc8a518b388b367e8a214fceeaf7c5ba434ccab7495531173",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1957_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "f7c065eafab42c3d59bbc4ebc26f7a19a0f9ff3c7c272193c9ab6d90e0cd0d63",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1957_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "7e813c4b257f3d1405130966b071eb82d0ed69fc5b2a168884a11b4eb01184a3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1957_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "bdb9fd85fe29e33679af7ecd65c0cc26b7171d1d4538e749f3a6aecab634a488",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1957_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "14e852c920cc1bd0705b1fbe09db4d5db333a1ede5ce307f9d262a1d0543cc93",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1957_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "d0d37b76aa29c9f7dcd41c7e4c72d5faa7feb6a5b3e9158c884f494455baacd9",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1957_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1957,
+          "sha256": "386d05402a61aefa6a932343ada5e6c7ef6b52f2fd222f9500ad5312705eab39",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1957_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1957,
+          "sha256": "386d05402a61aefa6a932343ada5e6c7ef6b52f2fd222f9500ad5312705eab39",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1957_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1958_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "f85e910634f1f3025f7f48b37539534528e480bb0206e19a1101b6df27fe6085",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1958_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "c6a76df89f2aaa61a65f9f72c90de0bb8939741f503b991eb86a84e52eeccb37",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1958_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "0433b97be1e561bae1932374c5d40cb954addb18a53cbec6f7fa8fa4340b5d2e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1958_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "c2a99442408001482bd3ac36904a740e1c25f8cf31e293a0c6603ede87ff473b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1958_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "0248d2d4d9630600799133c6178cfc3a1728b53fbf1dad41ba727ff482283723",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1958_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "9de4bb34bf2cf03f0c51551a4d8ad42c881b8176947bce85e797425ed94f3b3f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1958_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1958,
+          "sha256": "97760e6fb5f23e31c42b7215544fb79164a3b112051dd7939fb478d4c5679999",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1958_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1958,
+          "sha256": "97760e6fb5f23e31c42b7215544fb79164a3b112051dd7939fb478d4c5679999",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1958_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1959_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "2a879bb506ed57d9e520a9657428892ceb806b201aa5c86689e1efe6d72c2bed",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1959_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "05e1f7448d0405394d37b366a05c190a8627fd48902f676cad89bb1ad26f1262",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1959_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "7862aa3c32a81d86006987ba0881e98d887347017beb9a9ffdd14ffe7594eb6f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1959_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "7be836e8e4a0fbdccddb8ea539b4c107af05a0d53841a04211d8abd128e1586e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1959_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "ff98a3ef25a33cf4c2484a21212640ad4ac4bf1a2dbc4be07abd424654cf8e77",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1959_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "c01ee64c995cd799c83810e04432e3beacf803e9363457b1eba31bcb88e41228",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1959_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1959,
+          "sha256": "7cf2f5527addf1245a8c8f926d47d66a1ec4e2387f5b636f4f38963636d37bfc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1959_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1959,
+          "sha256": "7cf2f5527addf1245a8c8f926d47d66a1ec4e2387f5b636f4f38963636d37bfc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1959_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1960_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "d2d9e82c72d9d91a46dfad06ca2e0585e3e78918955698f52c799ca6eb5dd544",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1960_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "0ae66f749641ed64dd809f89dcc36e65f75dc3cfa9a504e638c26f16a32673d6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1960_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "92cee80323752e3cb5ae08ca617b8b4c985ab4cfdd82ddeb64aeaad077fc21db",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1960_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "1aca5b79371b3990940b60d979e32b01e19f41debde0c85544819429a05a5b8b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1960_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "6b17c175701381ebe9fffa2ddcfa45af8a4d9d46679a5ec9f01a415a7d341bcc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1960_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "ddaa4a27ea30527f1f8daaeb5a29c5eddeeb51c81c39ff6993bd164d416704ed",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1960_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1960,
+          "sha256": "b54ff986a78507ba511ca15b30631ddc385daf1d17f1fe47c2d1485a781f9951",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1960_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1960,
+          "sha256": "b54ff986a78507ba511ca15b30631ddc385daf1d17f1fe47c2d1485a781f9951",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1960_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1961_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "f68285b913622c598be09750ff2d527eef213bafe3aadd92b85434e79c3cb1e6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1961_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "5279061005fbd0e098b45c1a9942f25741bb39ef5e0f9b925cd07757da92550d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1961_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "d5f02396f25a91e9b4c934585c010c39e671c25a6610b8f779c59fa0d81208c0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1961_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "b2946e07e874546796989c7fcb765754f996514bd3bc0fdd291a9b51f372cf2a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1961_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "2aa609ba9688c25a3c5ed76f6d68cb892849643271d34e4aa451db4a14f4171a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1961_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "5986c1a171a3be8503b53f5fc0823b67ed0f96a60b18f16593fc315bdfed081a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1961_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1961,
+          "sha256": "2438dac68f935025930ea0ccd4c3720c36e8a6098b8a60a84b03d28ffcd83d81",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1961_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1961,
+          "sha256": "2438dac68f935025930ea0ccd4c3720c36e8a6098b8a60a84b03d28ffcd83d81",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1961_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1962_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "3160c9c6a94f8a7b9dddbb0ccc972d9a1999beba5f1ae068a8984d4133f4d89f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1962_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "2d9f2529e241e14baafeca59442e99457d02a1adadc8467e553f3cfbd06f4711",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1962_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "528f257e96462b9f359a974e6d39f5a94cc2edcd288dfc215b69f53a8a17096e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1962_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "c0ae26459769d1d71a9405f0630e336c32e116d9f29d858a33d194d3c52091ed",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1962_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "12ba77de800131d956f627884c9e4ba47ce8963f5d7b12bd853853138cc76809",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1962_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "a31edcda82cb275ec2a77f462edee9502c9d308f221c1b87efa4643d13c697f5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1962_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1962,
+          "sha256": "cb78c96a43bbcf27f1d8bac4f87d2f420bceaaf0f18afa99252f77a1ffc5391d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1962_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1962,
+          "sha256": "cb78c96a43bbcf27f1d8bac4f87d2f420bceaaf0f18afa99252f77a1ffc5391d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1962_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1963_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "97e7e1977b8e9ed0693bed0ffe88ba88b5f88cee934e4257055317df23e3bf22",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1963_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "3da5eebb81fce23f448b42176727ff792c6ddef9b6aa9e7e3c7675dbf38f9b93",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1963_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "b402f5f669ebcc762e7fdf365915e9a679d8f06950c434e395a51c5b631582cf",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1963_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "12799975f18df8205b934151d5fdfb583c140a6de5a3c2e67cc1ebbd14cdc2e4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1963_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "2808a3424fee396af391bafa1921e97e1c352eec1a26b904f3c23ca266145139",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1963_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "a98d77338e452895fb22c8e032988ea90d7397257966196bef95a32a7bb22a14",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1963_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1963,
+          "sha256": "670375678197f8eab9b1f21469f132dc461cc004f8ca4cdda0ae2f0252dfb8b7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1963_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1963,
+          "sha256": "670375678197f8eab9b1f21469f132dc461cc004f8ca4cdda0ae2f0252dfb8b7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1963_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1964_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "6a6f23507dfaa3ed4bbf303041d28f48617c431ff8c39d98fa3c08eeb47af683",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1964_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "3c2c0165021b98b81c24d9c854f118cbd6c5bca8f9b10553a0cd499ad84199e1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1964_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "c0db06dcf9b04f68f8c1b624e0be12ffe66569faa66f043d23aed2055a5b1b59",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1964_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "02f51dcdb6d3f5e4932cb331de06395865f2dd9f76c2e61819f166730ef450d7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1964_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "75736f84ba3989b22463e026fad36af307dc7e9cece601e4a33f3a54461bc12f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1964_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "40e556dbe9ecdb28d8b80c915da394bb4004f9b2aafd573194dfb640a28f1536",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1964_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1964,
+          "sha256": "69a70782d00eb425e0c03db1b4028f9878160ce15f62b32ba7933780f42c7749",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1964_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1964,
+          "sha256": "69a70782d00eb425e0c03db1b4028f9878160ce15f62b32ba7933780f42c7749",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1964_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1965_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "9aa69bf7f5c54c0cd3a5489ed6aa928be9eab5a8f7400a0ae09e74b4f0242e60",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1965_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "ccc20363a875d4b87a18a3c208f44b51dae1340dd30fcdba810ae084a561808a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1965_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "ddbb9bf845bcbbf36a924bdd250d2df4ce7f92408d4223347838f114f2f0cd45",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1965_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "6da1ff72672b17cd6b7c47a0d5b934c5113b9f69f6e32ef8a9432ada6c732261",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1965_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "6b74d9eaa9e453b3cddafe358020d4607ea711833a5fd5556637fec9419def48",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1965_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "fca3aeb2922ea9d978267ee28912d1ef9210d2d5721968d1376e807e0491a44d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1965_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1965,
+          "sha256": "eec59e18c22c9c05cb4391dfe0232aff4177f273f1cd5042574aea7f9a829c11",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1965_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1965,
+          "sha256": "eec59e18c22c9c05cb4391dfe0232aff4177f273f1cd5042574aea7f9a829c11",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1965_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1966_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "928bc9cb6ce1a55f817d187fe9a084243500985c2a5afe364ffb99e4bc2e5727",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1966_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "4c5dee4affe201f8cffbd1f459793e52d70532c60a870b943456d0a4563103c0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1966_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "3fcd4f3b96926f4ec09c204095425bd7eb8afc7b77b8405dd6432e3049efc74d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1966_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "755f5619e4b33777cd633ee59fa5143bef2f99121c81d024dcdc89d89d8e4695",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1966_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "d606ff37f8998d4037e03913f7259e23e421ae37fe3ea779195fab5427202f7a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1966_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "debfa59def042312545b277b91faf7d2e4ac74f2f16ab574795980c8a43ca9e6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1966_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1966,
+          "sha256": "15ca206b6cdf4d98216a3413bd0b6f67c3c6bc127f3eb195f5e8332ef695be40",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1966_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1966,
+          "sha256": "15ca206b6cdf4d98216a3413bd0b6f67c3c6bc127f3eb195f5e8332ef695be40",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1966_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1967_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "f8441e042549e739b23ca9438efa36d4a1406c77c1813df3d063c167d076810d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1967_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "801943f5c9bfeea4b6b29a1f99c8f80793d82ac152c1e5c56602598272e2f49b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1967_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "8f549d739cb68dea4e6cb917c4c517b381efa31ff6b884b94b3e70df6a41b0fe",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1967_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "c75d873239d220d9f14f5b15cd80c70d4be288fe1ebf473a8371a428478913f7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1967_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "2ddbfb4574f95c2d82835870c20c554539664f98aed0e7992bbcef9926535087",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1967_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "2254fde6ca877460214c9497345c889fa46cf6e92002e0a0bffa887a85a54bb4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1967_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1967,
+          "sha256": "2b0fc7adb71523a67e6329171896d45a62d82b8ac8f4eecf2cb8a7b31ed46aa3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1967_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1967,
+          "sha256": "2b0fc7adb71523a67e6329171896d45a62d82b8ac8f4eecf2cb8a7b31ed46aa3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1967_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1968_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "f084ca936fff3e60c01a49f9113d4dd564e754f6c41652272e53b69a98f0e9af",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1968_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "89632eb519eb74232d31065de403c4aaf8a241181cc32e6e4bb4d7dc5da98992",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1968_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "ccb4054f6ba4d1a7d133cc40acf93a79f96629bc208da6102e102f5a68297225",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1968_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "81aa01a3022d854fb2be68ede3bb5d35ed4eba0cbf6d643230d8b14d8604c5af",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1968_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "db6c60d8398ab593ddb843c1bcffd62929a7c80e21aa7439e1ee1241168354b4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1968_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "e40c109e5899b06b5b0dc6af0b97014762a6e9817e97e3d3c0faa7834d0d9dc0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1968_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "60b5fc40371d4e5801d40580ccf0938fb60063c1b005f88cd9fe89702e911777",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1968_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1968,
+          "sha256": "470547eecc79e742b2e9cf5fbfa4da9f7014e66112e32fef49ca6332c23d425a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1968_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1968,
+          "sha256": "470547eecc79e742b2e9cf5fbfa4da9f7014e66112e32fef49ca6332c23d425a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1968_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1969_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "399ec36fa67b1074ae4238de8e36bd823fa3486f9405572e83f93344c4f3212e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1969_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "3307e1773b2f06ea5b30a0faf1fc09764b7acdf62c5b9550d6ccc4157802aa6b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1969_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "2e23eb4a4eac7264456c1a9fccaed7f085e25a9ba7828c7fdd5352e957146b47",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1969_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "c0f952ef3cfef547397422383d261bab80f2a281d79a55137e6c0a2d854bfa8d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1969_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "d59f63866e3194b5f9f661d35693751956581a992161b850ddba38697002c139",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1969_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "7fe51318a06ea09987e0cc009bb5db9ed90c437498599b35eb14ef4cd16fc0c5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1969_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "30eadc50dab238cf43e1ac6e276633f05867441f12a10fb6dafbc1a28bbdb295",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1969_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1969,
+          "sha256": "3a45380668cc08ef164751f53c558927e53c609b5cfe2dacf4809b18fff3b7ae",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1969_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1969,
+          "sha256": "3a45380668cc08ef164751f53c558927e53c609b5cfe2dacf4809b18fff3b7ae",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1969_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1970_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "c0bc39baa024cf7456c1d7937efb846a26da3c0df2cf85824a60327d69a71b27",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1970_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "4c8466a0f5c6e77088de26555607ff9e548dac06303972c72afecaa8e046abc0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1970_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "de8e57ae85d7aa90a45ead46525322628996e2ee29e737f3f528ccfa054a7b46",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1970_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "8b643d4387fbcd26b947ed775e2e7e4365cc49ea9399936edb147ae0484a179f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1970_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "8ab6c48596772a6f60fb7c8b130add735fd3cecac2180cc625d4c9f168da935b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1970_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "31f7419663b47c188f6edc0d0b4d8ff65d99559767b9748db725c2afd0399d6d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1970_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "05798af4898dd19d4b1f7dbbc0bdfe54c65985e700480ec5470589cd860b5627",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1970_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1970,
+          "sha256": "6358d05dc3a196160e716431e5140abc64f28d1b3534a43b9ec9d00a97cc8302",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1970_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1970,
+          "sha256": "6358d05dc3a196160e716431e5140abc64f28d1b3534a43b9ec9d00a97cc8302",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1970_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1971_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "2f84671ed6c44d53ea778170861f2aa99f878638c038173baa9ef3aafd7f216d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1971_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "cb2880e49486825cf99ebc66b1c6b7990b27484c2884c3d5d2d10c09eb66d2d1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1971_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "ebbdee10974dec922b370f0ad9c564feeae7ff88529548acd2bc4a37a054a625",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1971_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "75bf77c04350a6bf42b966cfa13e01434044b971e6ba00d496ca60b1aecacba3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1971_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "781f4fd5b5293d606f3de666eabb3a350321e119e2a2150c42d2505630c79e09",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1971_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "1f1191a709a31c4d5c2432333fca2617469a00c489ea56b684d4427e3837a68e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1971_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1971,
+          "sha256": "6c84a52b2b43d57a94f30a66dc46cf1781dbed3a12382488a4d7d4b0d8c4f569",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1971_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1971,
+          "sha256": "6c84a52b2b43d57a94f30a66dc46cf1781dbed3a12382488a4d7d4b0d8c4f569",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1971_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1972_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "459a12b1d3f5dfe307b6cf581ce438aea73b21089bbad8dc590499a4a939c03f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1972_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "9655efaf58bec95ff55bb1540daad2cd167f2c725c60f13fe9528e381f480a75",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1972_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "c50fa274fd7c8ebd8fdcd698a1b16ed6ad44d1db5e5526779fa21e2b5b013f1a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1972_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "4cd150a457a8b869e9373b6de762f592b126585e3af879008d7b91e3272b5ff7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1972_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "0bc3b51e4326408d012062c6306167db06bff51355c47829a9d64b63481ab1c5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1972_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "81e33cde3b9a41781f039d365364cb146a25848f462aa665ef508dd508ea549c",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1972_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "bea68252ef04ccdf422a27418717fb8973da1a455d54b1520d7fdf39331a3d5e",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1972_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1972,
+          "sha256": "8123512ce4557ee2187fe48f6821064ea81f601b828f28c4242f63c0a91db0a0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1972_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1972,
+          "sha256": "8123512ce4557ee2187fe48f6821064ea81f601b828f28c4242f63c0a91db0a0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1972_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1973_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "b837d865909647a9206bd1c3d300eb29ddf1e75372bc44f37e76420ab37f73b1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1973_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "bfb2a0e6a128f545b761f216f40dcf2af9d0154e123549c0b6bad781a75f1aa0",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1973_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "d1498532510c453cf0a4d4a7c20ad3e7a339f2545612cf6b8433d56ae9797e55",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1973_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "00177bb028918db17a7486855d951919e8b8cd619a45349ca727b3e3abbb4453",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1973_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "aaee5e7c5fcd948664b83ab45c6a59a4821fb2e3efdbbcf66a553ded3594de00",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1973_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "2ad08f86018861f33c107cdaed1b511882d414cfb31ebd82e8f9e684cd53bc84",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1973_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "f0e3157843c8b891a7d455b31045eb9f46a7d324b1caf264f18ecd053cfcf7bc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1973_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1973,
+          "sha256": "5d2b990a55c5febf08c1ddeaccf825f3b7c7f6eb0e820df962c3adb292507804",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1973_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1973,
+          "sha256": "5d2b990a55c5febf08c1ddeaccf825f3b7c7f6eb0e820df962c3adb292507804",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1973_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1974_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "a4665962f2254c30bcefb710ce83c2a2ee6e68b2f8f00752c64cb60f0a5ec0f5",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1974_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "900c74aadb9f5ac14b475dc3d654f345c36704344ecb798bf6ebe8985d618410",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1974_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "bd6c9bec079d6c1c89404968ad0590124ae26df42feded141c309cc801f74503",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1974_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "1e7788e42ca14dd564a262975a647263c03b41a2513d46dac2446b190a9bbab3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1974_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "a2dd7f5e6851412cc136ac1a96b3ad21213a2ebf61dfacb7e011458b44782d60",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1974_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "d294b708ad5cc3b6458158cbbe0ead84a8fdec7733b0cee3abf998e645e8ecae",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1974_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "55ede923a8d8e8e39ecf008221d03949c1e192e51c93305593d399bf09e8cd4a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1974_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1974,
+          "sha256": "bc2af18cac9c600dd9c7276ed00e11a8009ddf44a5e60528a1b325508e9a8f04",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1974_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1974,
+          "sha256": "bc2af18cac9c600dd9c7276ed00e11a8009ddf44a5e60528a1b325508e9a8f04",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1974_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1975_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "7024b672da7bbc28b8608bdfeb1205a573aaf41649fda69a76ee901a7fbd61f3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1975_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "3ccfc2ff4157921fe60a7e092e709483de68d0154b6d1282f376de9dfc90b659",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1975_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "5c6da0a5ca7ebaba2a617cfb79f0220d4f1f53a67573b48cfb5a54ee40586af6",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1975_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "0279e1beb80628eb8aba8eb1d2070d81da29d8e78c9ce351d21d6afeb67cb9c2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1975_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "9eb59e147536017e9970bca4caf86e9ae9f3cc3934c4496e9917d76c9cf92684",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1975_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "391d0aadb56febf58408136fb3ea3417c348e90353ee47292b7a68d8d7509c7f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1975_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "0badc593b332394d66385bb0d27593910e5784e3a7c278d43cc47a28ef7cf4da",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1975_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1975,
+          "sha256": "741e17825384c7ae6fb138e9405c9d61e477e47946519e7a7b1e81b05b74fe4f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1975_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1975,
+          "sha256": "741e17825384c7ae6fb138e9405c9d61e477e47946519e7a7b1e81b05b74fe4f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1975_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1976_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "62027e99ac7ad2f9c69eadc4c933967a37baac452d07ec91641f6abe9be1c67d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1976_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "6d044d1e4a7ae078455a2b7f7463922cdc429891d53c43f08a27f925815c856d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1976_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "42d5b0d4e1a5fd59f993770b09a3567f5d69ca0ed25d444ebe178b4a6824911d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1976_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "204bdbe4677926a34bde5603f64488d9a62cc77eba4ef55405360f72922c5754",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "june",
+          "path": "raw/historical_bref/NBA_1976_games-june.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "52cc11ba15a5c9a7a862ba0011ecb5f976a97717484e857eae8e6bda82e4e094",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-june.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1976_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "1a5b0d7ab7ba128bf0618d82834dff0728df7b7e0247e3c9ea7b74fe55d34544",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1976_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "e2f64e79542ce29d0af1650ec4d0409b44ad131ef37d6736253367084238cccd",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1976_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "fb7a2a0765b7a425aa481c13808fe4c1d5523c1c14d0ed5596aa0218ed85f06b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1976_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1976,
+          "sha256": "dc546dea85840b9fb0a17b0ce814c1a7ef6a96b98e00ffec6f9269c51730af00",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1976_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1976,
+          "sha256": "dc546dea85840b9fb0a17b0ce814c1a7ef6a96b98e00ffec6f9269c51730af00",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1976_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1977_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "d03e561f57dd7bf48df3c78f6b751480926204354814d771256e8b41ec873174",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1977_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "b8b647d6b449a96ad532d8ed3b7f5823051a1102913bdac6718eed9658d02ece",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1977_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "491cc064716ce08443ba3fe6eec4e05d93743b4d1497c2fe8cd66f9783affec3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1977_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "51bc519e9a5f57d52adffe1fbdf9e80dbd78e99ae77c0ee70716f8f589f53510",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "june",
+          "path": "raw/historical_bref/NBA_1977_games-june.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "45c25400e39a237253623319e0f0ef0006c96caaa615e82d37292153246ee96d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-june.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1977_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "c0bd023def369a56a8cc4fa13cc6491fa856f71b9f9658346900d0f0954712f4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1977_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "ca69e00e3629e7866a07c0bfeafa82bb57e4b759bcb217859524982cd0062acc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1977_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "83fcac8dbd6f7553f7e1bb91bb5c00ac94d079aca532829738221773e77e924f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1977_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1977,
+          "sha256": "ed7c6ee9bbec5c3e892792c3c97bb431f01e21a4f47d424b89e86f4b1d0628c7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1977_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1977,
+          "sha256": "ed7c6ee9bbec5c3e892792c3c97bb431f01e21a4f47d424b89e86f4b1d0628c7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1977_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1978_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "065135f5b78ff8853ab4b428aabdf70bd4a6d2b3da29aa86f3b189d6b76df2c7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1978_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "0fc712ae7eb74d4326ad59696e62f2dfbf416adb42da0e741e70379703b81532",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1978_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "ef1e5b089d6b8cd1382c591c33e630ae3466a7af40ad4f67ea6ffbc2ffe955aa",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1978_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "5bfdd3c87e69cbf4bae3b2cd8f49ef63e66ae7a931dcd839ea3f63046d220378",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "june",
+          "path": "raw/historical_bref/NBA_1978_games-june.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "964fd8e6fda906368b4edea92aee5ee763c4d8a1846f048a1110f7d031815531",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-june.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1978_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "67ea9b131ab597bfd6ec2bcdd71d9762b099e11c2c1df2a91b45421dc07da24a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1978_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "356fe86cf4109439b191f2732bab66d115269459bc0d8f10d0c455fedb6e1c61",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1978_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "88ab5a2bd887643b4e283ae0c1d0386430f72df9bf75edee38ad25613f736180",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1978_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1978,
+          "sha256": "65d025dc661783aa970209ed4c5db906232d4932925ffce52fa01c9434b41326",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1978_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1978,
+          "sha256": "65d025dc661783aa970209ed4c5db906232d4932925ffce52fa01c9434b41326",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1978_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1979_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "99cc9d16a389316d9c3437843ab252009d466a7d57373f6a3d5db93f7adb5003",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1979_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "42c51ce56bdf90ec5bea7ecc69419b58a62f5e2b2427f7cdea2b43b2240c4087",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1979_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "8ed24fc36440ee6c331c91d8ba5bdb28932e8ef9f06b87c8fe8259cae72fabbc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1979_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "e6b5c607bbaafdb1564b80605eacab34076b89eb7a645b055b4368b190cce642",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "june",
+          "path": "raw/historical_bref/NBA_1979_games-june.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "6197e1664b4fd98132de277c7cf8eeade832822071f942fd267a5a8f8deb84de",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-june.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1979_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "fdce2f0a5720faf0f62f540f609799b46b2c896ad72066cef99e697c9096885d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1979_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "56fd45d971703385b25e860eaccd4fb4a121ed6c168e26174bc5e268fd7a0b24",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1979_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "32c7d0ecdd6c9dd57a953a0ec0eeda7f7dc5cd33e5de087f209193afe0c208cc",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1979_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1979,
+          "sha256": "5d20bf38b669153f636cd6c4ca349807d72bd715dba527a2627c8f7f895b1fe2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1979_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1979,
+          "sha256": "5d20bf38b669153f636cd6c4ca349807d72bd715dba527a2627c8f7f895b1fe2",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1979_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1980_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "903c4c70cf45e43989820b04dec841b6078c48fd135e64535ecd9b022e002ec7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1980_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "16bc9137f771a81fefec5c43c2fa8db514e988bb05ee7f4f2bca092951f37a47",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1980_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "3889f1d65cd937e2bee4d07970f4995857ecb87f30828d46c7729f4d88440991",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1980_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "90432d23a9468d2ae613652f88c6b6a951ca6b9d82a297de819db0982259075b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1980_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "36f7f310b6518993d13f195fd970befb3029a197ca47d866f6662c7b8c086b9c",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1980_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "ec27f61722e92040be5b8e1550ea0e4dcb887bd2dc6af1c3d102997c3b46706b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1980_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "37a554165d489a5806cfe209d1e1afc18e197d38b17b35fd1d5a604fd49cc7ba",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1980_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1980,
+          "sha256": "ba4068fde80bc358daaff7aff28848a6b6a93732c2b580734fee7621d83b7090",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1980_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1980,
+          "sha256": "ba4068fde80bc358daaff7aff28848a6b6a93732c2b580734fee7621d83b7090",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1980_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1981_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "f16420bf1cc9d87746e765cbe22624eda1a7a61344681edf72ab60610ddb7625",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1981_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "d9517d6c0efc62b5a6e9072401b46f61922a6d7021e8b4f97bc362b18480c3a1",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1981_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "9e7a20f1c3d0bc3012604f7eb52480f5127902ca621a0e94c6f58c94db744030",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1981_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "42d4756d445acc612e0866b01b1dc0090f4bb630701d34326460d109064eb2c8",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1981_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "3ea158ffad872afae1d1aae54ccf449ecccc5254b40271e97189c25021bfecd8",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1981_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "0fc75eef5c9561e69044166fb47972b39775ce7d55bcb58933b6f1d179b1c65f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1981_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "668aae49062440f5af24234e867db75247327e42d007923b56619be6b6433d41",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1981_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1981,
+          "sha256": "02f8c92668ba19df44d1ce0bbb5ae8ff80003436b812f01d72755b1987fe6933",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1981_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1981,
+          "sha256": "02f8c92668ba19df44d1ce0bbb5ae8ff80003436b812f01d72755b1987fe6933",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1981_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1982_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "8378ea36c80f4731234301fa5b364dbe9666afad9f1991b44aff9125287968f4",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1982_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "28d4e15376777e99639a598992c446055f3e6b1156aad18bdea3e981fec0107f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1982_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "f8ba792fbbd1630767c30a006e66c70b15880bd53c4bed0b38895198c946933b",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1982_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "0996de76dabb241509ac23e1660206f6ddebd1e1d83c58b6c0cac779991ab098",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "june",
+          "path": "raw/historical_bref/NBA_1982_games-june.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "0c8f1fa6c45ebadd2160eef705edadef2f8fbee612589df4a29b2207e4716edd",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-june.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1982_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "c993fc1859ac529a3e6db243917606d0ff43ce9bf650c44f0a5b70dc6d8c8138",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1982_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "43164f6597615ecd050de764475ab8e9546e79ed2abe5a65973cefc2590c0cbf",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1982_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "ccdf7ae4ce610b123ac06bd26f490df3f8812299a6f6c3668bff7be625f2fcbb",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1982_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1982,
+          "sha256": "8d44245e62e9cc2777b8c224ebebc976da5bd7cead06ecf611b65698f85a4a87",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1982_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1982,
+          "sha256": "8d44245e62e9cc2777b8c224ebebc976da5bd7cead06ecf611b65698f85a4a87",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1982_games.html"
+        },
+        {
+          "league": "NBA",
+          "month": "april",
+          "path": "raw/historical_bref/NBA_1983_games-april.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "19e47ed0ddd0bb6219641aa38c3551d1485216254b7ef894d01523778f6f7eb7",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-april.html"
+        },
+        {
+          "league": "NBA",
+          "month": "december",
+          "path": "raw/historical_bref/NBA_1983_games-december.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "d1c01f8a3164bba6b03ca5d668cab89e8a97f6c1361b0a4ba86748b314c5806f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-december.html"
+        },
+        {
+          "league": "NBA",
+          "month": "february",
+          "path": "raw/historical_bref/NBA_1983_games-february.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "b7538d7ce9c73bef67322f4860a631d60de526920610387d37ab2febc955c18d",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-february.html"
+        },
+        {
+          "league": "NBA",
+          "month": "january",
+          "path": "raw/historical_bref/NBA_1983_games-january.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "cb16f078922375fd7bfc721c10e1c4be69a2a723609bc3e05ae3715ea3e6e8b3",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-january.html"
+        },
+        {
+          "league": "NBA",
+          "month": "march",
+          "path": "raw/historical_bref/NBA_1983_games-march.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "0b1cb5da82ae8bb2827a83f4ee74987afb9b165f9569a6b370a5194e20937864",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-march.html"
+        },
+        {
+          "league": "NBA",
+          "month": "may",
+          "path": "raw/historical_bref/NBA_1983_games-may.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "15dda6a4b43a6e5fcfd758681f5223c2b900ecba468d7c33e280fe47eb25395f",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-may.html"
+        },
+        {
+          "league": "NBA",
+          "month": "november",
+          "path": "raw/historical_bref/NBA_1983_games-november.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "e75a957e9d3829a9f3ab24d8f8e8fece89919d396e7f1629ff42ac604d40634a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-november.html"
+        },
+        {
+          "league": "NBA",
+          "month": "october",
+          "path": "raw/historical_bref/NBA_1983_games-october.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_month",
+          "season": 1983,
+          "sha256": "fedec1c5b62b5c6f7c0abf928f3b03dd5b0868bb8fc8ccdd8b9667c3f1aef50a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games-october.html"
+        },
+        {
+          "league": "NBA",
+          "month": null,
+          "path": "raw/historical_bref/NBA_1983_games.html",
+          "provider": "basketball_reference",
+          "resource": "historical_schedule_index",
+          "season": 1983,
+          "sha256": "fedec1c5b62b5c6f7c0abf928f3b03dd5b0868bb8fc8ccdd8b9667c3f1aef50a",
+          "url": "https://www.basketball-reference.com/leagues/NBA_1983_games.html"
+        }
+      ]
+    }
+  },
+  "tables": {
+    "historical_games": {
+      "max_season": 1983,
+      "min_season": 1947,
+      "rows": 19405,
+      "sha256": "2c545d90435f2dc0f7fed1369d02a5033602d1544e2734dde92a8b7ed1eb9269"
+    }
+  },
+  "validation": {
+    "attendance_raw_coverage": {
+      "1947": 0.16314199395770393,
+      "1948": 0.21354166666666666,
+      "1949": 0.1388888888888889,
+      "1950": 0.11229946524064172,
+      "1951": 0.18926553672316385,
+      "1952": 0.1787878787878788,
+      "1953": 0.17094017094017094,
+      "1954": 0.18518518518518517,
+      "1955": 0.006944444444444444,
+      "1956": 0.25,
+      "1957": 0.2361111111111111,
+      "1958": 0.25,
+      "1959": 0.2465277777777778,
+      "1960": 0.25,
+      "1961": 0.24367088607594936,
+      "1962": 0.225,
+      "1963": 0.2222222222222222,
+      "1964": 0.2222222222222222,
+      "1965": 0.2222222222222222,
+      "1966": 0.225,
+      "1967": 0.20493827160493827,
+      "1968": 0.16869918699186992,
+      "1969": 0.14285714285714285,
+      "1970": 0.1445993031358885,
+      "1971": 0.11908177905308465,
+      "1972": 0.12051649928263988,
+      "1973": 0.11764705882352941,
+      "1974": 0.12051649928263988,
+      "1975": 0.11517615176151762,
+      "1976": 0.11382113821138211,
+      "1977": 0.09312638580931264,
+      "1978": 0.09312638580931264,
+      "1979": 0.09312638580931264,
+      "1980": 0.10421286031042129,
+      "1981": 1.0,
+      "1982": 0.9946977730646872,
+      "1983": 0.9798515376458112
+    },
+    "boxscore_link_coverage": {
+      "1947": 1.0,
+      "1948": 1.0,
+      "1949": 1.0,
+      "1950": 1.0,
+      "1951": 1.0,
+      "1952": 1.0,
+      "1953": 1.0,
+      "1954": 1.0,
+      "1955": 1.0,
+      "1956": 1.0,
+      "1957": 1.0,
+      "1958": 1.0,
+      "1959": 1.0,
+      "1960": 1.0,
+      "1961": 1.0,
+      "1962": 1.0,
+      "1963": 1.0,
+      "1964": 1.0,
+      "1965": 1.0,
+      "1966": 1.0,
+      "1967": 1.0,
+      "1968": 1.0,
+      "1969": 1.0,
+      "1970": 1.0,
+      "1971": 1.0,
+      "1972": 1.0,
+      "1973": 1.0,
+      "1974": 1.0,
+      "1975": 1.0,
+      "1976": 1.0,
+      "1977": 1.0,
+      "1978": 1.0,
+      "1979": 1.0,
+      "1980": 1.0,
+      "1981": 1.0,
+      "1982": 1.0,
+      "1983": 1.0
+    },
+    "games_by_season": {
+      "1947": 331,
+      "1948": 192,
+      "1949": 360,
+      "1950": 561,
+      "1951": 354,
+      "1952": 330,
+      "1953": 351,
+      "1954": 324,
+      "1955": 288,
+      "1956": 288,
+      "1957": 288,
+      "1958": 288,
+      "1959": 288,
+      "1960": 300,
+      "1961": 316,
+      "1962": 360,
+      "1963": 360,
+      "1964": 360,
+      "1965": 360,
+      "1966": 360,
+      "1967": 405,
+      "1968": 492,
+      "1969": 574,
+      "1970": 574,
+      "1971": 697,
+      "1972": 697,
+      "1973": 697,
+      "1974": 697,
+      "1975": 738,
+      "1976": 738,
+      "1977": 902,
+      "1978": 902,
+      "1979": 902,
+      "1980": 902,
+      "1981": 943,
+      "1982": 943,
+      "1983": 943
+    },
+    "modern_min_season": 1984,
+    "season_sha256": {
+      "1947": "7f61eab5cc1f558fb249211f07fb4358420165a1bbb882bcead545e088d89b41",
+      "1948": "4b9e1a1b5657f54c0b7b0e6d0d2dd6ead560ebd9e55743184683c29ace825b37",
+      "1949": "0312f35b29dc39ad2fdbdf61a09804c0ef6473b53cc6764fb1406793f845e8e3",
+      "1950": "ba3bf3c719cfb733ec4bad6943f561a07ed31e51cce4261409de5a4d8b607091",
+      "1951": "a915292b9c86b495365b8fc481c2327d82eb1ba0c219341ac31b9f8921e6dc54",
+      "1952": "0facff211029411ba3d282accc3c53e8c5e400620b5282ffeb8340ebffa3b1f7",
+      "1953": "4e81a4f1c9094247be159cd5071a41ad7ba5f0618e2323e4cf151fd552365982",
+      "1954": "663c0aba1d09e6d2f30a51c8d2d4198c5987bb528546592dadf00d381ae4f7d9",
+      "1955": "08275b20c2100d3dd5a7c8ed866d5e9845fab529274409eae94a84090b5679ac",
+      "1956": "0ce08e23347ae14d547bfd799f4c72f0c04e859e56d046a8239b449970a4dde8",
+      "1957": "f824e067a0ef02ae560cdc25f82489bd6dc3be15cd5a77e9f911f829247b908c",
+      "1958": "205f0b32005bc9acccb9db48fe62ba48aab713b28e7c9c857ab16d8df07537f4",
+      "1959": "c81bd136ba3613e17714841aa45c669ea64466f5cc48c20457205b3eb008d78d",
+      "1960": "328445a9ee2be6f9d4ab1f8a346e0ab6b864ca540940e91d906c2ad0fb92c882",
+      "1961": "b264a02873cd7fc524b6cab14af9bec424911897aa0793344498661d59f38aee",
+      "1962": "edde14b42887749add02dde4eed68c937a0947927551bce2e21ad3fcd609ef41",
+      "1963": "7821432ea42151b292318ef0cb670fa46f581a12940e0ab5aac764354722bf00",
+      "1964": "929e923f853d057b828ff0144f687b2dfc8229e9d0464fcb755088de5d3b230f",
+      "1965": "428a3e643c9f1543c1655adce61ba0409c9b14a08a625b1e228cef6e3a4cd2e7",
+      "1966": "61463b2b67c0ea32b0178dadea70160846646bd342f07205f977cee28bfa5a9b",
+      "1967": "9ba99606319e2cbb9fcab87c6f3e98a570c1f87c3b4a858dc2eb3000347425a5",
+      "1968": "f20cbc873056eed778057abaa8fc60084e5a3efe556c084d187436bd89a6117e",
+      "1969": "a7d30d31444a661883693d2f4dee4c86eca59561812e4ed5c6f200f30b4d6bf2",
+      "1970": "de878358a83ca91452184d14d661bc61220b33fdd300be1ae6597b57fe535155",
+      "1971": "f2a058325293c77cc0ec5fd6d8802ba3e00fba226ad09ecfbf1bbd421ef09dd7",
+      "1972": "15ef5f8bac87021a8f65e9fd1fe630802d4902d8e098ef8934e81745ddbf1137",
+      "1973": "417dc036262063b284c426773c73dcc2990f2c4ab14e7b35806e0e65d3b001c1",
+      "1974": "cd0f19a2fd03f2aa65f22511a6878fcaee43f66dac17e050e3300f756589de30",
+      "1975": "2dbd0155d25bb9ad98aae35081ceeda3412742f85c038cf3158b2201be5fc12c",
+      "1976": "ea23dbcd4b53652e389dc442a8f444683faaaf33bb5e126d2bfa8e33cb08e13b",
+      "1977": "6ec77ddd9af8039b77c9c6451977a16945cdd11d820a160ab6f043c0a012f8b8",
+      "1978": "9fd29ce0aef20b9c82fdf02e19226201b1865c3d9bacb3ca35239ab26a47a444",
+      "1979": "746aa42f2721655f931c62503a9d94807fa2372afcc983049980dca0e56c2201",
+      "1980": "32577d400b9e931a8a5b6baa2dd112884e7e50ed8a95552be877b18804f21598",
+      "1981": "190c3ba3f76fa64c6660c9efbe5d46475205381f473e3d9562413e92efda21ae",
+      "1982": "75580904c95c4f6c2f538529c1b469c8b87cf61b46d1fa6bda9dc6cb585153e7",
+      "1983": "cd69e359625f5bd36ba4879d60084ba0a3e5c664782a8f8e8f25d5d0567c8b7a"
+    },
+    "site_counts": {
+      "1947": {
+        "home": 331
+      },
+      "1948": {
+        "home": 191,
+        "unknown": 1
+      },
+      "1949": {
+        "home": 345,
+        "unknown": 15
+      },
+      "1950": {
+        "home": 518,
+        "unknown": 43
+      },
+      "1951": {
+        "home": 338,
+        "unknown": 16
+      },
+      "1952": {
+        "home": 294,
+        "unknown": 36
+      },
+      "1953": {
+        "home": 279,
+        "unknown": 72
+      },
+      "1954": {
+        "home": 233,
+        "unknown": 91
+      },
+      "1955": {
+        "home": 198,
+        "unknown": 90
+      },
+      "1956": {
+        "home": 218,
+        "unknown": 70
+      },
+      "1957": {
+        "home": 218,
+        "unknown": 70
+      },
+      "1958": {
+        "home": 227,
+        "unknown": 61
+      },
+      "1959": {
+        "home": 228,
+        "unknown": 60
+      },
+      "1960": {
+        "home": 232,
+        "unknown": 68
+      },
+      "1961": {
+        "home": 241,
+        "unknown": 75
+      },
+      "1962": {
+        "home": 273,
+        "unknown": 87
+      },
+      "1963": {
+        "home": 292,
+        "unknown": 68
+      },
+      "1964": {
+        "home": 303,
+        "unknown": 57
+      },
+      "1965": {
+        "home": 300,
+        "unknown": 60
+      },
+      "1966": {
+        "home": 286,
+        "unknown": 74
+      },
+      "1967": {
+        "home": 321,
+        "unknown": 84
+      },
+      "1968": {
+        "home": 405,
+        "unknown": 87
+      },
+      "1969": {
+        "home": 521,
+        "unknown": 53
+      },
+      "1970": {
+        "home": 513,
+        "unknown": 61
+      },
+      "1971": {
+        "home": 643,
+        "unknown": 54
+      },
+      "1972": {
+        "home": 628,
+        "unknown": 69
+      },
+      "1973": {
+        "home": 646,
+        "unknown": 51
+      },
+      "1974": {
+        "home": 657,
+        "unknown": 40
+      },
+      "1975": {
+        "home": 711,
+        "unknown": 27
+      },
+      "1976": {
+        "home": 729,
+        "unknown": 9
+      },
+      "1977": {
+        "home": 890,
+        "unknown": 12
+      },
+      "1978": {
+        "home": 891,
+        "unknown": 11
+      },
+      "1979": {
+        "home": 897,
+        "unknown": 5
+      },
+      "1980": {
+        "home": 896,
+        "unknown": 6
+      },
+      "1981": {
+        "home": 938,
+        "unknown": 5
+      },
+      "1982": {
+        "home": 940,
+        "unknown": 3
+      },
+      "1983": {
+        "home": 936,
+        "unknown": 7
+      }
+    },
+    "totals": {
+      "games": 19405
+    },
+    "venue_coverage": {
+      "1947": 1.0,
+      "1948": 1.0,
+      "1949": 1.0,
+      "1950": 1.0,
+      "1951": 1.0,
+      "1952": 1.0,
+      "1953": 1.0,
+      "1954": 1.0,
+      "1955": 1.0,
+      "1956": 1.0,
+      "1957": 1.0,
+      "1958": 1.0,
+      "1959": 1.0,
+      "1960": 1.0,
+      "1961": 1.0,
+      "1962": 1.0,
+      "1963": 1.0,
+      "1964": 1.0,
+      "1965": 1.0,
+      "1966": 1.0,
+      "1967": 1.0,
+      "1968": 1.0,
+      "1969": 1.0,
+      "1970": 1.0,
+      "1971": 1.0,
+      "1972": 1.0,
+      "1973": 1.0,
+      "1974": 1.0,
+      "1975": 1.0,
+      "1976": 1.0,
+      "1977": 1.0,
+      "1978": 1.0,
+      "1979": 1.0,
+      "1980": 1.0,
+      "1981": 1.0,
+      "1982": 1.0,
+      "1983": 1.0
+    }
+  },
+  "versions": {
+    "dependencies": {
+      "beautifulsoup4": "4.15.0",
+      "duckdb": "1.5.5",
+      "jupyter": "1.1.1",
+      "linearmodels": "7.0",
+      "lxml": "6.1.1",
+      "matplotlib": "3.11.1",
+      "nba_api": "1.11.4",
+      "openpyxl": "3.1.5",
+      "pandas": "3.0.5",
+      "pyarrow": "25.0.0",
+      "pytest": "9.1.1",
+      "requests": "2.34.2",
+      "seaborn": "0.13.2",
+      "setuptools": "83.0.0",
+      "statsmodels": "0.14.6"
+    },
+    "python": "3.12.3"
+  }
+}
