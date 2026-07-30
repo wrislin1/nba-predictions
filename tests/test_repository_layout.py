@@ -317,6 +317,29 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
     ).stdout.splitlines()
     assert tracked_historical == []
 
+    playoff_fixtures = {
+        "tests/fixtures/playoff_bref/NBA_1984_games.html",
+        "tests/fixtures/playoff_bref/NBA_2020_games.html",
+        "tests/fixtures/playoff_bref/NBA_2020_games-august.html",
+    }
+    tracked_playoff_fixtures = subprocess.run(
+        ["git", "ls-files", *sorted(playoff_fixtures)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(tracked_playoff_fixtures) == playoff_fixtures
+
+    tracked_playoff = subprocess.run(
+        ["git", "ls-files", "data/raw/playoff_bref"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked_playoff == []
+
 
 def test_historical_documentation_matches_the_delivered_contract() -> None:
     dictionary_path = ROOT / "docs/data-dictionary.md"
