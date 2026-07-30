@@ -207,7 +207,10 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
     required = {
         "docs/data-dictionary.md",
         "scripts/archive_raw_snapshot.sh",
+        "scripts/archive_historical_raw_snapshot.sh",
+        "scripts/restore_historical_raw.sh",
         "data/parquet/build_manifest.json",
+        "data/parquet/historical_games_manifest.json",
         "data/parquet/franchises.parquet",
         "data/parquet/games.parquet",
         "data/parquet/team_games.parquet",
