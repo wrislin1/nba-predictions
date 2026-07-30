@@ -1,6 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+validate_historical_cache() {
+  local cache="$1"
+  local invalid
+  local body
+
+  test ! -L "$cache" && test -d "$cache" || {
+    printf 'invalid historical snapshot structure: %s\n' "$cache" >&2
+    return 1
+  }
+  invalid="$(
+    find -P "$cache" -mindepth 1 -maxdepth 1 ! -type f -print -quit
+  )"
+  test -z "$invalid" || {
+    printf 'invalid historical snapshot structure: %s\n' "$invalid" >&2
+    return 1
+  }
+  invalid="$(
+    find -P "$cache" -mindepth 1 -maxdepth 1 -type f \
+      ! \( -name '*.html' -o -name '*.html.meta.json' \) -print -quit
+  )"
+  test -z "$invalid" || {
+    printf 'invalid historical snapshot structure: %s\n' "$invalid" >&2
+    return 1
+  }
+  while IFS= read -r -d '' body; do
+    test -f "$body.meta.json" && test ! -L "$body.meta.json" || {
+      printf 'invalid historical snapshot structure: missing sidecar for %s\n' \
+        "$body" >&2
+      return 1
+    }
+  done < <(
+    find -P "$cache" -mindepth 1 -maxdepth 1 -type f -name '*.html' -print0
+  )
+  while IFS= read -r -d '' body; do
+    test -f "${body%.meta.json}" && test ! -L "${body%.meta.json}" || {
+      printf 'invalid historical snapshot structure: orphan sidecar %s\n' \
+        "$body" >&2
+      return 1
+    }
+  done < <(
+    find -P "$cache" -mindepth 1 -maxdepth 1 -type f \
+      -name '*.html.meta.json' -print0
+  )
+}
+
+validate_snapshot() {
+  local snapshot="$1"
+  local invalid
+
+  test ! -L "$snapshot" && test -d "$snapshot" || {
+    printf 'invalid historical snapshot structure: %s\n' "$snapshot" >&2
+    return 1
+  }
+  invalid="$(
+    find -P "$snapshot" -mindepth 1 -maxdepth 1 \
+      ! \( \( -name historical_bref -a -type d \) -o \
+           \( -name historical_games_manifest.json -a -type f \) -o \
+           \( -name SHA256SUMS -a -type f \) \) -print -quit
+  )"
+  test -z "$invalid" || {
+    printf 'invalid historical snapshot structure: %s\n' "$invalid" >&2
+    return 1
+  }
+  validate_historical_cache "$snapshot/historical_bref"
+}
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
 manifest="${NBA_HISTORICAL_RAW_MANIFEST:-$root/data/parquet/historical_games_manifest.json}"
 archive_root="${NBA_HISTORICAL_RAW_ARCHIVE_ROOT:-/mnt/nas/llm/documents/nba-predictions-archive}"
@@ -31,18 +97,15 @@ test -d "$snapshot/historical_bref" || {
   printf 'incomplete historical snapshot: %s\n' "$snapshot/historical_bref" >&2
   exit 1
 }
+validate_snapshot "$snapshot"
 cmp -s "$manifest" "$snapshot/historical_games_manifest.json" || {
   printf 'historical snapshot manifest mismatch: %s\n' "$snapshot" >&2
   exit 1
 }
-(
-  cd "$snapshot"
-  sha256sum -c --status SHA256SUMS
-)
 expected_checksums="$(< "$snapshot/SHA256SUMS")"
 actual_checksums="$(
   cd "$snapshot"
-  find historical_bref -type f -print0 \
+  find -P historical_bref -mindepth 1 -maxdepth 1 -type f -print0 \
     | LC_ALL=C sort -z \
     | xargs -0 -r sha256sum
 )"
@@ -50,6 +113,10 @@ test "$actual_checksums" = "$expected_checksums" || {
   printf 'historical snapshot checksum mismatch: %s\n' "$snapshot" >&2
   exit 1
 }
+(
+  cd "$snapshot"
+  sha256sum -c --status SHA256SUMS
+)
 test ! -e "$destination" || {
   printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
   exit 1
@@ -65,6 +132,7 @@ cleanup() {
 }
 trap cleanup EXIT
 rsync -a --checksum "$snapshot/historical_bref/" "$staging/"
+validate_historical_cache "$staging"
 changes="$(
   rsync -a --checksum --dry-run --itemize-changes --delete \
     "$snapshot/historical_bref/" "$staging/"
@@ -73,7 +141,15 @@ test -z "$changes" || {
   printf 'restored historical cache differs:\n%s\n' "$changes" >&2
   exit 1
 }
-mv "$staging" "$destination"
+test ! -e "$destination" || {
+  printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
+  exit 1
+}
+mv -T -n "$staging" "$destination"
+test ! -d "$staging" || {
+  printf 'refusing to replace historical raw directory: %s\n' "$destination" >&2
+  exit 1
+}
 staging=
 trap - EXIT
 printf 'verified historical raw restore: %s\n' "$destination"

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import subprocess
 
+import pytest
+
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 ARCHIVE_SCRIPT = SCRIPTS / "archive_historical_raw_snapshot.sh"
@@ -73,11 +75,17 @@ def snapshot_path(repo: Path, archive_root: Path) -> Path:
     return archive_root / f"historical-raw-1983-{sha12}"
 
 
-def archive(repo: Path, archive_root: Path) -> subprocess.CompletedProcess[str]:
+def archive(
+    repo: Path,
+    archive_root: Path,
+    overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    environment = historical_environment(repo, archive_root)
+    environment.update(overrides or {})
     return subprocess.run(
         ["bash", str(ARCHIVE_SCRIPT)],
         cwd=repo,
-        env=historical_environment(repo, archive_root),
+        env=environment,
         capture_output=True,
         text=True,
     )
@@ -189,4 +197,77 @@ def test_restore_rejects_incomplete_snapshot_without_partial_destination(
     restored = restore(repo, archive_root)
 
     assert restored.returncode != 0
+    assert not (repo / "restored/historical_bref").exists()
+
+
+def test_archive_failure_removes_only_its_stage_without_publishing(
+    tmp_path: Path,
+) -> None:
+    """Would fail if a failed copy left a retry-blocking final snapshot."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    failing_rsync = fake_bin / "rsync"
+    failing_rsync.write_text("#!/usr/bin/env bash\nexit 42\n", encoding="utf-8")
+    failing_rsync.chmod(0o755)
+
+    archived = archive(
+        repo,
+        archive_root,
+        {"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
+    )
+
+    assert archived.returncode != 0
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
+@pytest.mark.parametrize("entry_kind", ["symlink", "nested_dir", "fifo"])
+def test_archive_rejects_non_flat_non_regular_source_entries(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    """Would fail if archive silently omitted non-regular cache entries."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    cache_dir = repo / "data/raw/historical_bref"
+    if entry_kind == "symlink":
+        (cache_dir / "linked.html").symlink_to("BAA_1947_games.html")
+    elif entry_kind == "nested_dir":
+        (cache_dir / "unexpected").mkdir()
+    else:
+        os.mkfifo(cache_dir / "unexpected.fifo")
+
+    archived = archive(repo, archive_root)
+
+    assert archived.returncode != 0
+    assert "invalid historical cache structure" in archived.stderr
+    assert not snapshot_path(repo, archive_root).exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
+@pytest.mark.parametrize(
+    "entry_kind", ["symlink", "empty_dir", "fifo", "extra_root"]
+)
+def test_restore_rejects_structurally_invalid_snapshot_without_destination(
+    tmp_path: Path,
+    entry_kind: str,
+) -> None:
+    """Would fail if restore accepted data absent from the checksum inventory."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    assert archive(repo, archive_root).returncode == 0
+    snapshot = snapshot_path(repo, archive_root)
+    historical_bref = snapshot / "historical_bref"
+    if entry_kind == "symlink":
+        (historical_bref / "linked.html").symlink_to("BAA_1947_games.html")
+    elif entry_kind == "empty_dir":
+        (historical_bref / "unexpected").mkdir()
+    elif entry_kind == "fifo":
+        os.mkfifo(historical_bref / "unexpected.fifo")
+    else:
+        (snapshot / "unexpected.txt").write_text("extra\n", encoding="utf-8")
+
+    restored = restore(repo, archive_root)
+
+    assert restored.returncode != 0
+    assert "invalid historical snapshot structure" in restored.stderr
     assert not (repo / "restored/historical_bref").exists()
