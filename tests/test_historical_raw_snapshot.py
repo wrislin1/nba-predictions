@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -142,11 +143,17 @@ def archive(
     )
 
 
-def restore(repo: Path, archive_root: Path) -> subprocess.CompletedProcess[str]:
+def restore(
+    repo: Path,
+    archive_root: Path,
+    overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    environment = historical_environment(repo, archive_root)
+    environment.update(overrides or {})
     return subprocess.run(
         ["bash", str(RESTORE_SCRIPT)],
         cwd=repo,
-        env=historical_environment(repo, archive_root),
+        env=environment,
         capture_output=True,
         text=True,
     )
@@ -216,6 +223,7 @@ def test_archive_requires_exact_manifest_body_inventory(
 @pytest.mark.parametrize(
     ("field", "wrong_value"),
     [
+        ("provider", "untrusted_provider"),
         ("url", "https://attacker.invalid/boxscores.html"),
         ("resource", "historical_schedule_index"),
         ("league", "NBA"),
@@ -282,6 +290,83 @@ def test_restore_rejects_manifest_divergent_tampering_with_recomputed_checksums(
 
     assert restored.returncode != 0
     assert not (repo / "restored/historical_bref").exists()
+
+
+def test_restore_rejects_snapshot_changed_consistently_during_copy(
+    tmp_path: Path,
+) -> None:
+    """Would fail if staged output were anchored to a mutable snapshot."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    assert archive(repo, archive_root).returncode == 0
+    snapshot = snapshot_path(repo, archive_root)
+    replacement = tmp_path / "race-replacement"
+    shutil.copytree(snapshot, replacement)
+    body_name = "BAA_1947_games.html"
+    body = replacement / "historical_bref" / body_name
+    body.write_bytes(b"<html>copy-time replacement</html>")
+    replacement_sha = hashlib.sha256(body.read_bytes()).hexdigest()
+    sidecar = body.with_name(f"{body_name}.meta.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["sha256"] = replacement_sha
+    sidecar.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    replacement_manifest = json.loads(
+        (replacement / "historical_games_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    pages = replacement_manifest["sources"]["basketball_reference"]["pages"]
+    next(
+        page for page in pages if page["path"].endswith(f"/{body_name}")
+    )["sha256"] = replacement_sha
+    (replacement / "historical_games_manifest.json").write_text(
+        json.dumps(replacement_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    rewrite_snapshot_checksums(replacement)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+if test "$dry_run" = false && test ! -e "$RACE_MARKER"; then
+  : > "$RACE_MARKER"
+  cp -- "$RACE_REPLACEMENT/historical_games_manifest.json" \
+    "$RACE_SNAPSHOT/historical_games_manifest.json"
+  cp -- "$RACE_REPLACEMENT/SHA256SUMS" "$RACE_SNAPSHOT/SHA256SUMS"
+  cp -a -- "$RACE_REPLACEMENT/historical_bref/." \
+    "$RACE_SNAPSHOT/historical_bref/"
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+
+    restored = restore(
+        repo,
+        archive_root,
+        {
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "RACE_MARKER": str(tmp_path / "race-triggered"),
+            "RACE_REPLACEMENT": str(replacement),
+            "RACE_SNAPSHOT": str(snapshot),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+        },
+    )
+
+    assert restored.returncode != 0
+    assert not (repo / "restored/historical_bref").exists()
+    assert list((repo / "restored").glob(".historical-restore.*")) == []
 
 
 def test_restore_rejects_deleted_sidecar_without_partial_destination(

@@ -92,6 +92,8 @@ def test_parser_rejects_unknown_overtime_marker():
 @pytest.mark.parametrize(
     "href",
     [
+        "",
+        "   ",
         "https://attacker.invalid/boxscores/194611010TRH.html",
         "/games/194611010TRH.html",
         "/boxscores/19461101TRH.html",

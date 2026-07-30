@@ -190,7 +190,7 @@ def parse_schedule_page(
             continue
         box_href = _cell_href(row, "box_score_text")
         box_match = None
-        if box_href is not None and box_href.strip():
+        if box_href is not None:
             box_match = BOXSCORE_PATTERN.fullmatch(box_href)
             if box_match is None:
                 raise ValueError(
