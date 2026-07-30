@@ -16,7 +16,9 @@ Era markers are descriptive, not causal.
 
 ## COVID context
 
-The 2020 bubble-period estimate is 55.3% and +2.21 points.
+The ending-2020 season home-site estimate is 55.3% and +2.21 points.
+
+Neutral-site bubble games are excluded from this estimate.
 
 The latest 2026 estimate is 55.4% and +1.73 points.
 

@@ -155,9 +155,14 @@ def test_render_report_uses_supplied_rows_and_labels_noncausal():
         "At the historical/modern data-source boundary, the 1983 "
         "estimate is 57.7% and +3.01 points."
     ) in report
+    assert "bubble-period estimate" not in report
     assert (
-        "The 2020 bubble-period estimate is 52.1% and +0.31 points."
+        "The ending-2020 season home-site estimate is 52.1% and "
+        "+0.31 points."
     ) in report
+    assert "Neutral-site bubble games are excluded from this estimate." in (
+        report
+    )
     assert (
         "The latest 2026 estimate is 61.2% and +4.27 points."
     ) in report
