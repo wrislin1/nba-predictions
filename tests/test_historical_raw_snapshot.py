@@ -582,6 +582,110 @@ exec "$REAL_RSYNC" "$@"
     assert list(archive_root.glob(".historical-archive.*")) == []
 
 
+def test_archive_rejects_two_phase_cache_manifest_switch(
+    tmp_path: Path,
+) -> None:
+    """Would fail if post-copy checks trusted the mutable live manifest."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    source = repo / "data/raw/historical_bref"
+    live_manifest = repo / "data/parquet/historical_games_manifest.json"
+    destination = snapshot_path(repo, archive_root)
+    original_manifest = tmp_path / "manifest-a.json"
+    shutil.copy2(live_manifest, original_manifest)
+    replacement_cache = tmp_path / "cache-b"
+    shutil.copytree(source, replacement_cache)
+    body_name = "BAA_1947_games.html"
+    body = replacement_cache / body_name
+    body.write_bytes(b"<html>copy-time cache B</html>")
+    replacement_sha = hashlib.sha256(body.read_bytes()).hexdigest()
+    sidecar = body.with_name(f"{body_name}.meta.json")
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["sha256"] = replacement_sha
+    sidecar.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    replacement_manifest = tmp_path / "manifest-b.json"
+    manifest_b = read_manifest(repo)
+    pages = manifest_b["sources"]["basketball_reference"]["pages"]
+    next(
+        page for page in pages if page["path"].endswith(f"/{body_name}")
+    )["sha256"] = replacement_sha
+    replacement_manifest.write_text(
+        json.dumps(manifest_b, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+dry_run=false
+for argument in "$@"; do
+  if test "$argument" = "--dry-run"; then
+    dry_run=true
+  fi
+done
+if test "$dry_run" = false && test ! -e "$COPY_MARKER"; then
+  : > "$COPY_MARKER"
+  cp -a -- "$REPLACEMENT_CACHE/." "$NBA_HISTORICAL_RAW_SOURCE/"
+  cp -- "$REPLACEMENT_MANIFEST" "$NBA_HISTORICAL_RAW_MANIFEST"
+elif test "$dry_run" = true && test ! -e "$DRY_RUN_MARKER"; then
+  : > "$DRY_RUN_MARKER"
+  cp -- "$ORIGINAL_MANIFEST" "$NBA_HISTORICAL_RAW_MANIFEST"
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    copy_marker = tmp_path / "copy-switched-to-b"
+    dry_run_marker = tmp_path / "dry-run-restored-a"
+    pin_tmp = tmp_path / "pin-tmp"
+    pin_tmp.mkdir()
+
+    archived = archive(
+        repo,
+        archive_root,
+        {
+            "COPY_MARKER": str(copy_marker),
+            "DRY_RUN_MARKER": str(dry_run_marker),
+            "ORIGINAL_MANIFEST": str(original_manifest),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+            "REPLACEMENT_CACHE": str(replacement_cache),
+            "REPLACEMENT_MANIFEST": str(replacement_manifest),
+            "TMPDIR": str(pin_tmp),
+        },
+    )
+
+    assert copy_marker.exists()
+    assert archived.returncode != 0, (
+        f"copy_switch={copy_marker.exists()} "
+        f"dry_run_switch={dry_run_marker.exists()}"
+    )
+    assert not destination.exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+    assert list(pin_tmp.glob(".historical-archive-manifest.*")) == []
+
+
+def test_archive_rejects_symlinked_live_manifest(tmp_path: Path) -> None:
+    """Would fail if pinning normalized a previously rejected manifest."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    manifest = repo / "data/parquet/historical_games_manifest.json"
+    destination = snapshot_path(repo, archive_root)
+    target = tmp_path / "historical-games-manifest-target.json"
+    manifest.replace(target)
+    manifest.symlink_to(target)
+
+    archived = archive(repo, archive_root)
+
+    assert archived.returncode != 0
+    assert not destination.exists()
+    assert list(archive_root.glob(".historical-archive.*")) == []
+
+
 @pytest.mark.parametrize("entry_kind", ["symlink", "nested_dir", "fifo"])
 def test_archive_rejects_non_flat_non_regular_source_entries(
     tmp_path: Path,
