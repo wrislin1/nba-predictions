@@ -1,7 +1,7 @@
 # Playoff Game Results (1947–2026) — Design
 
 Date: 2026-07-30
-Status: Revised after repository and source review; pending final approval
+Status: Approved for implementation planning
 
 ## Purpose
 
@@ -180,6 +180,25 @@ region, because several tiebreakers occur between duplicate `Playoffs`
 separators. After precedence is applied, each published game must have exactly
 one type. A new unrecognized remark at a scoped boundary fails the build
 instead of being guessed.
+
+The verified historical complement also contains 59 known, non-type
+annotations. They are an audited exact allowlist rather than an open-ended
+pattern:
+
+- 44 explicit alternate-location remarks: `at Saint Paul, MN`,
+  `at 69th Regiment Armory`, `at Madison, WI`, `at Indianapolis, IN`,
+  `at Oakland, CA`, `at Chicago, IL (Chicago Arena)`,
+  `at Washington, DC (National Guard Armory)`, `at Daly City, CA`,
+  `at Kingdome`, `at Elkhart, IN`,
+  `at Detroit, MI (University of Detroit Fieldhouse)`, and `at Tempe, AZ`;
+- 11 `Round Robin` annotations; and
+- one each of `Havlicek Stole the Ball`, `The Willis Reed Game`,
+  `The Greatest Game Ever Played`, and `Mother's Day Massacre`.
+
+The alternate-location allowlist is an exact neutral-site source signal. The
+format/nickname allowlist is non-site annotation and therefore does not turn a
+visitor/home result into an unknown-site game. Matching is case-insensitive
+after trimming; any other nonempty historical complement remark fails.
 
 Game-type classification and site classification are independent. In
 particular, `Play-In Game` is not a neutral-site signal.
