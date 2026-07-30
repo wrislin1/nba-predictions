@@ -321,6 +321,25 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
 def test_historical_documentation_matches_the_delivered_contract() -> None:
     dictionary_path = ROOT / "docs/data-dictionary.md"
     dictionary = dictionary_path.read_text(encoding="utf-8")
+    franchise_bytes = (ROOT / "data/reference/franchises.csv").read_bytes()
+    franchise_sha = hashlib.sha256(franchise_bytes).hexdigest()
+    modern_manifest = json.loads(
+        (ROOT / "data/parquet/build_manifest.json").read_text(encoding="utf-8")
+    )
+    assert (
+        modern_manifest["references"]["reference/franchises.csv"]
+        == franchise_sha
+    )
+    assert (
+        "aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb"
+        not in dictionary
+    )
+    retained_franchise_hashes = re.findall(
+        r"`reference/franchises\.csv`\s*`([0-9a-f]{64})`",
+        dictionary,
+    )
+    assert set(retained_franchise_hashes) <= {franchise_sha}
+
     heading = "### `historical_games.parquet`"
     assert heading in dictionary
     section = dictionary.split(heading, maxsplit=1)[1]

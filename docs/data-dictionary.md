@@ -10,9 +10,10 @@ gap.
 The committed [historical manifest](../data/parquet/historical_games_manifest.json)
 and [modern build manifest](../data/parquet/build_manifest.json) record the
 exact row counts, table hashes, verified relative source paths and SHA-256
-values, validation results, reference hashes, and dependency versions. Each
-manifest is authoritative for its publication if this page and an artifact
-ever differ.
+values, validation results, reference hashes, and dependency versions. The
+historical table metadata also records the exact ordered 18-column Arrow
+schema shown below. Each manifest is authoritative for its publication if
+this page and an artifact ever differ.
 
 Historical collection and classification decisions are in the approved
 [historical results design](superpowers/specs/2026-07-29-historical-game-results-design.md)
@@ -117,7 +118,9 @@ longitudinal grouping. A game with a box-score link uses
 is deterministically formed as
 `bref-fallback-YYYYMMDD-<away-slug>-at-<home-slug>-NN`, using normalized
 source values and a within-date matchup ordinal. Reordering input pages does
-not change that fallback.
+not change that fallback. Only an absent href uses the fallback: a present
+empty, whitespace-only, or malformed box-score href is source drift and fails
+parsing.
 
 Visitor and designated-home columns always establish score orientation;
 `site_status` separately describes the site evidence. `home` means the row
@@ -276,9 +279,9 @@ path, and SHA-256 are recorded in
 preserved and recovered through the verified raw snapshot; the normal
 season-fetch command does not re-download these one-off audit pages.
 
-Curated-reference hashes: `reference/franchises.csv`
-`aae69415cee458165e589355d8e6d34c248c9f1849586fb1c75ee3063c3028cb`;
-`reference/game_corrections.csv`
+The authoritative current `reference/franchises.csv` hash is read from the
+committed manifests rather than duplicated here. Other curated-reference
+hashes are `reference/game_corrections.csv`
 `4fe5af540239bb1dfb1b08b99e256dfd88a8fe05531c092256a633a19c84e6e4`;
 `reference/hoopr_snapshot.json`
 `167dfaa6e1d949e9f4812687ff74f2316610b1f016b070fd5bb4151e857ff1dc`;
@@ -357,15 +360,23 @@ Both commands default to
 the ending season and its own SHA-256 binds the archive name:
 `historical-raw-1983-<first-12-hex-of-manifest-sha256>`. The archive command
 refuses an existing final path, stages the cache and an exact copy of
-`historical_games_manifest.json`, inventories every HTML body and metadata
-sidecar in `SHA256SUMS`, verifies every checksum and a checksum-based tree
-comparison, then publishes the immutable directory atomically.
+`historical_games_manifest.json`, and validates the source and staged cache
+against that trusted manifest. Validation requires the exact body paths and
+body hashes plus matching `provider`, `resource`, `league`, `season`, `month`,
+`url`, and `sha256` identity in every sidecar. It inventories every HTML body
+and metadata sidecar in `SHA256SUMS`, verifies every checksum and a
+checksum-based tree comparison, rechecks the staged manifest binding after
+copying, then publishes the immutable directory atomically. Copy-time changes
+fail without leaving a retry-blocking target.
 
 Restore derives that exact snapshot from the current committed manifest. It
 requires the snapshot manifest to match byte for byte, rejects incomplete,
 extra, deleted, changed, or non-regular cache entries through a complete
-checksum inventory and structure checks, and verifies the staged copy before
-an atomic rename. The destination defaults to
+checksum inventory and structure checks, and performs the same exact
+body/sidecar identity validation before copying. It validates the stage
+against the trusted committed manifest, revalidates the snapshot after the
+copy, and performs a final checksum-based comparison before an atomic rename;
+a consistent copy-time snapshot swap is rejected. The destination defaults to
 `data/raw/historical_bref/` and must be absent: restore never merges with or
 replaces an existing cache.
 

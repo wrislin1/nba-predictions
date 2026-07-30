@@ -30,7 +30,11 @@
 - Historical row ordering is deterministic: `season, game_date, game_id`.
 - Unit tests use committed small HTML fixtures and never perform network requests. Integration tests consume verified local caches only.
 - Two consecutive offline historical builds and two consecutive analysis renders must be byte-identical.
-- The historical raw-cache snapshot is separate from the Slice 2A raw snapshot, and its archive and restore scripts must verify a complete `SHA256SUMS` inventory.
+- The historical raw-cache snapshot is separate from the Slice 2A raw
+  snapshot. Archive and restore must bind the exact cache body paths and
+  hashes plus every sidecar identity to the trusted committed historical
+  manifest before and after staging, defend against copy-time changes, and
+  also verify a complete `SHA256SUMS` inventory.
 - Follow Sports Reference's bot-traffic and data-use policies linked in the approved design; do not add a TLS bypass, CAPTCHA workaround, proxy rotation, or retry hammer.
 
 ---
@@ -210,6 +214,11 @@ schedule_url string
   "validation": {}
 }
 ```
+
+The `tables.historical_games` entry must also contain `schema`: the exact
+ordered 18-column Arrow schema listed above, represented as
+`{"name": <column>, "arrow_type": <physical type>}` objects. Publication tests
+compare the complete ordered list, not merely its length or a set of names.
 
 The parser may carry `overtime_marker` and `game_remarks` internally. Those
 fields are validation/classification evidence and are not published.
@@ -445,6 +454,37 @@ def test_parser_preserves_missing_zero_and_overtime_semantics():
     assert result.iloc[2]["game_id"].startswith(
         "bref-fallback-19461112-boston-celtics-at-providence-steamrollers-"
     )
+
+
+@pytest.mark.parametrize("href", ["", "   ", "/games/not-a-boxscore.html"])
+def test_parser_rejects_present_invalid_boxscore_href(href):
+    payload = (
+        FIXTURES / "BAA_1947_games-november.html"
+    ).read_text(encoding="utf-8").replace(
+        "/boxscores/194611010TRH.html", href, 1
+    )
+    with pytest.raises(ValueError, match="invalid box-score href"):
+        historical_bref.parse_schedule_page(
+            payload.encode(),
+            season=1947,
+            schedule_url=(
+                "https://www.basketball-reference.com/leagues/"
+                "BAA_1947_games-november.html"
+            ),
+        )
+
+
+def test_parser_allows_absent_boxscore_href():
+    result = historical_bref.parse_schedule_page(
+        (FIXTURES / "BAA_1947_games-november.html").read_bytes(),
+        season=1947,
+        schedule_url=(
+            "https://www.basketball-reference.com/leagues/"
+            "BAA_1947_games-november.html"
+        ),
+    )
+    assert pd.isna(result.iloc[2]["boxscore_url"])
+    assert result.iloc[2]["game_id"].startswith("bref-fallback-")
 ```
 
 - [ ] **Step 3: Run the focused tests and confirm the red state**
@@ -628,7 +668,14 @@ def parse_schedule_page(
         if not away_pts and not home_pts:
             continue
         box_href = _cell_href(row, "box_score_text")
-        box_match = BOXSCORE_PATTERN.fullmatch(box_href or "")
+        box_match = None
+        if box_href is not None:
+            box_match = BOXSCORE_PATTERN.fullmatch(box_href)
+            if box_match is None:
+                raise ValueError(
+                    f"{schedule_url}: source row {source_row} has invalid "
+                    f"box-score href {box_href!r}"
+                )
         attendance, attendance_status = _attendance(
             _cell_text(row, "attendance")
         )
@@ -674,7 +721,7 @@ def parse_schedule_page(
 ```
 
 `_assign_game_ids` sorts by date, source URL, and source row; box-score rows use
-`bref-<slug>`. Missing-link rows use
+`bref-<slug>`. Only rows with no href attribute use
 `bref-fallback-YYYYMMDD-<away>-at-<home>-NN`, where `NN` is the one-based
 ordinal within the exact date/away/home group. Return nullable text as pandas
 `string` and attendance as `Int64`.
@@ -1090,7 +1137,8 @@ blank attendance -> null + missing
 literal 0 attendance -> 0 + reported_zero
 blank venue -> null
 blank OT -> 0; OT -> 1; nOT -> n
-valid box href -> bref-<slug>; blank href -> deterministic fallback
+valid box href -> bref-<slug>; absent href -> deterministic fallback
+present empty, whitespace, or malformed href -> hard failure
 blank remarks -> home; explicit neutral marker -> neutral
 nonblank unrecognized remarks -> unknown
 games-playoffs links -> rejected by discovery
@@ -2275,6 +2323,33 @@ def run(data_dir: Path) -> None:
             shutil.rmtree(stage_dir)
 ```
 
+**Final-review publication amendment:** `build._table_manifest` must serialize
+the staged Parquet schema in table order. The deterministic publication test
+must assert this exact value:
+
+```python
+assert manifest["tables"]["historical_games"]["schema"] == [
+    {"name": "game_id", "arrow_type": "large_string"},
+    {"name": "season", "arrow_type": "int64"},
+    {"name": "league", "arrow_type": "large_string"},
+    {"name": "game_date", "arrow_type": "date32[day]"},
+    {"name": "away_team_name", "arrow_type": "large_string"},
+    {"name": "home_team_name", "arrow_type": "large_string"},
+    {"name": "away_franchise_id", "arrow_type": "large_string"},
+    {"name": "home_franchise_id", "arrow_type": "large_string"},
+    {"name": "away_pts", "arrow_type": "int64"},
+    {"name": "home_pts", "arrow_type": "int64"},
+    {"name": "home_margin", "arrow_type": "int64"},
+    {"name": "overtime_periods", "arrow_type": "int64"},
+    {"name": "site_status", "arrow_type": "large_string"},
+    {"name": "venue_name", "arrow_type": "large_string"},
+    {"name": "attendance", "arrow_type": "int64"},
+    {"name": "attendance_status", "arrow_type": "large_string"},
+    {"name": "boxscore_url", "arrow_type": "large_string"},
+    {"name": "schedule_url", "arrow_type": "large_string"},
+]
+```
+
 `_reference_provenance` attests exactly:
 
 ```text
@@ -2557,8 +2632,32 @@ Do not add `data/raw/historical_bref`.
   gitignored `data/raw/historical_bref`.
 - Produces: immutable NAS directory
   `historical-raw-1983-<manifest-sha12>` with matching manifest, exact cache
-  tree, and complete `SHA256SUMS`; verified refusal to overwrite or restore
-  into an existing target.
+  tree, complete `SHA256SUMS`, and cache provenance validated against the
+  trusted manifest; verified refusal to overwrite or restore into an existing
+  target.
+
+**Final-review amendment (supersedes the self-checksum-only Steps 1, 3, and 4
+examples below):** a self-consistent snapshot is not sufficient. Both scripts
+must require a flat regular-file cache whose exact HTML body paths equal
+`sources.basketball_reference.pages`; each body SHA-256 must equal the trusted
+committed manifest, and every paired sidecar must match the manifest's
+`provider`, `resource`, `league`, `season`, `month`, `url`, and `sha256`
+identity. Archive validates source before copying, source and stage after
+copying, and rechecks the staged manifest against the original manifest hash
+immediately before atomic publication. Restore validates the snapshot against
+the trusted committed manifest before copying, validates the stage against
+that same trusted manifest, revalidates the snapshot after copying, performs
+the final checksum-based dry run, and only then atomically renames. Existing
+targets are never replaced and failure cleanup removes only the explicit
+stage.
+
+Task 8 tests must independently cover body/manifest SHA mismatch; missing and
+extra body/sidecar pairs; every sidecar identity-field mismatch; symlink,
+nested-directory, FIFO, and unexpected-root entries; failed-copy cleanup;
+existing archive/restore targets; a snapshot changed consistently during
+restore copy; and an archive stage manifest changed during copy. Each race
+test must prove nonzero exit, no published/partial destination, and removal of
+only the temporary stage.
 
 - [ ] **Step 1: Write failing archive/restore inverse tests**
 
@@ -2589,20 +2688,44 @@ def seed_historical_snapshot_fixture(tmp_path):
     archive_root.mkdir()
     cache_dir = repo / "data/raw/historical_bref"
     cache_dir.mkdir(parents=True)
-    for name, payload in {
+    bodies = {
         "BAA_1947_games.html": b"<html>index</html>",
-        "BAA_1947_games.html.meta.json": b'{"sha256": "seeded-index"}\n',
         "BAA_1947_games-november.html": b"<html>month</html>",
-        "BAA_1947_games-november.html.meta.json": (
-            b'{"sha256": "seeded-month"}\n'
-        ),
-    }.items():
+    }
+    pages = []
+    for name, payload in bodies.items():
         (cache_dir / name).write_bytes(payload)
+        month = "november" if "-november" in name else None
+        resource = (
+            "historical_schedule_month"
+            if month is not None
+            else "historical_schedule_index"
+        )
+        metadata = {
+            "provider": "basketball_reference",
+            "resource": resource,
+            "league": "BAA",
+            "season": 1947,
+            "month": month,
+            "url": f"https://www.basketball-reference.com/leagues/{name}",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        (cache_dir / f"{name}.meta.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        pages.append({
+            "path": f"raw/historical_bref/{name}",
+            **metadata,
+        })
     parquet_dir = repo / "data/parquet"
     parquet_dir.mkdir(parents=True)
     (parquet_dir / "historical_games_manifest.json").write_text(
         json.dumps(
-            {"tables": {"historical_games": {"max_season": 1983}}},
+            {
+                "sources": {"basketball_reference": {"pages": pages}},
+                "tables": {"historical_games": {"max_season": 1983}},
+            },
             indent=2,
             sort_keys=True,
         )
@@ -2612,8 +2735,8 @@ def seed_historical_snapshot_fixture(tmp_path):
     return repo, archive_root, inventory(cache_dir)
 ```
 
-The scripts verify byte inventories, not sidecar semantics, so literal seeded
-bytes are sufficient here. Then add:
+The fixture must use real body hashes and complete sidecar identities because
+the scripts validate provenance as well as byte inventories. Then add:
 
 ```python
 def historical_environment(repo, archive_root):
@@ -2668,6 +2791,11 @@ Every case must exit nonzero without a partial restored directory.
 Expected: fail because both historical scripts do not exist.
 
 - [ ] **Step 3: Implement the historical archive**
+
+The following excerpt records the original baseline only. It is not complete
+without the final-review manifest/cache validator, pre/post-copy validation,
+copy-time race defense, same-filesystem staging, cleanup, and atomic publish
+requirements above.
 
 ```bash
 #!/usr/bin/env bash
@@ -2726,6 +2854,10 @@ manifest byte-for-byte, recomputes the complete sorted checksum inventory
 before copying, refuses an existing destination, rsyncs into a same-parent
 `mktemp -d` stage, verifies with `--delete --dry-run`, and renames the stage
 into place. Its cleanup trap removes only the explicit temporary stage.
+
+The excerpt below is likewise the original baseline, not the sufficient final
+implementation; the final-review trusted-manifest and copy-time-race
+requirements above govern.
 
 Use these environment defaults:
 
@@ -3362,8 +3494,10 @@ plt.close(figure)
 
 `render_report` reads exact rows to report the inaugural estimate, the
 historical maximum and minimum five-season win trends, the 1983 boundary, the
-2020 bubble-period value, and the latest 2026 value. Use deterministic
-formatting:
+ending-2020 season home-site estimate, and the latest 2026 value. The report
+must state that this estimate uses only `site_status == "home"` and excludes
+neutral-site bubble games; it must not label the value a bubble-period
+estimate. Use deterministic formatting:
 
 ```python
 def percentage(value: float) -> str:
