@@ -927,6 +927,12 @@ def _run_build(raw_root: Path, ordered_seasons: list[int], *, obtain_partition) 
             worklist_by_game=worklist_by_game,
             partition_path=partition_path,
         )
+        # Every statistic needed from this season's reread table is already
+        # captured in ``entry``/``summary`` above. Drop the table itself
+        # (the caller's only remaining strong reference) before advancing to
+        # the next season, so a prior season's Arrow table is never alive
+        # while the next season's games are being parsed/written.
+        del reread
         partitions[str(season)] = entry
 
         applicable = _applicable_game_types(season)
@@ -1157,11 +1163,21 @@ def _require_exact_publication_layout(
     expected_entries = {
         f"season={season}" for season in ordered_seasons
     } | {"_manifest.json"}
-    if set(root_entries) != expected_entries:
+    observed_entries = set(root_entries)
+    missing_entries = expected_entries - observed_entries
+    extra_entries = observed_entries - expected_entries
+    if missing_entries:
+        # Reported first/distinctly: a missing season partition (or a
+        # missing manifest survives past ``_read_publication_manifest``
+        # only if it reappears here, e.g. was moved rather than deleted).
         raise PBPBuildError(
-            "publication contains unexpected or missing top-level "
-            f"entries: found={root_entries}, "
-            f"expected={sorted(expected_entries)}"
+            "publication is missing required top-level entries: "
+            f"{sorted(missing_entries)}"
+        )
+    if extra_entries:
+        raise PBPBuildError(
+            "publication contains unexpected additional top-level "
+            f"entries: {sorted(extra_entries)}"
         )
     for name in root_entries:
         path = publication_dir / name
@@ -1225,14 +1241,74 @@ def validate_publication(raw_root: Path, publication_dir: Path) -> dict:
         raise PBPBuildError("manifest scope mismatch")
     if recomputed["schema"] != manifest.get("schema"):
         raise PBPBuildError("manifest schema mismatch")
-    if recomputed["partitions"] != manifest.get("partitions"):
+
+    # Partitions: check byte checksum and row count as their own named
+    # invariants before falling back to a generic per-season mismatch, so a
+    # corrupted checksum and a corrupted row count are never reported under
+    # the same message.
+    manifest_partitions = manifest.get("partitions") or {}
+    expected_partition_keys = {str(season) for season in ordered_seasons}
+    if set(manifest_partitions) != expected_partition_keys:
         raise PBPBuildError(
-            "manifest partition mismatch: byte checksum or row count "
-            "differs from the reread Parquet"
+            "manifest partitions do not list exactly scope.ending_seasons"
         )
-    if recomputed["validation"] != manifest.get("validation"):
+    for season in ordered_seasons:
+        key = str(season)
+        recomputed_entry = recomputed["partitions"][key]
+        manifest_entry = manifest_partitions[key]
+        if recomputed_entry["sha256"] != manifest_entry.get("sha256"):
+            raise PBPBuildError(
+                f"partition byte checksum mismatch for season {season}"
+            )
+        if recomputed_entry["rows"] != manifest_entry.get("rows"):
+            raise PBPBuildError(
+                f"partition row count mismatch for season {season}"
+            )
+        if recomputed_entry != manifest_entry:
+            raise PBPBuildError(
+                f"manifest partition mismatch for season {season}: "
+                f"recomputed={recomputed_entry}, manifest={manifest_entry}"
+            )
+
+    # Validation: check the per-game report as its own named invariant --
+    # in particular ``event_count`` and terminal scores -- before falling
+    # back to the generic "validation total" comparison, so a single
+    # corrupted game statistic is never reported under the same message as
+    # an aggregate count drift.
+    recomputed_validation = recomputed["validation"]
+    manifest_validation = manifest.get("validation") or {}
+    recomputed_games = recomputed_validation.get("games", {})
+    manifest_games = manifest_validation.get("games", {})
+    if set(recomputed_games) != set(manifest_games):
+        raise PBPBuildError("manifest validation games membership mismatch")
+    for game_id, recomputed_record in recomputed_games.items():
+        manifest_record = manifest_games.get(game_id, {})
+        if recomputed_record.get("event_count") != manifest_record.get(
+            "event_count"
+        ):
+            raise PBPBuildError(
+                f"per-game event count mismatch for game {game_id}: "
+                f"recomputed={recomputed_record.get('event_count')}, "
+                f"manifest={manifest_record.get('event_count')}"
+            )
+        if (
+            recomputed_record.get("terminal_home_score")
+            != manifest_record.get("terminal_home_score")
+            or recomputed_record.get("terminal_away_score")
+            != manifest_record.get("terminal_away_score")
+        ):
+            raise PBPBuildError(
+                f"terminal score mismatch for game {game_id}"
+            )
+        if recomputed_record != manifest_record:
+            raise PBPBuildError(
+                f"per-game validation mismatch for game {game_id}: "
+                f"recomputed={recomputed_record}, manifest={manifest_record}"
+            )
+
+    if recomputed_validation != manifest_validation:
         raise PBPBuildError("manifest validation total mismatch")
-    return recomputed["validation"]
+    return recomputed_validation
 
 
 def run(data_dir: Path) -> None:

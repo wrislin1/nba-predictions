@@ -2,6 +2,7 @@
 deterministic season-partitioned build/publish/audit pipeline."""
 
 from datetime import date
+import gc
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import re
 import shutil
 import socket
 import sys
+import weakref
 
 import numpy as np
 import pyarrow as pa
@@ -555,6 +557,47 @@ def test_build_tree_writes_one_season_at_a_time(tmp_path, monkeypatch):
     assert violations == []
 
 
+def test_build_tree_releases_previous_season_table_before_next_season(
+    tmp_path, monkeypatch
+):
+    """The 1997 reread ``pa.Table`` must be garbage-collectible before the
+    2026 games are parsed -- not merely "the 1997 file exists on disk"
+    (the file-existence check above cannot see a lingering in-memory
+    reference to a season's reread table held alive across the season
+    boundary)."""
+    data_dir = tmp_path / "data"
+    raw_root = seed_two_season_publication(data_dir)
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+
+    real_read_table = pbp_build.pq.read_table
+    real_parse = pbp_build.parse_game_payload
+    season_tables: dict[str, "weakref.ReferenceType"] = {}
+    violations = []
+
+    def tracking_read_table(path, *args, **kwargs):
+        table = real_read_table(path, *args, **kwargs)
+        if "season=1997" in str(path):
+            season_tables["1997"] = weakref.ref(table)
+        return table
+
+    def instrumented_parse(payload, row):
+        if int(row["season"]) == 2026:
+            gc.collect()
+            ref = season_tables.get("1997")
+            if ref is not None and ref() is not None:
+                violations.append(row["game_id"])
+        return real_parse(payload, row)
+
+    monkeypatch.setattr(pbp_build.pq, "read_table", tracking_read_table)
+    monkeypatch.setattr(pbp_build, "parse_game_payload", instrumented_parse)
+
+    pbp_build.build_tree(raw_root, stage_dir, seasons=[1997, 2026])
+
+    assert "1997" in season_tables  # sanity: the tracker actually fired
+    assert violations == []
+
+
 def test_build_tree_rejects_nonempty_stage(tmp_path):
     data_dir = tmp_path / "data"
     raw_root = seed_two_season_publication(data_dir)
@@ -819,30 +862,98 @@ def _mutate_validation_total(raw_root, stage_dir):
     _save_manifest(stage_dir, manifest)
 
 
+# Each entry pins the mutator plus a ``match=`` fragment unique to its own
+# named invariant, so a refactor that collapses two distinct invariants
+# into one shared message would fail here even though "an exception was
+# raised" would still be true.
 _MUTATIONS = {
-    "missing manifest": _mutate_missing_manifest,
-    "additional path": _mutate_additional_path,
-    "missing season partition": _mutate_missing_season_partition,
-    "wrong Arrow schema or nullability": _mutate_wrong_schema,
-    "unsorted primary keys": _mutate_unsorted_keys,
-    "duplicate (game_id, action_id)": _mutate_duplicate_key,
-    "game absent from worklist": _mutate_unknown_game,
-    "game in the wrong ending-season partition": _mutate_wrong_season_partition,
-    "per-game event count mismatch": _mutate_event_count_manifest,
-    "terminal score mismatch": _mutate_terminal_score,
-    "partition byte checksum mismatch": _mutate_partition_sha,
-    "partition row count mismatch": _mutate_partition_rows,
-    "manifest source path/checksum mismatch": _mutate_source_checksum,
-    "manifest validation total mismatch": _mutate_validation_total,
+    "missing manifest": (
+        _mutate_missing_manifest, "missing _manifest.json",
+    ),
+    "additional path": (
+        _mutate_additional_path, "unexpected additional",
+    ),
+    "missing season partition": (
+        _mutate_missing_season_partition, "missing required top-level",
+    ),
+    "wrong Arrow schema or nullability": (
+        _mutate_wrong_schema, "schema does not match",
+    ),
+    "unsorted primary keys": (
+        _mutate_unsorted_keys, "not sorted",
+    ),
+    "duplicate (game_id, action_id)": (
+        _mutate_duplicate_key, r"duplicate \(game_id, action_id\)",
+    ),
+    "game absent from worklist": (
+        _mutate_unknown_game, "absent from the worklist",
+    ),
+    "game in the wrong ending-season partition": (
+        _mutate_wrong_season_partition, "belongs to ending season",
+    ),
+    "per-game event count mismatch": (
+        _mutate_event_count_manifest, "per-game event count mismatch",
+    ),
+    "terminal score mismatch": (
+        _mutate_terminal_score, "terminal score",
+    ),
+    "partition byte checksum mismatch": (
+        _mutate_partition_sha, "partition byte checksum mismatch",
+    ),
+    "partition row count mismatch": (
+        _mutate_partition_rows, "partition row count mismatch",
+    ),
+    "manifest source path/checksum mismatch": (
+        _mutate_source_checksum, r"manifest source path/checksum mismatch",
+    ),
+    "manifest validation total mismatch": (
+        _mutate_validation_total, "manifest validation total mismatch",
+    ),
 }
 
 
 @pytest.mark.parametrize("name", sorted(_MUTATIONS))
 def test_validate_publication_rejects_each_mutation(tmp_path, name):
     raw_root, stage_dir, _manifest = _build_valid_publication(tmp_path)
-    _MUTATIONS[name](raw_root, stage_dir)
-    with pytest.raises(pbp_build.PBPBuildError):
+    mutate, match = _MUTATIONS[name]
+    mutate(raw_root, stage_dir)
+    with pytest.raises(pbp_build.PBPBuildError, match=match):
         pbp_build.validate_publication(raw_root, stage_dir)
+
+
+def test_mutation_invariant_names_are_pairwise_distinguishable(tmp_path):
+    """Each mutation's *actual* failure message names only its own invariant.
+
+    Independently reruns every one of the 14 mutations and checks the real
+    raised message against every mutation's ``match=`` pattern (not just
+    its own). Guards against exactly the regression flagged in review: a
+    refactor that collapses two distinct invariants (e.g. "per-game event
+    count mismatch" and "manifest validation total mismatch", or
+    "partition byte checksum mismatch" and "partition row count
+    mismatch") into one shared message would make some other mutation's
+    real message spuriously match this mutation's pattern too, or vice
+    versa -- which the single-pattern parametrized test above cannot see.
+    """
+    patterns = {
+        name: re.compile(match) for name, (_mutate, match) in _MUTATIONS.items()
+    }
+    for index, name in enumerate(sorted(_MUTATIONS)):
+        mutate, _match = _MUTATIONS[name]
+        case_dir = tmp_path / f"case_{index}"
+        case_dir.mkdir()
+        raw_root, stage_dir, _manifest = _build_valid_publication(case_dir)
+        mutate(raw_root, stage_dir)
+        with pytest.raises(pbp_build.PBPBuildError) as excinfo:
+            pbp_build.validate_publication(raw_root, stage_dir)
+        message = str(excinfo.value)
+        matched = {
+            other_name for other_name, pattern in patterns.items()
+            if pattern.search(message)
+        }
+        assert matched == {name}, (
+            f"mutation {name!r} raised a message matching {sorted(matched)}, "
+            f"expected only {name!r}: {message!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
