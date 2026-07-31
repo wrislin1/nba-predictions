@@ -787,6 +787,342 @@ def test_publish_pair_rejects_same_inode_stage_mutation_before_any_move(
     assert list(tmp_path.glob(".playoff-rollback-*")) == []
 
 
+def seed_tree_publication(
+    tmp_path: Path, *, with_existing: bool
+) -> tuple[Path, Path]:
+    stage = tmp_path / "stage"
+    output = tmp_path / "pbp-publication"
+    stage.mkdir()
+    (stage / "_manifest.json").write_text("new manifest")
+    for season in ("season=1997", "season=1998"):
+        partition = stage / season
+        partition.mkdir()
+        (partition / "events.parquet").write_bytes(
+            f"{season}-new".encode()
+        )
+    if with_existing:
+        output.mkdir()
+        (output / "_manifest.json").write_text("old manifest")
+        for season in ("season=1997", "season=1998"):
+            partition = output / season
+            partition.mkdir()
+            (partition / "events.parquet").write_bytes(
+                f"{season}-old".encode()
+            )
+    return stage, output
+
+
+def _tree_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_publish_tree_moves_first_stage_into_place(tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    assert publication.publish_tree(
+        stage, output, label="PBP publication"
+    ) is None
+    assert not stage.exists()
+    assert (output / "_manifest.json").read_text() == "new manifest"
+
+
+def test_publish_tree_replaces_existing_tree_and_removes_rollback(tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    assert publication.publish_tree(
+        stage, output, label="PBP publication"
+    ) is None
+    assert (output / "_manifest.json").read_text() == "new manifest"
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+
+
+def test_publish_tree_uses_directory_renames_not_file_by_file(
+    monkeypatch, tmp_path
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    real_replace = Path.replace
+    calls = []
+
+    def recording_replace(self, target):
+        calls.append((Path(self), Path(target)))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", recording_replace)
+
+    assert (
+        publication.publish_tree(stage, output, label="PBP publication")
+        is None
+    )
+
+    assert [source for source, _ in calls] == [output, stage]
+    assert calls[0][1].parent == output.parent
+    assert calls[1][1] == output
+
+
+def test_publish_tree_rejects_missing_stage(tmp_path):
+    stage = tmp_path / "stage"
+    output = tmp_path / "pbp-publication"
+
+    with pytest.raises(
+        publication.TreePublicationError, match="stage does not exist"
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+
+def test_publish_tree_rejects_stage_that_is_not_a_directory(tmp_path):
+    stage = tmp_path / "stage"
+    output = tmp_path / "pbp-publication"
+    stage.write_bytes(b"not a directory")
+
+    with pytest.raises(
+        publication.TreePublicationError, match="is not a directory"
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+
+def test_publish_tree_rejects_symlink_output(tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    target = tmp_path / "output-target"
+    target.mkdir()
+    (target / "sentinel.txt").write_bytes(b"untouched")
+    output.symlink_to(target)
+
+    with pytest.raises(
+        publication.TreePublicationError, match="output is a symlink"
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert output.is_symlink()
+    assert os.readlink(output) == str(target)
+    assert (target / "sentinel.txt").read_bytes() == b"untouched"
+    assert stage.exists()
+
+
+def test_publish_tree_rejects_symlink_in_stage(tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    external = tmp_path / "external-target.txt"
+    external.write_bytes(b"external content")
+    evil_link = stage / "season=1997" / "evil-link"
+    evil_link.symlink_to(external)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="unsupported entry",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert not output.exists()
+    assert evil_link.is_symlink()
+    assert os.readlink(evil_link) == str(external)
+    assert external.read_bytes() == b"external content"
+    assert (stage / "_manifest.json").read_text() == "new manifest"
+
+
+def test_publish_tree_rejects_fifo_in_stage(tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    fifo_path = stage / "season=1997" / "evil-fifo"
+    os.mkfifo(fifo_path)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="unsupported entry",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert not output.exists()
+    assert stat.S_ISFIFO(fifo_path.lstat().st_mode)
+
+
+def test_publish_tree_rejects_stage_and_output_with_different_parents(
+    tmp_path,
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    nested = tmp_path / "elsewhere"
+    nested.mkdir()
+    misplaced_output = nested / "pbp-publication"
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="must share a parent directory",
+    ):
+        publication.publish_tree(
+            stage, misplaced_output, label="PBP publication"
+        )
+
+    assert stage.exists()
+    assert not misplaced_output.exists()
+
+
+def test_publish_tree_rejects_existing_rollback_destination(
+    monkeypatch, tmp_path
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    fixed_hex = "f" * 32
+
+    class _FixedUUID:
+        hex = fixed_hex
+
+    monkeypatch.setattr(publication.uuid, "uuid4", lambda: _FixedUUID())
+    collision = output.parent / f".{output.name}.rollback-{fixed_hex}"
+    collision.mkdir()
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="rollback destination already exists",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert (output / "_manifest.json").read_text() == "old manifest"
+    assert (stage / "_manifest.json").read_text() == "new manifest"
+
+
+def test_publish_tree_raises_when_backup_move_fails(monkeypatch, tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    old_snapshot = _tree_snapshot(output)
+    real_replace = Path.replace
+
+    def fail_backup_move(self, target):
+        if Path(self) == output:
+            raise OSError("backup move failed")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_backup_move)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="failed to move prior tree",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert _tree_snapshot(output) == old_snapshot
+    assert (stage / "_manifest.json").read_text() == "new manifest"
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+
+
+def test_publish_tree_raises_when_first_publication_move_fails(
+    monkeypatch, tmp_path
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=False)
+    real_replace = Path.replace
+
+    def fail_publish_move(self, target):
+        if Path(self) == stage:
+            raise OSError("first publication failed")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_move)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="failed to publish",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert not output.exists()
+    assert (stage / "_manifest.json").read_text() == "new manifest"
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+
+
+def test_publish_tree_restores_prior_when_replacement_move_fails(
+    monkeypatch, tmp_path
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    old_snapshot = _tree_snapshot(output)
+    real_replace = Path.replace
+
+    def fail_publish_move(self, target):
+        if Path(self) == stage:
+            raise OSError("replacement move failed")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_move)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="restored the prior tree",
+    ):
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert _tree_snapshot(output) == old_snapshot
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+
+
+def test_publish_tree_raises_when_restoration_fails(monkeypatch, tmp_path):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    old_snapshot = _tree_snapshot(output)
+    real_replace = Path.replace
+
+    def fail_publish_and_restore(self, target):
+        self_path = Path(self)
+        target_path = Path(target)
+        if self_path == stage and target_path == output:
+            raise OSError("replacement move failed")
+        if (
+            self_path.parent == output.parent
+            and self_path.name.startswith(f".{output.name}.rollback-")
+            and target_path == output
+        ):
+            raise OSError("restoration move failed")
+        return real_replace(self_path, target_path)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_restore)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="failed to restore the prior tree",
+    ) as caught:
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    rollback_dir = next(tmp_path.glob(".pbp-publication.rollback-*"))
+    assert str(output) in str(caught.value)
+    assert str(rollback_dir) in str(caught.value)
+    assert not output.exists()
+    assert _tree_snapshot(rollback_dir) == old_snapshot
+
+
+def test_publish_tree_retains_rollback_when_cleanup_fails(
+    monkeypatch, tmp_path
+):
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    old_snapshot = _tree_snapshot(output)
+    real_rmtree = publication.shutil.rmtree
+
+    def fail_rollback_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith(f".{output.name}.rollback-"):
+            raise OSError("cleanup failed")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(publication.shutil, "rmtree", fail_rollback_cleanup)
+
+    result = publication.publish_tree(stage, output, label="PBP publication")
+
+    rollback_dir = next(tmp_path.glob(".pbp-publication.rollback-*"))
+    assert result == rollback_dir
+    assert (output / "_manifest.json").read_text() == "new manifest"
+    assert _tree_snapshot(rollback_dir) == old_snapshot
+
+
+def test_publish_tree_cleanup_does_not_follow_symlink_in_prior_output(
+    tmp_path,
+):
+    """Would fail if rollback cleanup followed a symlink left in the
+    already-published prior tree instead of only removing the link."""
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    external = tmp_path / "external-sentinel.txt"
+    external.write_bytes(b"do not delete me")
+    (output / "season=1997" / "linked-in").symlink_to(external)
+
+    assert publication.publish_tree(
+        stage, output, label="PBP publication"
+    ) is None
+
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+    assert (output / "_manifest.json").read_text() == "new manifest"
+    assert external.read_bytes() == b"do not delete me"
+
+
 def test_publish_pair_rejects_manifest_that_does_not_bind_staged_product(
     tmp_path,
 ):
