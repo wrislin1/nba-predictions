@@ -2174,6 +2174,7 @@ def test_modern_publish_preserves_both_independent_pairs(
     publication_fixture(monkeypatch, data_dir)
     output_dir = data_dir / "parquet"
     output_dir.mkdir()
+    (output_dir / ".gitkeep").write_bytes(b"\n")
     products = {
         **seed_bound_independent_pair(
             output_dir,
@@ -2201,6 +2202,7 @@ def test_modern_publish_preserves_both_independent_pairs(
         name: (output_dir / name).stat().st_mode & 0o777
         for name in products
     } == {name: 0o640 for name in products}
+    assert (output_dir / ".gitkeep").read_bytes() == b"\n"
 
 
 @pytest.mark.parametrize(

@@ -1958,7 +1958,7 @@ def run(data_dir: Path) -> None:
         tempfile.mkdtemp(prefix=".parquet-stage-", dir=data_dir)
     )
     try:
-        (stage_dir / ".gitkeep").touch()
+        (stage_dir / ".gitkeep").write_bytes(b"\n")
         for table, frame in frames.items():
             frame.to_parquet(
                 stage_dir / f"{table}.parquet",
