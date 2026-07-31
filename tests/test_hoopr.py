@@ -281,6 +281,8 @@ def test_load_postseason_rejects_unknown_source_team(tmp_path):
         pytest.param((None, 135), id="missing"),
         pytest.param((125.5, 135), id="non-integer"),
         pytest.param((-1, 135), id="negative"),
+        pytest.param((True, 135), id="boolean-true"),
+        pytest.param((False, 135), id="boolean-false"),
     ],
 )
 def test_load_postseason_rejects_invalid_final_scores(tmp_path, scores):
@@ -293,6 +295,19 @@ def test_load_postseason_rejects_invalid_final_scores(tmp_path, scores):
     )
 
     with pytest.raises(ValueError, match="score"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_non_boolean_completed_status(tmp_path):
+    """Would fail if a truthy string could publish as a completed final."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(status_type_completed="False")],
+    )
+
+    with pytest.raises(ValueError, match="status_type_completed"):
         hoopr.load_postseason(raw_dir, 2020)
 
 

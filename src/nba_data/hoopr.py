@@ -104,7 +104,12 @@ def _normalize_game_ids(values: pd.Series) -> pd.Series:
 def _normalize_postseason_scores(values: pd.Series, *, label: str) -> pd.Series:
     """Normalize completed postseason scores without accepting invalid finals."""
     numeric = pd.to_numeric(values, errors="coerce")
-    invalid = numeric.isna() | numeric.lt(0) | numeric.mod(1).ne(0)
+    invalid = (
+        values.map(pd.api.types.is_bool)
+        | numeric.isna()
+        | numeric.lt(0)
+        | numeric.mod(1).ne(0)
+    )
     if bool(invalid.any()):
         examples = values.loc[invalid].head().tolist()
         raise ValueError(f"invalid hoopR postseason {label} scores: {examples}")
@@ -122,9 +127,17 @@ def load_postseason(raw_dir: Path, season: int) -> pd.DataFrame:
     if payload is None:
         raise cache.CacheIntegrityError(f"missing cache entry for {path}")
     raw = pd.read_parquet(BytesIO(payload))
+    postseason = raw["season_type"].isin([3, 5])
+    status = raw["status_type_completed"]
+    invalid_status = postseason & ~status.map(pd.api.types.is_bool)
+    if bool(invalid_status.any()):
+        examples = status.loc[invalid_status].head().tolist()
+        raise ValueError(
+            "invalid hoopR postseason status_type_completed values: "
+            f"{examples}"
+        )
     completed = raw.loc[
-        raw["status_type_completed"].astype(bool)
-        & raw["season_type"].isin([3, 5])
+        postseason & status.map(lambda value: pd.api.types.is_bool(value) and value)
     ].copy()
     frame = pd.DataFrame({
         "season": season,
