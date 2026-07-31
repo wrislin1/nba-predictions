@@ -508,6 +508,10 @@ def _expected_worklist_identity(season: int, game_type: str) -> dict:
         "provider": _WORKLIST_PROVIDER,
         "resource": _WORKLIST_RESOURCE,
         "endpoint": _WORKLIST_ENDPOINT,
+        "parameters": {
+            "Season": season_label(season),
+            "SeasonType": SEASON_TYPES[game_type],
+        },
         "season": season,
         "season_label": season_label(season),
         "game_type": game_type,
@@ -569,6 +573,20 @@ def _season_from_destination(destination: Path, *, label: str) -> int:
         ) from exc
 
 
+def _require_valid_game_type_shape(
+    metadata: Mapping[str, object], *, label: str
+) -> None:
+    # A game pair's true ``game_type`` can only be known by cross-referencing
+    # the worklist row that names it (see ``_read_game_pair``), which is not
+    # available here. This is the minimum publish-time check possible: the
+    # value must at least be a well-formed member of GAME_TYPES.
+    game_type = metadata.get("game_type")
+    if type(game_type) is not str or game_type not in GAME_TYPES:
+        raise cache.CacheIntegrityError(
+            f"PBP cache metadata mismatch for {label}: key 'game_type'"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Publish wrappers
 # ---------------------------------------------------------------------------
@@ -602,6 +620,7 @@ def publish_game_payload(
         _expected_game_identity_without_type(season, game_id),
         label=str(destination),
     )
+    _require_valid_game_type_shape(metadata, label=str(destination))
     validator = functools.partial(validate_game_transport, game_id=game_id)
     return cache.publish_bytes(destination, payload, dict(metadata), validator)
 

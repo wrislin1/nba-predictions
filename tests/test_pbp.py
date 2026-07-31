@@ -755,6 +755,40 @@ def test_publish_worklist_payload_rejects_metadata_type_mismatch(tmp_path, field
         pbp.publish_worklist_payload(destination, payload, metadata)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("Season", "1997-98"), ("SeasonType", "PlayIn")],
+)
+def test_publish_worklist_payload_rejects_parameters_value_mismatch(
+    tmp_path, field, value
+):
+    metadata = expected_worklist_metadata(1997, "regular")
+    metadata["parameters"] = {**metadata["parameters"], field: value}
+    destination = pbp.worklist_path(tmp_path, 1997, "regular")
+    payload = json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_worklist_payload(destination, payload, metadata)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("Season", 199798), ("SeasonType", 1)],
+)
+def test_publish_worklist_payload_rejects_parameters_type_mismatch(
+    tmp_path, field, value
+):
+    metadata = expected_worklist_metadata(1997, "regular")
+    metadata["parameters"] = {**metadata["parameters"], field: value}
+    destination = pbp.worklist_path(tmp_path, 1997, "regular")
+    payload = json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_worklist_payload(destination, payload, metadata)
+
+
 def test_publish_worklist_payload_accepts_exact_metadata(tmp_path):
     metadata = expected_worklist_metadata(1997, "regular")
     destination = pbp.worklist_path(tmp_path, 1997, "regular")
@@ -771,6 +805,10 @@ GAME_VALUE_MUTATIONS = {
     "season": 1998,
     "season_label": "wrong-label",
     "game_id": "0000000000",
+    # publish_game_payload cannot know the *true* game_type (that requires
+    # the worklist row, only available at cache-tree read time), but it can
+    # and must reject a value outside the fixed GAME_TYPES set.
+    "game_type": "exhibition",
 }
 GAME_TYPE_MUTATIONS = {
     "provider": 1,
@@ -779,6 +817,7 @@ GAME_TYPE_MUTATIONS = {
     "season": "1997",
     "season_label": 199798,
     "game_id": 29600001,
+    "game_type": 1,
 }
 
 
