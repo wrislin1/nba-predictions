@@ -10,7 +10,7 @@ seasons 1947–2026 and is not an input to either regular publication, the
 models, or the analysis outputs. A season number is always its ending year, so
 the regular handoff has no overlap or gap and `1947` means 1946–47.
 
-The committed [historical manifest](../data/parquet/historical_games_manifest.json)
+The committed [historical manifest](../data/parquet/historical_games_manifest.json),
 [modern build manifest](../data/parquet/build_manifest.json), and
 [playoff manifest](../data/parquet/playoff_games_manifest.json) record the
 exact row counts, table hashes, verified relative source paths and SHA-256

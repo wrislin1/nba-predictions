@@ -7,8 +7,9 @@ three controlled slices. Slice 1 preserves the original work and establishes a
 small, portable, analysis-first repository. The archived dashboard and models
 are historical artifacts, not maintained predictions.
 
-Results-level BAA/NBA history for ending seasons 1947–2026 is delivered as
-two validated publications with a reproducible long-run home-court trend.
+Results-level BAA/NBA history for ending seasons 1947–2026 is delivered
+through two validated regular-season publications and a separate postseason
+publication, with a reproducible long-run home-court trend.
 The rich historical team/player box scores remain future work in a
 separately reviewed phase; the 1947–1983 delivery intentionally preserves
 box-score links without collecting those pages.

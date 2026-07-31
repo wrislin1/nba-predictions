@@ -228,7 +228,9 @@ def test_readme_documents_the_new_contract() -> None:
         assert heading in readme
     normalized = " ".join(readme.lower().split())
     assert re.search(
-        r"results-level baa/nba history.*1947–2026.*delivered",
+        r"results-level baa/nba history.*1947–2026.*delivered"
+        r".*two validated regular-season publications"
+        r".*separate postseason publication",
         normalized,
     )
     assert re.search(
@@ -505,18 +507,28 @@ def test_playoff_documentation_matches_the_delivered_contract() -> None:
         for term in required_terms:
             assert term in document
 
-    operator_commands = (
-        "python -m nba_data fetch-playoffs --season 1984",
-        "python -m nba_data fetch-playoffs",
-        "python -m nba_data build-playoffs",
-        "bash scripts/archive_playoff_raw_snapshot.sh",
-        "bash scripts/restore_playoff_raw.sh",
+    manifest_ledger_intro = (
+        "The committed [historical manifest]"
+        "(../data/parquet/historical_games_manifest.json),\n"
+        "[modern build manifest](../data/parquet/build_manifest.json), and\n"
+        "[playoff manifest]"
+        "(../data/parquet/playoff_games_manifest.json) record"
     )
-    readme_lines = readme.splitlines()
-    command_positions = [
-        readme_lines.index(command) for command in operator_commands
-    ]
-    assert command_positions == sorted(command_positions)
+    assert manifest_ledger_intro in dictionary
+
+    operator_flow = """```bash
+# One season or resumable full acquisition; networked and rate-limited.
+python -m nba_data fetch-playoffs --season 1984
+python -m nba_data fetch-playoffs
+
+# Strictly offline deterministic publication.
+python -m nba_data build-playoffs
+
+# Independent immutable raw recovery.
+bash scripts/archive_playoff_raw_snapshot.sh
+bash scripts/restore_playoff_raw.sh
+```"""
+    assert operator_flow in readme
 
     heading = "### `playoff_games.parquet`"
     assert heading in dictionary
@@ -560,19 +572,32 @@ def test_playoff_documentation_matches_the_delivered_contract() -> None:
 
     game_type_section = section.split(game_type_heading, maxsplit=1)[1]
     game_type_section = re.split(r"\n#### ", game_type_section, maxsplit=1)[0]
-    documented_game_types = set()
+    documented_game_types = []
     for line in game_type_section.splitlines():
         if not line.startswith("|"):
             continue
-        value = line.split("|")[1].strip().strip("`")
+        cells = [cell.strip() for cell in line.split("|")[1:-1]]
+        value = cells[0].strip("`")
         if value not in {"Value", "---"} and set(value) != {"-"}:
-            documented_game_types.add(value)
-    assert documented_game_types == {
-        "playoff",
-        "play_in",
-        "tiebreaker",
-        "voided",
-    }
+            documented_game_types.append((value, cells[1]))
+    assert documented_game_types == [
+        ("playoff", "A completed BAA/NBA playoff result"),
+        (
+            "play_in",
+            "An exact `Play-In Game` row from one of the seven approved "
+            "seeded monthly pages for 2020–2026",
+        ),
+        (
+            "tiebreaker",
+            "One of the eight historical rows whose exact source remark "
+            "is `Tiebreaker`",
+        ),
+        (
+            "voided",
+            "The single 1953 result marked "
+            "`Protest; does not count toward record`",
+        ),
+    ]
 
 
 def seed_raw_snapshot(tmp_path: Path) -> tuple[Path, Path, Path]:
