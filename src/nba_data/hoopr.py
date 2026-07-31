@@ -19,6 +19,18 @@ SNAPSHOT_PATH = resources.files("nba_data.reference").joinpath(
 )
 SNAPSHOT = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
 
+POSTSEASON_COLUMNS = (
+    "season",
+    "game_date",
+    "game_type",
+    "away_franchise_id",
+    "home_franchise_id",
+    "away_pts",
+    "home_pts",
+)
+
+_CROSS_SOURCE_KEY = POSTSEASON_COLUMNS
+
 
 def validate_payload(path: Path) -> None:
     """Confirm that a cached schedule response is readable Parquet."""
@@ -87,6 +99,66 @@ def _normalize_game_ids(values: pd.Series) -> pd.Series:
         examples = values.loc[invalid].head().tolist()
         raise ValueError(f"invalid hoopR game_id values: {examples}")
     return numeric.astype("int64").astype("string")
+
+
+def _normalize_postseason_scores(values: pd.Series, *, label: str) -> pd.Series:
+    """Normalize completed postseason scores without accepting invalid finals."""
+    numeric = pd.to_numeric(values, errors="coerce")
+    invalid = numeric.isna() | numeric.lt(0) | numeric.mod(1).ne(0)
+    if bool(invalid.any()):
+        examples = values.loc[invalid].head().tolist()
+        raise ValueError(f"invalid hoopR postseason {label} scores: {examples}")
+    return numeric.astype("int64")
+
+
+def load_postseason(raw_dir: Path, season: int) -> pd.DataFrame:
+    """Load pinned hoopR completed playoff and play-in evidence only."""
+    if season not in range(2020, 2027):
+        raise ValueError(
+            f"hoopR postseason season must be 2020..2026: {season}"
+        )
+    path = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
+    payload = _read_pinned_cache(path, season)
+    if payload is None:
+        raise cache.CacheIntegrityError(f"missing cache entry for {path}")
+    raw = pd.read_parquet(BytesIO(payload))
+    completed = raw.loc[
+        raw["status_type_completed"].astype(bool)
+        & raw["season_type"].isin([3, 5])
+    ].copy()
+    frame = pd.DataFrame({
+        "season": season,
+        "game_date": pd.to_datetime(
+            completed["game_date"], errors="raise"
+        ).dt.date,
+        "game_type": completed["season_type"].map(
+            {3: "playoff", 5: "play_in"}
+        ).astype("string"),
+        "away_franchise_id": completed["away_display_name"].map(
+            lambda name: franchises.resolve(str(name), season)
+        ),
+        "home_franchise_id": completed["home_display_name"].map(
+            lambda name: franchises.resolve(str(name), season)
+        ),
+        "away_pts": _normalize_postseason_scores(
+            completed["away_score"], label="away"
+        ),
+        "home_pts": _normalize_postseason_scores(
+            completed["home_score"], label="home"
+        ),
+    }, columns=POSTSEASON_COLUMNS)
+    if bool(frame.isna().any().any()):
+        raise ValueError("hoopR postseason published fields must be non-null")
+    if bool(frame["away_franchise_id"].eq(frame["home_franchise_id"]).any()):
+        raise ValueError("hoopR postseason rows must name different franchises")
+    if bool(frame["away_pts"].eq(frame["home_pts"]).any()):
+        raise ValueError("hoopR postseason final scores must not be tied")
+    if bool(frame.duplicated(list(_CROSS_SOURCE_KEY)).any()):
+        raise ValueError("hoopR postseason contains duplicate CROSS_SOURCE_KEY values")
+    return frame.sort_values(
+        ["game_date", "game_type", "away_franchise_id", "home_franchise_id"],
+        kind="stable",
+    ).reset_index(drop=True)
 
 
 def load_season(
