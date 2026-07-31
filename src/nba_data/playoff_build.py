@@ -1197,6 +1197,7 @@ def run(data_dir: Path) -> None:
                 "playoff validation changed after Parquet re-read"
             )
         table_manifest = build._table_manifest(parquet_path, reread)
+        table_manifest["row_count"] = table_manifest.pop("rows")
         table_manifest["schema"] = [
             {"name": field.name, "arrow_type": str(field.type)}
             for field in pq.read_schema(parquet_path)

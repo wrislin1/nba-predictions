@@ -1900,7 +1900,12 @@ def test_run_publishes_deterministic_attested_manifest(
     }
     assert manifest["references"].keys() == set(REFERENCE_FILES)
     assert manifest["tables"].keys() == {"playoff_games"}
-    assert manifest["tables"]["playoff_games"]["schema"] == [
+    playoff_table = manifest["tables"]["playoff_games"]
+    assert playoff_table["row_count"] == len(
+        complete_validation_case["games"]
+    )
+    assert "rows" not in playoff_table
+    assert playoff_table["schema"] == [
         {"name": field.name, "arrow_type": str(field.type)}
         for field in pq.read_schema(parquet_path)
     ]
