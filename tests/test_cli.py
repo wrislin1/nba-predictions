@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import requests
 
 
 class FetchCallRecorder:
@@ -336,3 +337,179 @@ def test_build_playoffs_is_offline_dispatch(monkeypatch, tmp_path):
     cli.main()
 
     assert calls == [tmp_path.resolve()]
+
+
+def test_fetch_pbp_defaults_to_all_seasons(monkeypatch, tmp_path):
+    cli = load_cli()
+    called = []
+    monkeypatch.setattr(cli.pbp, "fetch", lambda data, seasons: called.append(
+        (data, tuple(seasons))
+    ))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nba_data", "--data-dir", str(tmp_path), "fetch-pbp"],
+    )
+    cli.main()
+    assert called == [(tmp_path, cli.pbp.SEASONS)]
+
+
+def test_fetch_pbp_accepts_multiple_seasons(monkeypatch, tmp_path):
+    cli = load_cli()
+    called = []
+    monkeypatch.setattr(cli.pbp, "fetch", lambda data, seasons: called.append(
+        tuple(seasons)
+    ))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-pbp",
+            "--season",
+            "1997",
+            "--season",
+            "2026",
+        ],
+    )
+    cli.main()
+    assert called == [(1997, 2026)]
+
+
+def test_fetch_pbp_deduplicates_seasons_preserving_first_occurrence(
+    monkeypatch, tmp_path
+):
+    """Would fail if repeated --season flags were sorted instead of
+    normalized to first-occurrence command order."""
+    cli = load_cli()
+    called = []
+    monkeypatch.setattr(
+        cli.pbp,
+        "fetch",
+        lambda data, seasons: called.append(tuple(seasons)),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-pbp",
+            "--season",
+            "2026",
+            "--season",
+            "1997",
+            "--season",
+            "2026",
+        ],
+    )
+
+    cli.main()
+
+    assert called == [(2026, 1997)]
+
+
+@pytest.mark.parametrize("season", [1996, 2027])
+def test_fetch_pbp_rejects_out_of_range_season(monkeypatch, tmp_path, season):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli.pbp, "fetch", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-pbp",
+            "--season",
+            str(season),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_fetch_pbp_rejects_nonint_season(monkeypatch, tmp_path):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli.pbp, "fetch", lambda *args: calls.append(args))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-pbp",
+            "--season",
+            "not-a-season",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_build_pbp_dispatches_offline_builder(monkeypatch, tmp_path):
+    cli = load_cli()
+    called = []
+
+    def _raise_if_invoked(*args, **kwargs):
+        raise AssertionError("network entry point invoked during build-pbp")
+
+    monkeypatch.setattr(cli.pbp_build, "run", called.append)
+    # Patch every network entry point reachable from the CLI module so a
+    # regression that made build-pbp fall through to a fetch path fails
+    # loudly instead of silently succeeding against the network.
+    monkeypatch.setattr(cli.pbp, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(cli.stats_nba, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(cli.hoopr, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(cli.bref, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(cli.historical_bref, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(cli.playoff_bref, "fetch", _raise_if_invoked)
+    monkeypatch.setattr(requests.Session, "get", _raise_if_invoked)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nba_data", "--data-dir", str(tmp_path), "build-pbp"],
+    )
+
+    cli.main()
+
+    assert called == [tmp_path]
+
+
+def test_build_pbp_rejects_season_flag(monkeypatch, tmp_path):
+    """Would fail if build-pbp silently accepted a --season it never uses."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli.pbp_build, "run", calls.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "build-pbp",
+            "--season",
+            "2026",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []

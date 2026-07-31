@@ -12,5 +12,6 @@ desktop.ini
 
 data/raw/
 data/.parquet-publication.lock
+data/parquet-large/
 nba-stats/
 *.duckdb

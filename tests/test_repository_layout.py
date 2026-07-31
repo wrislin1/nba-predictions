@@ -128,10 +128,37 @@ def test_gitignore_protects_generated_and_raw_state() -> None:
         "venv/",
         "data/raw/",
         "data/.parquet-publication.lock",
+        "data/parquet-large/",
         "nba-stats/",
         "*.duckdb",
         ".serena/",
     } <= rules
+
+
+def test_pbp_generated_roots_are_gitignored() -> None:
+    """Would fail if a PBP raw cache or large-Parquet path could be added."""
+    paths = [
+        "data/raw/stats_nba/pbp/example.json",
+        "data/parquet-large/pbp/season=2026/events.parquet",
+    ]
+
+    checked = subprocess.run(
+        ["git", "check-ignore", *paths],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert set(checked.stdout.splitlines()) == set(paths)
+
+    tracked = subprocess.run(
+        ["git", "ls-files", *paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked == []
 
 
 def test_requirements_are_utf8_and_pinned() -> None:
