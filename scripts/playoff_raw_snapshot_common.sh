@@ -50,6 +50,38 @@ assert_recovery_state_unchanged() {
   rm -f -- "$observed"
 }
 
+validate_single_json_object() {
+  local path="$1"
+  local label="$2"
+
+  if ! jq -se '
+    (length == 1)
+    and ((.[0] | type) == "object")
+  ' "$path" >/dev/null
+  then
+    printf '%s must contain exactly one JSON document: %s\n' \
+      "$label" "$path" >&2
+    return 1
+  fi
+}
+
+validate_json_object_sidecars() {
+  local cache="$1"
+  local label="$2"
+  local sidecar
+
+  test ! -L "$cache" && test -d "$cache" || {
+    printf 'invalid %s cache: %s\n' "$label" "$cache" >&2
+    return 1
+  }
+  while IFS= read -r -d '' sidecar; do
+    validate_single_json_object "$sidecar" "$label"
+  done < <(
+    find -P "$cache" -mindepth 1 -maxdepth 1 -type f \
+      -name '*.html.meta.json' -print0
+  )
+}
+
 prepare_restore_destination() {
   local requested_destination="$1"
   local live_source="$2"
@@ -187,7 +219,7 @@ validate_cache_manifest() {
     return 1
   }
   if ! records="$(
-    jq -er '
+    jq -ser '
       def play_in_month:
         if .season == 2020 then "august"
         elif .season == 2021 then "may"
@@ -200,7 +232,18 @@ validate_cache_manifest() {
           + (if .month == null then "" else "-" + .month end)
           + ".html"
         );
-      .sources.basketball_reference.playoff_pages as $pages
+      (
+        if length != 1 then
+          error(
+            "playoff manifest must contain exactly one JSON document"
+          )
+        elif ((.[0] | type) != "object") then
+          error("playoff manifest must contain one JSON object")
+        else
+          .[0]
+        end
+      )
+      | .sources.basketball_reference.playoff_pages as $pages
       | if (($pages | type) != "array") or (($pages | length) != 50) then
           error("playoff pages must contain exactly 50 records")
         elif (
@@ -443,9 +486,24 @@ validate_historical_dependency() {
   local historical_validator="$8"
   local pinned_historical_sha
 
+  validate_single_json_object \
+    "$trusted_historical_manifest" "historical manifest"
+  validate_json_object_sidecars \
+    "$historical_cache" "historical sidecar"
   if ! pinned_historical_sha="$(
-    jq -er '
-      .sources.basketball_reference.historical_manifest.sha256
+    jq -ser '
+      (
+        if length != 1 then
+          error(
+            "playoff manifest must contain exactly one JSON document"
+          )
+        elif ((.[0] | type) != "object") then
+          error("playoff manifest must contain one JSON object")
+        else
+          .[0]
+        end
+      )
+      | .sources.basketball_reference.historical_manifest.sha256
       | select(
           (type == "string")
           and test("^[0-9a-f]{64}$")

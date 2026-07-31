@@ -53,8 +53,30 @@ def write_json(path: Path, value: object) -> None:
     )
 
 
+def write_json_documents(path: Path, values: list[object]) -> None:
+    path.write_text(
+        "".join(
+            json.dumps(value, indent=2, sort_keys=True) + "\n"
+            for value in values
+        ),
+        encoding="utf-8",
+    )
+
+
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def refresh_historical_manifest_pin(
+    fixture: PlayoffSnapshotFixture,
+) -> None:
+    manifest = read_json(fixture.playoff_manifest)
+    manifest["sources"]["basketball_reference"][
+        "historical_manifest"
+    ]["sha256"] = sha256_bytes(
+        fixture.historical_manifest.read_bytes()
+    )
+    write_json(fixture.playoff_manifest, manifest)
 
 
 def seed_historical_dependency(fixture: PlayoffSnapshotFixture) -> None:
@@ -896,23 +918,62 @@ def test_archive_rejects_seeded_sidecar_provenance_mismatch(
     assert "sidecar NBA_2020_games-august.html" in rejected.stderr
 
 
-def test_archive_rejects_multiple_json_documents_in_sidecar(
+@pytest.mark.parametrize(
+    "stream_case",
+    ["valid_valid", "invalid_valid"],
+)
+def test_archive_rejects_streamed_playoff_sidecar_documents(
     playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    stream_case: str,
 ) -> None:
-    """Would fail if jq accepted only the last streamed JSON document."""
+    """Would fail if sidecar validation trusted jq's final stream value."""
     fixture = playoff_snapshot_fixture
     sidecar = (
         fixture.playoff_cache / "NBA_1984_games.html.meta.json"
     )
-    valid_document = sidecar.read_text(encoding="utf-8")
-    sidecar.write_text(
-        "[]\n" + valid_document,
-        encoding="utf-8",
+    valid_document = read_json(sidecar)
+    first_document = (
+        valid_document
+        if stream_case == "valid_valid"
+        else []
+    )
+    write_json_documents(
+        sidecar,
+        [first_document, valid_document],
     )
 
     rejected = assert_archive_rejected(fixture)
 
     assert "sidecar NBA_1984_games.html" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    "stream_case",
+    ["valid_valid", "invalid_valid"],
+)
+def test_archive_rejects_streamed_playoff_manifest_documents(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    stream_case: str,
+) -> None:
+    """Would fail if manifest parsing accepted jq's final stream value."""
+    fixture = playoff_snapshot_fixture
+    valid_document = read_json(fixture.playoff_manifest)
+    first_document = (
+        valid_document
+        if stream_case == "valid_valid"
+        else {}
+    )
+    write_json_documents(
+        fixture.playoff_manifest,
+        [first_document, valid_document],
+    )
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert (
+        "playoff manifest must contain exactly one JSON document"
+        in rejected.stderr
+    )
 
 
 def test_archive_rejects_duplicate_resource_identity(
@@ -997,6 +1058,26 @@ def test_archive_rejects_non_exact_seeded_cardinality(
 
     assert "playoff pages must contain seven seeded records" in (
         rejected.stderr
+    )
+
+
+def test_archive_rejects_51_otherwise_well_formed_records_at_exact_gate(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if only the exact-50 production gate were removed."""
+    fixture = playoff_snapshot_fixture
+    manifest = read_json(fixture.playoff_manifest)
+    pages = manifest["sources"]["basketball_reference"][
+        "playoff_pages"
+    ]
+    pages.append(dict(pages[0]))
+    write_json(fixture.playoff_manifest, manifest)
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert (
+        "playoff pages must contain exactly 50 records"
+        in rejected.stderr
     )
 
 
@@ -1487,6 +1568,69 @@ def test_restore_rejects_changed_historical_manifest(
 
     assert restored.returncode != 0
     assert not fixture.destination.exists()
+
+
+@pytest.mark.parametrize(
+    "stream_case",
+    ["valid_valid", "invalid_valid"],
+)
+def test_archive_rejects_streamed_historical_manifest_documents(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    stream_case: str,
+) -> None:
+    """Would fail if delegated validation trusted the final JSON value."""
+    fixture = playoff_snapshot_fixture
+    valid_document = read_json(fixture.historical_manifest)
+    first_document = (
+        valid_document
+        if stream_case == "valid_valid"
+        else {}
+    )
+    write_json_documents(
+        fixture.historical_manifest,
+        [first_document, valid_document],
+    )
+    refresh_historical_manifest_pin(fixture)
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert (
+        "historical manifest must contain exactly one JSON document"
+        in rejected.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "stream_case",
+    ["valid_valid", "invalid_valid"],
+)
+def test_archive_rejects_streamed_historical_sidecar_documents(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    stream_case: str,
+) -> None:
+    """Would fail if delegated sidecar jq used last-result semantics."""
+    fixture = playoff_snapshot_fixture
+    sidecar = (
+        fixture.historical_cache
+        / "BAA_1947_games.html.meta.json"
+    )
+    valid_document = read_json(sidecar)
+    first_document = (
+        valid_document
+        if stream_case == "valid_valid"
+        else []
+    )
+    write_json_documents(
+        sidecar,
+        [first_document, valid_document],
+    )
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert (
+        "historical sidecar must contain exactly one JSON document"
+        in rejected.stderr
+    )
 
 
 def test_archive_rejects_wrong_historical_manifest_pin(
