@@ -251,7 +251,10 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
         "docs/audits/2026-07-29-historical-bref-source-spike.md",
         "scripts/archive_raw_snapshot.sh",
         "scripts/archive_historical_raw_snapshot.sh",
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/playoff_raw_snapshot_common.sh",
         "scripts/restore_historical_raw.sh",
+        "scripts/restore_playoff_raw.sh",
         "data/parquet/build_manifest.json",
         "data/parquet/franchises.parquet",
         "data/parquet/games.parquet",
@@ -339,6 +342,39 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
         text=True,
     ).stdout.splitlines()
     assert tracked_playoff == []
+
+    recovery_scripts = {
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/playoff_raw_snapshot_common.sh",
+        "scripts/restore_playoff_raw.sh",
+    }
+    tracked_recovery = subprocess.run(
+        ["git", "ls-files", "-s", *sorted(recovery_scripts)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    tracked_modes = {
+        fields[3]: fields[0]
+        for line in tracked_recovery
+        if len(fields := line.split(maxsplit=3)) == 4
+    }
+    assert set(tracked_modes) == recovery_scripts
+    assert tracked_modes["scripts/archive_playoff_raw_snapshot.sh"] == "100755"
+    assert tracked_modes["scripts/restore_playoff_raw.sh"] == "100755"
+    assert tracked_modes["scripts/playoff_raw_snapshot_common.sh"] == "100644"
+
+    default_archive_root = (
+        "/mnt/nas/llm/documents/nba-predictions-archive"
+    )
+    for relative in (
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/restore_playoff_raw.sh",
+    ):
+        assert default_archive_root in (
+            ROOT / relative
+        ).read_text(encoding="utf-8")
 
 
 def test_historical_documentation_matches_the_delivered_contract() -> None:
