@@ -1135,6 +1135,14 @@ def fetch_games(
         pbp_build.parse_game_payload(payload, row.to_dict())
 
 
+def _default_session() -> requests.Session:
+    return requests.Session()
+
+
+def _default_pacer() -> RequestPacer:
+    return RequestPacer()
+
+
 def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
     data_dir = Path(data_dir)
     ordered_seasons = sorted({int(season) for season in seasons})
@@ -1147,8 +1155,11 @@ def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
         data_dir, required_seasons=ordered_seasons, require_complete=False
     )
 
-    session = requests.Session()
-    pacer = RequestPacer()
+    # A patchable seam: tests inject a fake session/pacer here rather than
+    # by monkeypatching requests.Session globally or widening this
+    # function's contract signature.
+    session = _default_session()
+    pacer = _default_pacer()
 
     worklist = fetch_worklists(
         data_dir, ordered_seasons, session=session, pacer=pacer

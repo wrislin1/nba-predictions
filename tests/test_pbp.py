@@ -1964,10 +1964,104 @@ def test_fetch_complete_valid_cache_produces_zero_requests(tmp_path, monkeypatch
             expected_game_metadata(row["season"], row["game_type"], row["game_id"]),
         )
     session = FakeSession([])
-    monkeypatch.setattr(pbp.requests, "Session", lambda: session)
+    monkeypatch.setattr(pbp, "_default_session", lambda: session)
     preflight_mock = Mock(return_value=("1.2.3.4",))
     monkeypatch.setattr(pbp.stats_nba, "preflight_dns", preflight_mock)
     monkeypatch.setattr(pbp, "available_bytes", lambda path: 10**15)
     pbp.fetch(data_dir, [1997, 2020])
     assert session.calls == 0
     preflight_mock.assert_not_called()
+
+
+def test_fetch_end_to_end_drives_both_phases_through_shared_session_and_pacer(
+    tmp_path, monkeypatch
+):
+    """One fetch() call, from an empty cache, issuing real fake-HTTP
+    traffic through both phases.
+
+    This is the missing integration coverage flagged in review: every
+    other fetch()-level test either starts from a fully pre-cached tree
+    (zero requests in both phases) or stubs fetch_games out entirely. Here
+    nothing is cached, so fetch() must itself thread one shared session
+    and one shared pacer from fetch_worklists into fetch_games, compute the
+    missing-game count from the worklist fetch_worklists just returned, and
+    preflight once per phase (twice total).
+    """
+    data_dir = tmp_path / "data"
+    parquet_dir = data_dir / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    games = pd.DataFrame(
+        [
+            _regular_publication_row(
+                "0029600001", 1997, "1996-11-01",
+                ("Chicago Bulls", "CHI"), ("Boston Celtics", "BOS"), 107, 98,
+            ),
+        ],
+        columns=GAMES_COLUMNS,
+    )
+    playoff_games = pd.DataFrame(
+        [
+            _postseason_publication_row(
+                "0049600001", 1997, "1997-04-24", "playoff",
+                ("Charlotte Hornets", "NOP"), ("New York Knicks", "NYK"),
+                99, 109,
+            ),
+        ],
+        columns=PLAYOFF_COLUMNS,
+    )
+    games.to_parquet(parquet_dir / "games.parquet", index=False)
+    playoff_games.to_parquet(parquet_dir / "playoff_games.parquet", index=False)
+
+    # Queued in the exact order fetch() must request them: both missing
+    # worklists (regular, then playoff, per season 1997's expected-type
+    # order), then both missing games in season/date/type/game_id order
+    # (the 1996-11-01 regular game precedes the 1997-04-24 playoff game).
+    session = FakeSession([
+        FakeResponse(200, _payload(_document(rows=REGULAR_1997_ROWS)), {}),
+        FakeResponse(200, _payload(_document(rows=PLAYOFF_1997_ROWS)), {}),
+        FakeResponse(200, (FIXTURES / "early_score_sentinel.json").read_bytes(), {}),
+        FakeResponse(
+            200, _valid_game_payload("0049600001", home_pts=109, away_pts=99), {}
+        ),
+    ])
+    clock = FakeClock()
+    pacer = pbp.RequestPacer(now=clock.now, sleeper=clock.sleep)
+    preflight_calls = []
+    monkeypatch.setattr(
+        pbp.stats_nba, "preflight_dns",
+        lambda: preflight_calls.append("preflight") or ("1.2.3.4",),
+    )
+    monkeypatch.setattr(pbp, "_default_session", lambda: session)
+    monkeypatch.setattr(pbp, "_default_pacer", lambda: pacer)
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: 10**15)
+
+    pbp.fetch(data_dir, [1997])
+
+    # (a) all four requests -- both worklist and both game -- went through
+    # the one session fetch() constructed, and through the one pacer,
+    # which enforced >=1.5s spacing across every consecutive request
+    # including the worklist -> game phase boundary (request 2 -> 3).
+    assert session.calls == 4
+    assert clock.sleeps == [1.5, 1.5, 1.5]
+    assert pacer.last_started == 4.5
+
+    # (b) preflight ran once per phase (worklists, then games) since both
+    # phases had missing entries to fetch.
+    assert preflight_calls == ["preflight", "preflight"]
+
+    # (c) the resulting cache is complete and exact.
+    for game_id, season, game_type in [
+        ("0029600001", 1997, "regular"),
+        ("0049600001", 1997, "playoff"),
+    ]:
+        body_path = pbp.game_path(data_dir, season, game_id)
+        assert body_path.exists()
+        meta_path = body_path.with_name(body_path.name + ".meta.json")
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert metadata["game_type"] == game_type
+
+    inventory = pbp.validate_cache_inventory(
+        data_dir, required_seasons=[1997], require_complete=True
+    )
+    assert len(inventory.worklist_bodies) == 2
+    assert len(inventory.game_bodies) == 2
