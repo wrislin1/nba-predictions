@@ -3,7 +3,6 @@
 from datetime import date
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -13,7 +12,14 @@ import warnings
 import pandas as pd
 import pyarrow.parquet as pq
 
-from nba_data import bref_schedule, build, cache, franchises, historical_bref
+from nba_data import (
+    bref_schedule,
+    build,
+    cache,
+    franchises,
+    historical_bref,
+    publication,
+)
 
 
 COUNT_COLUMNS = [
@@ -633,114 +639,18 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
-def _restore_historical_products(
-    rollback_dir: Path,
-    moved_prior: list[str],
-    output_dir: Path,
-) -> None:
-    """Restore prior products without consuming the retained recovery data."""
-    restoration_dir = None
-    complete_pair = len(moved_prior) == len(HISTORICAL_PRODUCTS)
-    try:
-        restoration_dir = Path(
-            tempfile.mkdtemp(
-                prefix=".historical-restoration-",
-                dir=output_dir.parent,
-            )
-        )
-        for name in moved_prior:
-            shutil.copy2(rollback_dir / name, restoration_dir / name)
-        for name in moved_prior:
-            os.replace(restoration_dir / name, output_dir / name)
-    except OSError as restoration_error:
-        retained = (
-            "complete recovery pair"
-            if complete_pair
-            else "recovery data"
-        )
-        raise HistoricalValidationError(
-            "historical publication restoration failed; "
-            f"{retained} retained at {rollback_dir}"
-        ) from restoration_error
-    finally:
-        if restoration_dir is not None and restoration_dir.exists():
-            shutil.rmtree(restoration_dir, ignore_errors=True)
-
-
 def _publish_historical_pair(
     stage_dir: Path, output_dir: Path
 ) -> Path | None:
-    """Publish the pair, returning retained rollback data after commit."""
-    staged = sorted(path.name for path in stage_dir.iterdir())
-    if staged != sorted(HISTORICAL_PRODUCTS):
-        raise HistoricalValidationError(
-            "historical stage must contain exactly "
-            f"{sorted(HISTORICAL_PRODUCTS)}"
-        )
-    if any(
-        (stage_dir / name).is_symlink()
-        or not (stage_dir / name).is_file()
-        for name in HISTORICAL_PRODUCTS
-    ):
-        raise HistoricalValidationError(
-            "non-regular historical publication product"
-        )
-    existing = [name for name in HISTORICAL_PRODUCTS if (
-        (output_dir / name).exists() or (output_dir / name).is_symlink()
-    )]
-    if existing and len(existing) != len(HISTORICAL_PRODUCTS):
-        raise HistoricalValidationError("historical publication pair is incomplete")
-    if any(
-        (output_dir / name).is_symlink()
-        or not (output_dir / name).is_file()
-        for name in existing
-    ):
-        raise HistoricalValidationError(
-            "non-regular historical publication product"
-        )
-    rollback_dir = None
-    moved_prior = []
-    published = []
     try:
-        if existing:
-            rollback_dir = Path(
-                tempfile.mkdtemp(
-                    prefix=".historical-rollback-", dir=output_dir.parent
-                )
-            )
-            for name in HISTORICAL_PRODUCTS:
-                os.replace(output_dir / name, rollback_dir / name)
-                moved_prior.append(name)
-        for name in HISTORICAL_PRODUCTS:
-            os.replace(stage_dir / name, output_dir / name)
-            published.append(name)
-    except OSError:
-        if rollback_dir is not None:
-            _restore_historical_products(
-                rollback_dir,
-                moved_prior,
-                output_dir,
-            )
-            try:
-                shutil.rmtree(rollback_dir)
-            except OSError as cleanup_error:
-                raise HistoricalValidationError(
-                    "historical publication failed after restoring the prior "
-                    "pair; rollback data retained at "
-                    f"{rollback_dir}"
-                ) from cleanup_error
-        else:
-            for name in published:
-                path = output_dir / name
-                if path.exists():
-                    path.unlink()
-        raise
-    if rollback_dir is not None and rollback_dir.exists():
-        try:
-            shutil.rmtree(rollback_dir)
-        except OSError:
-            return rollback_dir
-    return None
+        return publication.publish_pair(
+            stage_dir,
+            output_dir,
+            HISTORICAL_PRODUCTS,
+            label="historical",
+        )
+    except publication.PairPublicationError as exc:
+        raise HistoricalValidationError(str(exc)) from exc
 
 
 def run(data_dir: Path) -> None:

@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from nba_data import cache, historical_bref, historical_build
+from nba_data import cache, historical_bref, historical_build, publication
 
 
 SEED_INDEX_HTML = (
@@ -552,7 +552,7 @@ def test_publish_historical_pair_restores_complete_pair_after_replace_failure(
                 raise OSError("seeded replacement failure")
         actual_replace(source, destination)
 
-    monkeypatch.setattr(historical_build.os, "replace", fail_second_stage_move)
+    monkeypatch.setattr(publication.os, "replace", fail_second_stage_move)
 
     with pytest.raises(OSError, match="seeded replacement failure"):
         historical_build._publish_historical_pair(stage, output)
@@ -582,7 +582,7 @@ def test_publish_historical_pair_restores_empty_output_after_second_move_failure
         real_replace(source, destination)
 
     monkeypatch.setattr(
-        historical_build.os, "replace", fail_second_publication_move
+        publication.os, "replace", fail_second_publication_move
     )
 
     with pytest.raises(OSError, match="seeded publication failure"):
@@ -618,7 +618,7 @@ def test_publish_historical_pair_restores_prior_after_second_backup_failure(
                 raise OSError("seeded backup failure")
         real_replace(source, destination)
 
-    monkeypatch.setattr(historical_build.os, "replace", fail_second_backup_move)
+    monkeypatch.setattr(publication.os, "replace", fail_second_backup_move)
 
     with pytest.raises(OSError, match="seeded backup failure"):
         historical_build._publish_historical_pair(stage, output)
@@ -661,7 +661,7 @@ def test_publish_historical_pair_retains_recovery_after_restoration_failure(
         real_replace(source, destination)
 
     monkeypatch.setattr(
-        historical_build.os, "replace", fail_publication_then_restoration
+        publication.os, "replace", fail_publication_then_restoration
     )
 
     with pytest.raises(
@@ -716,7 +716,7 @@ def test_publish_retains_complete_pair_after_second_restoration_failure(
         real_replace(source, destination)
 
     monkeypatch.setattr(
-        historical_build.os,
+        publication.os,
         "replace",
         fail_publication_then_second_restoration,
     )
@@ -751,14 +751,14 @@ def test_publish_historical_pair_retains_prior_after_commit_cleanup_failure(
         new[name] = b"new " + name.encode()
         (output / name).write_bytes(old[name])
         (stage / name).write_bytes(new[name])
-    real_rmtree = historical_build.shutil.rmtree
+    real_rmtree = publication.shutil.rmtree
 
     def retain_rollback(path):
         if Path(path).name.startswith(".historical-rollback-"):
             raise OSError("seeded rollback cleanup failure")
         real_rmtree(path)
 
-    monkeypatch.setattr(historical_build.shutil, "rmtree", retain_rollback)
+    monkeypatch.setattr(publication.shutil, "rmtree", retain_rollback)
 
     recovery_dir = historical_build._publish_historical_pair(stage, output)
 

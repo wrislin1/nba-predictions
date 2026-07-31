@@ -1,10 +1,23 @@
 from datetime import date
+import hashlib
+from io import BytesIO
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import pyarrow.parquet as pq
 
-from nba_data import franchises, playoff_build
+from nba_data import (
+    bref,
+    cache,
+    franchises,
+    historical_build,
+    hoopr,
+    playoff_bref,
+    playoff_build,
+    publication,
+)
 
 
 COUNT_COLUMNS = [
@@ -1376,3 +1389,474 @@ def test_validate_returns_complete_deterministic_report(
             "2026": "9d33411631bc237441305498ef3b39fffd7c9e635e32682f5c02eec546525123",
         },
     }
+
+
+PLAYOFF_FIXTURES = Path(__file__).parent / "fixtures/playoff_bref"
+PAGE_FIELDS = {
+    "path",
+    "provider",
+    "resource",
+    "league",
+    "season",
+    "month",
+    "url",
+    "sha256",
+}
+SEEDED_PAGE_FIELDS = PAGE_FIELDS | {
+    "seeded_from",
+    "seed_operation",
+    "source_sha256",
+}
+REFERENCE_FILES = (
+    "franchises.csv",
+    "hoopr_snapshot.json",
+    "playoff_season_counts.csv",
+    "playoff_site_rules.csv",
+)
+
+
+def _rewrite_metadata(path: Path, **changes) -> None:
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata.update(changes)
+    path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _seed_verified_provenance_data(data_dir: Path) -> None:
+    parquet_dir = data_dir / "parquet"
+    reference_dir = data_dir / "reference"
+    parquet_dir.mkdir(parents=True)
+    reference_dir.mkdir()
+    historical_sources = historical_build._raw_provenance(data_dir)
+    (parquet_dir / "historical_games_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sources": historical_sources,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    dedicated_payload = (
+        PLAYOFF_FIXTURES / "NBA_1984_games.html"
+    ).read_bytes()
+    for season in playoff_bref.DEDICATED_SEASONS:
+        path = (
+            data_dir
+            / "raw/playoff_bref"
+            / playoff_bref.playoff_filename(season)
+        )
+        cache.publish_bytes(
+            path,
+            dedicated_payload,
+            {
+                "provider": "basketball_reference",
+                "resource": "playoff_schedule",
+                "league": "NBA",
+                "season": season,
+                "month": None,
+                "url": playoff_bref.playoff_url(season),
+            },
+            lambda value, year=season: (
+                playoff_bref.validate_dedicated_page(value, year)
+            ),
+        )
+
+    seeded_payload = (
+        PLAYOFF_FIXTURES / "NBA_2020_games-august.html"
+    ).read_bytes()
+    for season, month in playoff_bref.PLAY_IN_MONTHS.items():
+        source = (
+            data_dir / "raw/bref" / f"NBA_{season}_games-{month}.html"
+        )
+        cache.publish_bytes(
+            source,
+            seeded_payload,
+            {
+                "provider": "basketball_reference",
+                "season": season,
+                "month": month,
+            },
+            bref.validate_payload,
+        )
+        playoff_bref.seed_play_in_page(data_dir / "raw", season)
+
+    buffer = BytesIO()
+    pd.DataFrame({"game_id": [1]}).to_parquet(buffer, index=False)
+    hoopr_payload = buffer.getvalue()
+    for season in range(2020, 2027):
+        cache.publish_bytes(
+            data_dir / f"raw/hoopr/nba_schedule_{season}.parquet",
+            hoopr_payload,
+            {
+                "provider": "hoopr",
+                "season": season,
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            },
+            hoopr.validate_payload,
+        )
+
+    for name in REFERENCE_FILES:
+        path = reference_dir / name
+        if not path.exists():
+            path.write_text(f"verified {name}\n", encoding="utf-8")
+
+
+@pytest.fixture
+def verified_provenance_data(tmp_path):
+    _seed_verified_provenance_data(tmp_path)
+    return tmp_path
+
+
+def test_raw_provenance_contains_only_stable_source_identity(
+    verified_provenance_data,
+):
+    provenance = playoff_build._raw_provenance(verified_provenance_data)
+
+    assert provenance.keys() == {"basketball_reference", "hoopr"}
+    bref_sources = provenance["basketball_reference"]
+    assert bref_sources["historical_manifest"] == {
+        "path": "parquet/historical_games_manifest.json",
+        "sha256": hashlib.sha256(
+            (
+                verified_provenance_data
+                / "parquet/historical_games_manifest.json"
+            ).read_bytes()
+        ).hexdigest(),
+    }
+    assert bref_sources["historical_pages"] == []
+    assert len(bref_sources["playoff_pages"]) == 50
+    for record in bref_sources["playoff_pages"]:
+        expected_fields = (
+            SEEDED_PAGE_FIELDS
+            if record["resource"] == "play_in_schedule_month"
+            else PAGE_FIELDS
+        )
+        assert record.keys() == expected_fields
+    assert provenance["hoopr"]["upstream_commit"] == hoopr.SNAPSHOT["commit"]
+    assert len(provenance["hoopr"]["schedules"]) == 7
+    assert all(
+        set(record) == {
+            "path",
+            "provider",
+            "resource",
+            "season",
+            "url",
+            "upstream_commit",
+            "sha256",
+        }
+        for record in provenance["hoopr"]["schedules"]
+    )
+    serialized = json.dumps(provenance, sort_keys=True)
+    assert "fetched_at" not in serialized
+    assert str(verified_provenance_data) not in serialized
+
+
+def test_raw_provenance_rejects_historical_manifest_source_drift(
+    verified_provenance_data,
+):
+    manifest_path = (
+        verified_provenance_data
+        / "parquet/historical_games_manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sources"]["basketball_reference"]["pages"].append(
+        {"path": "raw/historical_bref/unverified.html"}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="historical manifest sources",
+    ):
+        playoff_build._raw_provenance(verified_provenance_data)
+
+
+def test_raw_provenance_rejects_historical_manifest_changed_while_attesting(
+    monkeypatch, verified_provenance_data
+):
+    manifest_path = (
+        verified_provenance_data
+        / "parquet/historical_games_manifest.json"
+    )
+    real_raw_provenance = historical_build._raw_provenance
+
+    def mutate_after_cache_attestation(data_dir):
+        sources = real_raw_provenance(data_dir)
+        manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
+        return sources
+
+    monkeypatch.setattr(
+        historical_build,
+        "_raw_provenance",
+        mutate_after_cache_attestation,
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="historical manifest changed while attesting",
+    ):
+        playoff_build._raw_provenance(verified_provenance_data)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "missing_playoff_body",
+        "extra_playoff_body",
+        "sidecar_identity",
+        "wrong_seed_source_hash",
+        "wrong_hoopr_pin",
+        "unreferenced_playoff_file",
+        "absolute_seed_path",
+    ],
+)
+def test_raw_provenance_rejects_unattestable_inputs(
+    verified_provenance_data, defect
+):
+    data_dir = verified_provenance_data
+    playoff_dir = data_dir / "raw/playoff_bref"
+    if defect == "missing_playoff_body":
+        (playoff_dir / "NBA_1984_games.html").unlink()
+    elif defect in {"extra_playoff_body", "unreferenced_playoff_file"}:
+        name = (
+            "NBA_1983_games.html"
+            if defect == "extra_playoff_body"
+            else "unreferenced.txt"
+        )
+        (playoff_dir / name).write_bytes(b"unverified")
+    elif defect == "sidecar_identity":
+        _rewrite_metadata(
+            playoff_dir / "NBA_1984_games.html.meta.json",
+            season=1985,
+        )
+    elif defect in {"wrong_seed_source_hash", "absolute_seed_path"}:
+        sidecar = (
+            playoff_dir / "NBA_2020_games-august.html.meta.json"
+        )
+        changes = (
+            {"source_sha256": "0" * 64}
+            if defect == "wrong_seed_source_hash"
+            else {"seeded_from": "/tmp/unattested.html"}
+        )
+        _rewrite_metadata(sidecar, **changes)
+    else:
+        _rewrite_metadata(
+            data_dir / "raw/hoopr/nba_schedule_2020.parquet.meta.json",
+            upstream_commit="wrong-pin",
+        )
+
+    with pytest.raises(
+        (playoff_build.PlayoffValidationError, cache.CacheIntegrityError)
+    ):
+        playoff_build._raw_provenance(data_dir)
+
+
+def test_raw_provenance_revalidates_seeded_source_hash(
+    verified_provenance_data,
+):
+    source = (
+        verified_provenance_data
+        / "raw/bref/NBA_2020_games-august.html"
+    )
+    source.write_bytes(source.read_bytes() + b"\n<!-- changed -->")
+    _rewrite_metadata(
+        source.with_name(source.name + ".meta.json"),
+        sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        content_length=len(source.read_bytes()),
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="seeded playoff source hash",
+    ):
+        playoff_build._raw_provenance(verified_provenance_data)
+
+
+def test_reference_provenance_attests_exact_regular_files(
+    verified_provenance_data,
+):
+    provenance = playoff_build._reference_provenance(
+        verified_provenance_data
+    )
+
+    assert provenance.keys() == set(REFERENCE_FILES)
+    for name, record in provenance.items():
+        assert record.keys() == {"path", "sha256"}
+        assert not Path(record["path"]).is_absolute()
+        assert record["path"] == f"reference/{name}"
+        assert record["sha256"] == hashlib.sha256(
+            (verified_provenance_data / record["path"]).read_bytes()
+        ).hexdigest()
+        assert len(record["sha256"]) == 64
+        assert record["sha256"] == record["sha256"].lower()
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_reference_provenance_rejects_non_regular_file(
+    verified_provenance_data, kind
+):
+    target = (
+        verified_provenance_data / "reference/playoff_site_rules.csv"
+    )
+    target.unlink()
+    if kind == "directory":
+        target.mkdir()
+    else:
+        replacement = verified_provenance_data / "replacement-reference"
+        replacement.write_bytes(b"unverified")
+        target.symlink_to(replacement)
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="reference file must be regular",
+    ):
+        playoff_build._reference_provenance(verified_provenance_data)
+
+
+def _install_synthetic_assembly(
+    monkeypatch, validation_case
+) -> dict:
+    report = playoff_build.validate(**validation_case)
+    evidence = {
+        key: validation_case[key]
+        for key in (
+            "evidence",
+            "hoopr_games",
+            "modern_regular",
+            "historical_regular",
+            "site_rule_matches",
+        )
+    }
+    evidence["source_rows"] = evidence.pop("evidence")
+    monkeypatch.setattr(
+        playoff_build,
+        "assemble",
+        lambda data_dir: (
+            validation_case["games"].copy(),
+            report.copy(),
+            evidence,
+        ),
+    )
+    return report
+
+
+def test_run_publishes_deterministic_attested_manifest(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    (data_dir / "reference/playoff_season_counts.csv").write_bytes(
+        (
+            repo_data_dir / "reference/playoff_season_counts.csv"
+        ).read_bytes()
+    )
+    expected_report = _install_synthetic_assembly(
+        monkeypatch, complete_validation_case
+    )
+
+    playoff_build.run(data_dir)
+
+    parquet_path = data_dir / "parquet/playoff_games.parquet"
+    manifest_path = data_dir / "parquet/playoff_games_manifest.json"
+    first_parquet = parquet_path.read_bytes()
+    first_manifest = manifest_path.read_bytes()
+    manifest = json.loads(first_manifest)
+    assert manifest.keys() == {
+        "schema_version",
+        "sources",
+        "references",
+        "versions",
+        "tables",
+        "validation",
+    }
+    assert manifest["schema_version"] == 1
+    assert manifest["sources"].keys() == {
+        "basketball_reference",
+        "hoopr",
+    }
+    assert manifest["references"].keys() == set(REFERENCE_FILES)
+    assert manifest["tables"].keys() == {"playoff_games"}
+    assert manifest["tables"]["playoff_games"]["schema"] == [
+        {"name": field.name, "arrow_type": str(field.type)}
+        for field in pq.read_schema(parquet_path)
+    ]
+    assert manifest["validation"] == expected_report
+    assert b"fetched_at" not in first_manifest
+    assert str(data_dir).encode() not in first_manifest
+    assert first_manifest.endswith(b"\n")
+    assert not list(data_dir.glob(".playoff-stage-*"))
+
+    playoff_build.run(data_dir)
+
+    assert parquet_path.read_bytes() == first_parquet
+    assert manifest_path.read_bytes() == first_manifest
+
+
+def test_run_rejects_changed_post_reread_validation_and_cleans_stage(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    (data_dir / "reference/playoff_season_counts.csv").write_bytes(
+        (
+            repo_data_dir / "reference/playoff_season_counts.csv"
+        ).read_bytes()
+    )
+    _install_synthetic_assembly(monkeypatch, complete_validation_case)
+    monkeypatch.setattr(
+        playoff_build,
+        "validate",
+        lambda *args, **kwargs: {"changed": True},
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="validation changed after Parquet re-read",
+    ):
+        playoff_build.run(data_dir)
+
+    assert not list(data_dir.glob(".playoff-stage-*"))
+
+
+def test_run_warns_when_committed_prior_pair_cleanup_is_retained(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    (data_dir / "reference/playoff_season_counts.csv").write_bytes(
+        (
+            repo_data_dir / "reference/playoff_season_counts.csv"
+        ).read_bytes()
+    )
+    _install_synthetic_assembly(monkeypatch, complete_validation_case)
+    retained = data_dir / ".playoff-rollback-retained"
+    real_publish = publication.publish_pair
+
+    def publish_and_retain(*args, **kwargs):
+        real_publish(*args, **kwargs)
+        return retained
+
+    monkeypatch.setattr(
+        publication, "publish_pair", publish_and_retain
+    )
+
+    with pytest.warns(
+        RuntimeWarning,
+        match="playoff publication committed; prior pair retained",
+    ):
+        playoff_build.run(data_dir)
+
+    assert not list(data_dir.glob(".playoff-stage-*"))

@@ -3,11 +3,26 @@
 from dataclasses import dataclass
 from datetime import date
 import hashlib
+import json
 from pathlib import Path
+import shutil
+import tempfile
+import warnings
 
 import pandas as pd
+import pyarrow.parquet as pq
 
-from nba_data import bref_schedule, franchises, hoopr, playoff_bref
+from nba_data import (
+    bref,
+    bref_schedule,
+    build,
+    cache,
+    franchises,
+    historical_build,
+    hoopr,
+    playoff_bref,
+    publication,
+)
 
 
 COUNT_COLUMNS = [
@@ -124,6 +139,16 @@ _SOURCE_INTEGER_COLUMNS = [
     "home_pts",
     "overtime_periods",
 ]
+REFERENCE_FILES = (
+    "franchises.csv",
+    "hoopr_snapshot.json",
+    "playoff_season_counts.csv",
+    "playoff_site_rules.csv",
+)
+PLAYOFF_PRODUCTS = (
+    "playoff_games.parquet",
+    "playoff_games_manifest.json",
+)
 
 
 class PlayoffValidationError(ValueError):
@@ -919,3 +944,293 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
         "site_rule_matches": site_rule_matches,
     }
     return games, report, evidence_bundle
+
+
+def _raw_provenance(data_dir: Path) -> dict:
+    """Attest every source consumed by the playoff publication."""
+    manifest_path = data_dir / "parquet/historical_games_manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise PlayoffValidationError(
+            "historical games manifest must be a regular file"
+        )
+    try:
+        historical_manifest_payload = manifest_path.read_bytes()
+        historical_manifest = json.loads(
+            historical_manifest_payload.decode("utf-8")
+        )
+        historical_sources = historical_build._raw_provenance(data_dir)
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        historical_build.HistoricalValidationError,
+    ) as exc:
+        raise PlayoffValidationError(
+            f"historical source provenance is invalid: {exc}"
+        ) from exc
+    try:
+        manifest_unchanged = (
+            manifest_path.read_bytes() == historical_manifest_payload
+        )
+    except OSError as exc:
+        raise PlayoffValidationError(
+            "historical manifest changed while attesting"
+        ) from exc
+    if not manifest_unchanged:
+        raise PlayoffValidationError(
+            "historical manifest changed while attesting"
+        )
+    if historical_manifest.get("sources") != historical_sources:
+        raise PlayoffValidationError(
+            "historical manifest sources differ from verified cache provenance"
+        )
+    historical_pages = list(
+        historical_sources["basketball_reference"]["pages"]
+    )
+
+    raw_dir = data_dir / "raw"
+    try:
+        playoff_paths = playoff_bref.validate_cache_inventory(
+            raw_dir, complete=True
+        )
+    except (OSError, ValueError, cache.CacheIntegrityError) as exc:
+        raise PlayoffValidationError(
+            f"playoff cache provenance is invalid: {exc}"
+        ) from exc
+
+    playoff_pages = []
+    stable_page_fields = (
+        "path",
+        "provider",
+        "resource",
+        "league",
+        "season",
+        "month",
+        "url",
+        "sha256",
+    )
+    seeded_fields = (
+        "seeded_from",
+        "seed_operation",
+        "source_sha256",
+    )
+    for path in playoff_paths:
+        try:
+            metadata = json.loads(
+                path.with_name(path.name + ".meta.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            record = {
+                "path": path.relative_to(data_dir).as_posix(),
+                **{
+                    field: metadata[field]
+                    for field in stable_page_fields
+                    if field != "path"
+                },
+            }
+            if metadata["resource"] == "play_in_schedule_month":
+                record.update({
+                    field: metadata[field] for field in seeded_fields
+                })
+                seeded_from = Path(metadata["seeded_from"])
+                if (
+                    seeded_from.is_absolute()
+                    or ".." in seeded_from.parts
+                    or seeded_from.as_posix()
+                    != (
+                        "raw/bref/"
+                        f"NBA_{metadata['season']}_games-"
+                        f"{metadata['month']}.html"
+                    )
+                ):
+                    raise PlayoffValidationError(
+                        "seeded playoff source path is invalid"
+                    )
+                source_path = data_dir / seeded_from
+                source_payload = cache.require_valid(
+                    source_path, bref.validate_payload
+                )
+                source_metadata = json.loads(
+                    source_path.with_name(
+                        source_path.name + ".meta.json"
+                    ).read_text(encoding="utf-8")
+                )
+                source_identity = {
+                    "provider": "basketball_reference",
+                    "season": metadata["season"],
+                    "month": metadata["month"],
+                }
+                if any(
+                    source_metadata.get(key) != value
+                    for key, value in source_identity.items()
+                ):
+                    raise PlayoffValidationError(
+                        "seeded playoff source sidecar identity mismatch"
+                    )
+                source_sha256 = hashlib.sha256(source_payload).hexdigest()
+                if (
+                    source_sha256 != metadata["source_sha256"]
+                    or source_sha256 != metadata["sha256"]
+                ):
+                    raise PlayoffValidationError(
+                        "seeded playoff source hash mismatch"
+                    )
+            playoff_pages.append(record)
+        except PlayoffValidationError:
+            raise
+        except (
+            KeyError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            cache.CacheIntegrityError,
+        ) as exc:
+            raise PlayoffValidationError(
+                f"playoff page provenance is invalid for {path.name}: {exc}"
+            ) from exc
+
+    hoopr_schedules = []
+    for season in range(2020, 2027):
+        path = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
+        try:
+            payload = hoopr._read_pinned_cache(path, season)
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            cache.CacheIntegrityError,
+        ) as exc:
+            raise PlayoffValidationError(
+                f"hoopR provenance is invalid for season {season}: {exc}"
+            ) from exc
+        if payload is None:
+            raise PlayoffValidationError(
+                f"hoopR pinned schedule is missing for season {season}"
+            )
+        url = (
+            "https://raw.githubusercontent.com/"
+            "sportsdataverse/hoopR-nba-data/"
+            f"{hoopr.SNAPSHOT['commit']}/nba/schedules/parquet/"
+            f"nba_schedule_{season}.parquet"
+        )
+        hoopr_schedules.append({
+            "path": path.relative_to(data_dir).as_posix(),
+            "provider": "hoopr",
+            "resource": "pinned_schedule",
+            "season": season,
+            "url": url,
+            "upstream_commit": hoopr.SNAPSHOT["commit"],
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        })
+
+    return {
+        "basketball_reference": {
+            "historical_manifest": {
+                "path": "parquet/historical_games_manifest.json",
+                "sha256": hashlib.sha256(
+                    historical_manifest_payload
+                ).hexdigest(),
+            },
+            "historical_pages": historical_pages,
+            "playoff_pages": playoff_pages,
+        },
+        "hoopr": {
+            "upstream_commit": hoopr.SNAPSHOT["commit"],
+            "schedules": hoopr_schedules,
+        },
+    }
+
+
+def _reference_provenance(data_dir: Path) -> dict:
+    """Attest the exact deterministic references used by the build."""
+    references = {}
+    for name in REFERENCE_FILES:
+        path = data_dir / "reference" / name
+        if path.is_symlink() or not path.is_file():
+            raise PlayoffValidationError(
+                f"reference file must be regular: {name}"
+            )
+        references[name] = {
+            "path": path.relative_to(data_dir).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    return references
+
+
+def run(data_dir: Path) -> None:
+    """Build and transactionally publish the attested playoff pair."""
+    expected_counts = load_expected_counts(
+        data_dir / "reference/playoff_season_counts.csv"
+    )
+    games, report, evidence = assemble(data_dir)
+    provenance = _raw_provenance(data_dir)
+    references = _reference_provenance(data_dir)
+    stage_dir = Path(
+        tempfile.mkdtemp(prefix=".playoff-stage-", dir=data_dir)
+    )
+    try:
+        parquet_path = stage_dir / "playoff_games.parquet"
+        games.to_parquet(
+            parquet_path,
+            engine="pyarrow",
+            compression="zstd",
+            index=False,
+        )
+        reread = pd.read_parquet(parquet_path)
+        build._assert_staged_frame(reread, games, "playoff_games")
+        pd.testing.assert_frame_equal(reread, games, check_like=False)
+        reread_report = validate(
+            reread,
+            expected_counts,
+            evidence=evidence["source_rows"],
+            hoopr_games=evidence["hoopr_games"],
+            modern_regular=evidence["modern_regular"],
+            historical_regular=evidence["historical_regular"],
+            site_rule_matches=evidence["site_rule_matches"],
+        )
+        if reread_report != report:
+            raise PlayoffValidationError(
+                "playoff validation changed after Parquet re-read"
+            )
+        table_manifest = build._table_manifest(parquet_path, reread)
+        table_manifest["schema"] = [
+            {"name": field.name, "arrow_type": str(field.type)}
+            for field in pq.read_schema(parquet_path)
+        ]
+        manifest = {
+            "schema_version": 1,
+            "sources": provenance,
+            "references": references,
+            "versions": build._dependency_versions(data_dir.parent),
+            "tables": {"playoff_games": table_manifest},
+            "validation": reread_report,
+        }
+        (stage_dir / "playoff_games_manifest.json").write_text(
+            json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+                allow_nan=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        retained_rollback = publication.publish_pair(
+            stage_dir,
+            data_dir / "parquet",
+            PLAYOFF_PRODUCTS,
+            label="playoff",
+        )
+        if retained_rollback is not None:
+            warnings.warn(
+                "playoff publication committed; prior pair retained at "
+                f"{retained_rollback}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    finally:
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir)
