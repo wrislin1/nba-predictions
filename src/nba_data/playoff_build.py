@@ -958,11 +958,16 @@ def _raw_provenance(data_dir: Path) -> dict:
         historical_manifest = json.loads(
             historical_manifest_payload.decode("utf-8")
         )
+        if not isinstance(historical_manifest, dict):
+            raise ValueError(
+                "historical games manifest must contain an object"
+            )
         historical_sources = historical_build._raw_provenance(data_dir)
     except (
         OSError,
         UnicodeDecodeError,
         json.JSONDecodeError,
+        ValueError,
         historical_build.HistoricalValidationError,
     ) as exc:
         raise PlayoffValidationError(
@@ -1016,11 +1021,7 @@ def _raw_provenance(data_dir: Path) -> dict:
     )
     for path in playoff_paths:
         try:
-            metadata = json.loads(
-                path.with_name(path.name + ".meta.json").read_text(
-                    encoding="utf-8"
-                )
-            )
+            metadata = playoff_bref.attest_cache_entry(path)
             record = {
                 "path": path.relative_to(data_dir).as_posix(),
                 **{
@@ -1048,14 +1049,14 @@ def _raw_provenance(data_dir: Path) -> dict:
                         "seeded playoff source path is invalid"
                     )
                 source_path = data_dir / seeded_from
-                source_payload = cache.require_valid(
+                source_attestation = cache.read_attested(
                     source_path, bref.validate_payload
                 )
-                source_metadata = json.loads(
-                    source_path.with_name(
-                        source_path.name + ".meta.json"
-                    ).read_text(encoding="utf-8")
-                )
+                if source_attestation is None:
+                    raise PlayoffValidationError(
+                        "seeded playoff source is missing"
+                    )
+                source_payload, source_metadata = source_attestation
                 source_identity = {
                     "provider": "basketball_reference",
                     "season": metadata["season"],

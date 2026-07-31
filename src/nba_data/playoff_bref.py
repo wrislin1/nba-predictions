@@ -403,7 +403,9 @@ def _contract_for_body(path: Path) -> tuple[int, str] | None:
     return None
 
 
-def _validate_inventory_entry(path: Path, season: int, kind: str) -> None:
+def _validate_inventory_entry(
+    path: Path, season: int, kind: str
+) -> dict:
     _ensure_regular(path, label="playoff cache body")
     sidecar = path.with_name(path.name + ".meta.json")
     _ensure_regular(sidecar, label="playoff cache sidecar")
@@ -419,20 +421,39 @@ def _validate_inventory_entry(path: Path, season: int, kind: str) -> None:
         }
     else:
         validator = lambda value: validate_seeded_play_in_page(value, season)
-        payload = cache.require_valid(path, validator)
+        attestation = cache.read_attested(path, validator)
+        if attestation is None:
+            raise cache.CacheIntegrityError(
+                f"missing playoff cache entry for {path}"
+            )
+        payload, metadata = attestation
         expected = _seed_metadata(season, payload)
-        metadata = _metadata(path)
         if any(metadata.get(key) != value for key, value in expected.items()):
             raise cache.CacheIntegrityError(
                 f"playoff cache inventory metadata mismatch for {path}"
             )
-        return
-    cache.require_valid(path, validator)
-    metadata = _metadata(path)
+        return metadata
+    attestation = cache.read_attested(path, validator)
+    if attestation is None:
+        raise cache.CacheIntegrityError(
+            f"missing playoff cache entry for {path}"
+        )
+    _, metadata = attestation
     if any(metadata.get(key) != value for key, value in expected.items()):
         raise cache.CacheIntegrityError(
             f"playoff cache inventory metadata mismatch for {path}"
         )
+    return metadata
+
+
+def attest_cache_entry(path: Path) -> dict:
+    """Return metadata bound to the exact validated playoff body snapshot."""
+    contract = _contract_for_body(path)
+    if contract is None:
+        raise cache.CacheIntegrityError(
+            f"playoff cache inventory contains unrelated entry: {path}"
+        )
+    return _validate_inventory_entry(path, *contract)
 
 
 def validate_cache_inventory(raw_dir: Path, *, complete: bool) -> tuple[Path, ...]:

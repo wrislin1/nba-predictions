@@ -12,6 +12,7 @@ from nba_data import (
     bref,
     cache,
     franchises,
+    historical_bref,
     historical_build,
     hoopr,
     playoff_bref,
@@ -1392,6 +1393,19 @@ def test_validate_returns_complete_deterministic_report(
 
 
 PLAYOFF_FIXTURES = Path(__file__).parent / "fixtures/playoff_bref"
+HISTORICAL_MONTH_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures/historical_bref/BAA_1947_games-november.html"
+)
+HISTORICAL_INDEX_PAYLOAD = (
+    b"<html><body>"
+    b'<a href="/leagues/BAA_1947_games-november.html">November</a>'
+    b"</body></html>"
+)
+HISTORICAL_MONTH_URL = (
+    "https://www.basketball-reference.com/leagues/"
+    "BAA_1947_games-november.html"
+)
 PAGE_FIELDS = {
     "path",
     "provider",
@@ -1424,11 +1438,43 @@ def _rewrite_metadata(path: Path, **changes) -> None:
     )
 
 
+def _seed_small_verified_historical_cache(data_dir: Path) -> None:
+    cache_dir = data_dir / "raw/historical_bref"
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games.html",
+        HISTORICAL_INDEX_PAYLOAD,
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_index",
+            "league": "BAA",
+            "season": 1947,
+            "url": historical_bref.index_url(1947),
+        },
+        lambda path: historical_bref.validate_index(path, 1947),
+    )
+    cache.publish_bytes(
+        cache_dir / "BAA_1947_games-november.html",
+        HISTORICAL_MONTH_FIXTURE.read_bytes(),
+        {
+            "provider": "basketball_reference",
+            "resource": "historical_schedule_month",
+            "league": "BAA",
+            "season": 1947,
+            "month": "november",
+            "url": HISTORICAL_MONTH_URL,
+        },
+        lambda path: historical_bref.validate_month(
+            path, 1947, HISTORICAL_MONTH_URL
+        ),
+    )
+
+
 def _seed_verified_provenance_data(data_dir: Path) -> None:
     parquet_dir = data_dir / "parquet"
     reference_dir = data_dir / "reference"
     parquet_dir.mkdir(parents=True)
     reference_dir.mkdir()
+    _seed_small_verified_historical_cache(data_dir)
     historical_sources = historical_build._raw_provenance(data_dir)
     (parquet_dir / "historical_games_manifest.json").write_text(
         json.dumps(
@@ -1530,7 +1576,30 @@ def test_raw_provenance_contains_only_stable_source_identity(
             ).read_bytes()
         ).hexdigest(),
     }
-    assert bref_sources["historical_pages"] == []
+    historical_manifest = json.loads(
+        (
+            verified_provenance_data
+            / "parquet/historical_games_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected_historical_pages = historical_manifest[
+        "sources"
+    ]["basketball_reference"]["pages"]
+    assert len(expected_historical_pages) == 2
+    assert bref_sources["historical_pages"] == expected_historical_pages
+    assert all(
+        set(record) == PAGE_FIELDS
+        for record in bref_sources["historical_pages"]
+    )
+    assert len({
+        (
+            record["resource"],
+            record["league"],
+            record["season"],
+            record["month"],
+        )
+        for record in bref_sources["historical_pages"]
+    }) == 2
     assert len(bref_sources["playoff_pages"]) == 50
     for record in bref_sources["playoff_pages"]:
         expected_fields = (
@@ -1574,6 +1643,52 @@ def test_raw_provenance_rejects_historical_manifest_source_drift(
     with pytest.raises(
         playoff_build.PlayoffValidationError,
         match="historical manifest sources",
+    ):
+        playoff_build._raw_provenance(verified_provenance_data)
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", "1", '"scalar"'])
+def test_raw_provenance_rejects_non_object_historical_manifest(
+    verified_provenance_data, payload
+):
+    manifest_path = (
+        verified_provenance_data
+        / "parquet/historical_games_manifest.json"
+    )
+    manifest_path.write_text(payload + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="historical source provenance is invalid",
+    ) as caught:
+        playoff_build._raw_provenance(verified_provenance_data)
+
+    assert isinstance(caught.value.__cause__, ValueError)
+
+
+def test_raw_provenance_rebinds_playoff_page_after_inventory_validation(
+    monkeypatch, verified_provenance_data
+):
+    real_validate = playoff_bref.validate_cache_inventory
+
+    def mutate_sidecar_after_validation(raw_dir, *, complete):
+        paths = real_validate(raw_dir, complete=complete)
+        sidecar = (
+            verified_provenance_data
+            / "raw/playoff_bref/NBA_1984_games.html.meta.json"
+        )
+        _rewrite_metadata(sidecar, sha256="0" * 64)
+        return paths
+
+    monkeypatch.setattr(
+        playoff_bref,
+        "validate_cache_inventory",
+        mutate_sidecar_after_validation,
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="playoff page provenance is invalid",
     ):
         playoff_build._raw_provenance(verified_provenance_data)
 

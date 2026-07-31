@@ -535,13 +535,14 @@ def _raw_provenance(data_dir: Path) -> dict:
             )
         index_path = indexes[0]
         try:
-            index_payload = cache.read_valid(
+            index_attestation = cache.read_attested(
                 index_path,
                 lambda path, value=season: historical_bref.validate_index(
                     path, value
                 ),
             )
-            assert index_payload is not None
+            assert index_attestation is not None
+            index_payload, _ = index_attestation
             discovered = historical_bref.discover_month_pages(
                 index_payload, season
             )
@@ -568,7 +569,7 @@ def _raw_provenance(data_dir: Path) -> dict:
                 if is_index else "historical_schedule_month"
             )
             try:
-                cache.read_valid(
+                attestation = cache.read_attested(
                     path,
                     (
                         (lambda value, year=season: historical_bref.validate_index(
@@ -583,11 +584,8 @@ def _raw_provenance(data_dir: Path) -> dict:
                         )
                     ),
                 )
-                metadata = json.loads(
-                    path.with_name(path.name + ".meta.json").read_text(
-                        encoding="utf-8"
-                    )
-                )
+                assert attestation is not None
+                _, metadata = attestation
             except (cache.CacheIntegrityError, ValueError, json.JSONDecodeError) as exc:
                 raise _cache_error(exc) from exc
             expected = {
