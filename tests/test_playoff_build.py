@@ -606,4 +606,6 @@ def test_committed_playoff_references_are_valid(repo_data_dir):
         repo_data_dir / "reference/playoff_site_rules.csv"
     )
     assert tuple(counts) == tuple(range(1947, 2027))
+    assert counts[1954].playoff_games == 23
+    assert counts[1954].first_postseason_date == date(1954, 3, 16)
     assert set(rules) == {2020}
