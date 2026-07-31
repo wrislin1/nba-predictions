@@ -2,11 +2,9 @@
 
 ## Status — 2026-07-30
 
-**Implementation complete; final whole-branch review pending.** Tasks 1–12
-are implemented on `playoff-game-results`; default, integration,
-deterministic-publication, non-interference, and independent recovery gates
-pass. Task 12 Step 10 remains pending for the controller’s final whole-branch
-review. The branch remains unmerged and unpushed for user review.
+**Complete.** Tasks 1–12 are implemented on `playoff-game-results`; default,
+integration, deterministic-publication, non-interference, and independent
+recovery gates pass. The branch remains unmerged and unpushed for user review.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3548,7 +3546,7 @@ git status --short
 Expected: no whitespace errors, no unfinished markers or unexplained skips,
 and only the intended documentation/plan changes remain.
 
-- [ ] **Step 10: Request whole-branch code review**
+- [x] **Step 10: Request whole-branch code review**
 
 Invoke `superpowers:requesting-code-review`. Give the reviewer the approved
 spec, this plan, the branch base from `git merge-base master HEAD`, and the
