@@ -154,6 +154,14 @@ PRESERVED_HISTORICAL_FILES = (
     "historical_games.parquet",
     "historical_games_manifest.json",
 )
+PRESERVED_PLAYOFF_FILES = (
+    "playoff_games.parquet",
+    "playoff_games_manifest.json",
+)
+PRESERVED_PUBLICATION_PAIRS = {
+    "historical": PRESERVED_HISTORICAL_FILES,
+    "playoff": PRESERVED_PLAYOFF_FILES,
+}
 MODERN_REFERENCE_FILES = (
     "franchises.csv",
     "game_corrections.csv",
@@ -1606,26 +1614,38 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
-def _copy_historical_publication(
+def _copy_independent_publications(
     output_dir: Path,
     stage_dir: Path,
 ) -> set[str]:
-    present = {
-        name
-        for name in PRESERVED_HISTORICAL_FILES
-        if (output_dir / name).exists() or (output_dir / name).is_symlink()
-    }
-    if present and present != set(PRESERVED_HISTORICAL_FILES):
-        raise ValidationError("historical publication pair is incomplete")
-    if any(
-        (output_dir / name).is_symlink()
-        or not (output_dir / name).is_file()
-        for name in present
-    ):
-        raise ValidationError("non-regular historical publication product")
-    for name in sorted(present):
-        shutil.copyfile(output_dir / name, stage_dir / name)
-    return present
+    preserved = set()
+    for label, products in PRESERVED_PUBLICATION_PAIRS.items():
+        present = {
+            name
+            for name in products
+            if (
+                (output_dir / name).exists()
+                or (output_dir / name).is_symlink()
+            )
+        }
+        if present and present != set(products):
+            raise ValidationError(
+                f"{label} publication pair is incomplete"
+            )
+        if any(
+            (output_dir / name).is_symlink()
+            or not (output_dir / name).is_file()
+            for name in present
+        ):
+            raise ValidationError(
+                f"non-regular {label} publication product"
+            )
+        for name in sorted(present):
+            shutil.copyfile(
+                output_dir / name, stage_dir / name
+            )
+        preserved.update(present)
+    return preserved
 
 
 def _dependency_versions(project_dir: Path) -> dict:
@@ -1769,7 +1789,7 @@ def run(data_dir: Path) -> None:
         tempfile.mkdtemp(prefix=".parquet-stage-", dir=data_dir)
     )
     try:
-        preserved = _copy_historical_publication(
+        preserved = _copy_independent_publications(
             data_dir / "parquet", stage_dir
         )
         existing_placeholder = data_dir / "parquet/.gitkeep"

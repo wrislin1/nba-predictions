@@ -18,7 +18,9 @@ test ! -e "$destination" || {
 
 mkdir -p "$destination/raw"
 cp "$manifest" "$destination/build_manifest.json"
-rsync -a --checksum --exclude='/historical_bref/' \
+rsync -a --checksum \
+  --exclude='/historical_bref/' \
+  --exclude='/playoff_bref/' \
   "$root/data/raw/" "$destination/raw/"
 (
   cd "$destination"
@@ -29,7 +31,9 @@ rsync -a --checksum --exclude='/historical_bref/' \
 )
 
 changes="$(
-  rsync -a --checksum --dry-run --itemize-changes --exclude='/historical_bref/' \
+  rsync -a --checksum --dry-run --itemize-changes \
+    --exclude='/historical_bref/' \
+    --exclude='/playoff_bref/' \
     "$root/data/raw/" "$destination/raw/"
 )"
 test -z "$changes" || {

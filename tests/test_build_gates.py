@@ -2139,65 +2139,104 @@ def test_run_publishes_exact_tables_and_deterministic_manifest(
     assert "fetched_at" not in json.dumps(manifest)
 
 
-def test_run_preserves_complete_historical_publication_pair(monkeypatch, tmp_path):
-    """Would fail if the modern directory swap discarded historical bytes."""
+def test_modern_publish_preserves_both_independent_pairs(
+    tmp_path, monkeypatch
+):
+    """Would fail if the modern directory swap discarded either product pair."""
     data_dir = tmp_path / "data"
     publication_fixture(monkeypatch, data_dir)
     output_dir = data_dir / "parquet"
     output_dir.mkdir()
-    historical = {
-        "historical_games.parquet": b"historical parquet bytes",
-        "historical_games_manifest.json": b"historical manifest bytes",
+    products = {
+        **{
+            name: f"historical-{name}".encode()
+            for name in build.PRESERVED_HISTORICAL_FILES
+        },
+        **{
+            name: f"playoff-{name}".encode()
+            for name in build.PRESERVED_PLAYOFF_FILES
+        },
     }
-    for name, payload in historical.items():
+    for name, payload in products.items():
         (output_dir / name).write_bytes(payload)
 
     build.run(data_dir)
 
-    assert {name: (output_dir / name).read_bytes() for name in historical} == historical
+    assert {
+        name: (output_dir / name).read_bytes()
+        for name in products
+    } == products
 
 
-def test_run_rejects_incomplete_historical_publication_pair(monkeypatch, tmp_path):
-    """Would fail if a modern rebuild replaced an orphan historical product."""
-    data_dir = tmp_path / "data"
-    publication_fixture(monkeypatch, data_dir)
-    output_dir = data_dir / "parquet"
-    output_dir.mkdir()
-    orphan = output_dir / "historical_games.parquet"
-    orphan.write_bytes(b"orphaned historical bytes")
-
-    with pytest.raises(
-        build.ValidationError,
-        match="historical publication pair is incomplete",
-    ):
-        build.run(data_dir)
-
-    assert orphan.read_bytes() == b"orphaned historical bytes"
-
-
-@pytest.mark.parametrize("kind", ["directory", "symlink"])
-def test_modern_preservation_rejects_non_regular_historical_inputs(tmp_path, kind):
-    """Would fail if a modern swap silently dropped a non-file historical input."""
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+def test_modern_publish_rejects_incomplete_independent_pair(
+    tmp_path, label, products
+):
+    """Would fail if a modern rebuild replaced an orphan independent product."""
     output = tmp_path / "parquet"
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
-    for name in build.PRESERVED_HISTORICAL_FILES:
-        (output / name).write_bytes(b"historical")
-    target = output / build.PRESERVED_HISTORICAL_FILES[0]
+    (output / products[0]).write_bytes(b"orphan")
+
+    with pytest.raises(
+        build.ValidationError,
+        match=rf"{label} publication pair is incomplete",
+    ):
+        build._copy_independent_publications(output, stage)
+
+
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_modern_publish_rejects_non_regular_independent_product(
+    tmp_path, label, products, kind
+):
+    """Would fail if a modern swap silently dropped a non-regular product."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    for name in products:
+        (output / name).write_bytes(label.encode())
+    target = output / products[0]
     target.unlink()
     if kind == "directory":
         target.mkdir()
     else:
-        replacement = tmp_path / "historical-product"
-        replacement.write_bytes(b"historical")
+        replacement = tmp_path / f"{label}-product"
+        replacement.write_bytes(label.encode())
         target.symlink_to(replacement)
 
     with pytest.raises(
         build.ValidationError,
-        match="non-regular historical publication product",
+        match=rf"non-regular {label} publication product",
     ):
-        build._copy_historical_publication(output, stage)
+        build._copy_independent_publications(output, stage)
+
+
+def test_modern_publish_excludes_unknown_prior_output(monkeypatch, tmp_path):
+    """Would fail if an unknown prior output entered the modern publication."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output = data_dir / "parquet"
+    output.mkdir()
+    (output / "unknown-product.bin").write_bytes(b"not independently owned")
+
+    build.run(data_dir)
+
+    assert not (output / "unknown-product.bin").exists()
 
 
 def test_modern_manifest_omits_historical_only_references(monkeypatch, tmp_path):
@@ -2243,6 +2282,19 @@ def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
         "season_label": "2025-26",
         "sha256": digest,
     }]
+
+
+def test_raw_provenance_does_not_own_playoff_cache(tmp_path):
+    """Would fail if the modern builder traversed playoff-owned raw data."""
+    data_dir = tmp_path / "data"
+    before = build._raw_provenance(data_dir)
+    playoff_cache = data_dir / "raw/playoff_bref"
+    playoff_cache.mkdir(parents=True)
+    (playoff_cache / "unrelated.file").write_bytes(b"deliberately invalid")
+
+    after = build._raw_provenance(data_dir)
+
+    assert after == before
 
 
 @pytest.mark.parametrize(

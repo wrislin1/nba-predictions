@@ -506,6 +506,69 @@ def run_raw_restore(
     )
 
 
+def test_modern_raw_snapshot_excludes_independent_caches(tmp_path) -> None:
+    """Would fail if a modern snapshot archived either independent cache."""
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    for name in ("archive_raw_snapshot.sh", "restore_raw.sh"):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    manifest = repo / "data/parquet/build_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"tables": {"games": {"max_season": 2026}}}) + "\n",
+        encoding="utf-8",
+    )
+    raw_files = {
+        "stats_nba/leaguegamefinder_2026.json": b'{"resultSets":[]}',
+        "bref/NBA_2026_games.html": b"<html>schedule</html>",
+        "hoopr/nba_schedule_2026.parquet": b"parquet fixture",
+        "historical_bref/198501010BOS.html": b"<html>historical</html>",
+        "playoff_bref/202604180BOS.html": b"<html>playoff</html>",
+    }
+    for relative, payload in raw_files.items():
+        path = repo / "data/raw" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    archive_root = tmp_path / "archive"
+    completed = subprocess.run(
+        ["bash", "scripts/archive_raw_snapshot.sh"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "NBA_RAW_ARCHIVE_ROOT": str(archive_root)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    [snapshot] = archive_root.iterdir()
+    expected = {
+        "stats_nba/leaguegamefinder_2026.json",
+        "bref/NBA_2026_games.html",
+        "hoopr/nba_schedule_2026.parquet",
+    }
+    archived = {
+        path.relative_to(snapshot / "raw").as_posix()
+        for path in (snapshot / "raw").rglob("*")
+        if path.is_file()
+    }
+    assert archived == expected
+    assert not (snapshot / "raw/historical_bref").exists()
+    assert not (snapshot / "raw/playoff_bref").exists()
+
+    shutil.rmtree(repo / "data/raw")
+    restored = run_raw_restore(repo, archive_root)
+
+    assert restored.returncode == 0, restored.stderr
+    restored_files = {
+        path.relative_to(repo / "data/raw").as_posix()
+        for path in (repo / "data/raw").rglob("*")
+        if path.is_file()
+    }
+    assert restored_files == expected
+    assert not (repo / "data/raw/historical_bref").exists()
+    assert not (repo / "data/raw/playoff_bref").exists()
+
+
 def test_restore_raw_restores_verified_full_snapshot(tmp_path) -> None:
     """Would fail if recovery restored only the two legacy inputs."""
     repo, archive_root, snapshot = seed_raw_snapshot(tmp_path)
