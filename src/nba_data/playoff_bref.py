@@ -54,6 +54,23 @@ TYPE_REMARKS = frozenset({
     "tiebreaker",
     "protest; does not count toward record",
 })
+MODERN_NEUTRAL_REMARKS = frozenset({
+    "at seattle, wa (seattle coliseum)",
+    "at university park, tx",
+    'at seattle, wa (clarence s. "hec" edmundson pavillion)',
+    "at kingdome",
+    "at anaheim, ca (anaheim convention center)",
+    "at las vegas, nv",
+    "at atlanta, ga (alexander memorial coliseum at mcdonald's center)",
+})
+MODERN_NONSITE_REMARKS = frozenset({
+    "memorial day massacre",
+    "the shot",
+    "the shot 2",
+    "gatorlode game",
+    "mj's flu game",
+    "lebron's 48 special",
+})
 
 
 def playoff_url(season: int) -> str:
@@ -123,11 +140,26 @@ def validate_dedicated_page(path: Path, season: int) -> None:
     """Require a completed, box-score-backed dedicated playoff schedule."""
     url = playoff_url(season)
     payload = path.read_bytes()
+    try:
+        root = html.fromstring(payload)
+    except (TypeError, ValueError, etree.ParserError) as exc:
+        raise ValueError(f"{url}: invalid HTML") from exc
     _reject_unfinalized_rows(payload, url=url)
     frame = bref_schedule.parse_schedule_page(
         payload, season=season, league="NBA", schedule_url=url
     )
     _validate_frame(frame, label=url)
+    heading = [
+        " ".join("".join(value.itertext()).split())
+        for value in root.xpath("//h1")
+    ]
+    canonical = root.xpath("//link[@rel='canonical']/@href")
+    if heading != [f"{season} NBA Playoffs Schedule and Results"] or canonical != [
+        f"{BASE_URL}/playoffs/NBA_{season}.html"
+    ]:
+        raise ValueError(f"{url}: dedicated playoff season identity mismatch")
+    if bool(frame["game_date"].map(lambda value: value.year).ne(season).any()):
+        raise ValueError(f"{url}: completed dates must be in {season}")
 
 
 def validate_seeded_play_in_page(path: Path, season: int) -> None:
@@ -164,11 +196,22 @@ def _require_unique_results(frame: pd.DataFrame, *, label: str) -> None:
         raise ValueError(f"{label}: duplicate result identities")
 
 
-def _normalize_type_remarks(frame: pd.DataFrame) -> pd.DataFrame:
+def _classify_modern_remarks(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     normalized = result["game_remarks"].astype("string").str.strip().str.casefold()
+    neutral = normalized.isin(MODERN_NEUTRAL_REMARKS)
+    nonsite = normalized.isin(MODERN_NONSITE_REMARKS)
+    type_remark = normalized.isin(TYPE_REMARKS)
+    blank = normalized.isna() | normalized.eq("")
+    invalid = normalized.notna() & ~(neutral | nonsite | type_remark | blank)
+    if bool(invalid.any()):
+        raise ValueError(
+            "unrecognized modern game remark: "
+            f"{normalized.loc[invalid].iloc[0]}"
+        )
+    result.loc[neutral, "site_status"] = "neutral"
     result.loc[
-        normalized.isin(TYPE_REMARKS) & result["site_status"].eq("unknown"),
+        (nonsite | type_remark) & result["site_status"].eq("unknown"),
         "site_status",
     ] = "home"
     return result
@@ -257,7 +300,7 @@ def load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame:
         schedule_url=playoff_url(season),
     )
     dedicated["game_type"] = "playoff"
-    frames = [_normalize_type_remarks(dedicated)]
+    frames = [_classify_modern_remarks(dedicated)]
     if season in PLAY_IN_MONTHS:
         play_in_path = cache_dir / _play_in_filename(season)
         seeded = bref_schedule.parse_schedule_page(
@@ -272,7 +315,7 @@ def load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame:
         normalized = seeded["game_remarks"].astype("string").str.strip().str.casefold()
         play_in = seeded.loc[normalized.eq("play-in game")].copy()
         play_in["game_type"] = "play_in"
-        frames.append(_normalize_type_remarks(play_in))
+        frames.append(_classify_modern_remarks(play_in))
     combined = pd.concat(frames, ignore_index=True)
     combined = bref_schedule.assign_game_ids(combined.drop(columns=["game_id"]))
     _require_unique(combined, label=f"{season} modern postseason")

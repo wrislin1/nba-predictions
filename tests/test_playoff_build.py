@@ -2,7 +2,9 @@ from datetime import date
 import hashlib
 from io import BytesIO
 import json
+import os
 from pathlib import Path
+import shutil
 
 import pandas as pd
 import pytest
@@ -1488,11 +1490,23 @@ def _seed_verified_provenance_data(data_dir: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    empty_regular = pd.DataFrame(
+        columns=playoff_build.REGULAR_OVERLAP_KEY
+    )
+    empty_regular.to_parquet(
+        parquet_dir / "games.parquet", index=False
+    )
+    empty_regular.to_parquet(
+        parquet_dir / "historical_games.parquet", index=False
+    )
 
-    dedicated_payload = (
+    dedicated_template = (
         PLAYOFF_FIXTURES / "NBA_1984_games.html"
     ).read_bytes()
     for season in playoff_bref.DEDICATED_SEASONS:
+        dedicated_payload = dedicated_template.replace(
+            b"1984", str(season).encode()
+        )
         path = (
             data_dir
             / "raw/playoff_bref"
@@ -1548,10 +1562,17 @@ def _seed_verified_provenance_data(data_dir: Path) -> None:
             hoopr.validate_payload,
         )
 
+    runtime_references = {
+        "franchises.csv": franchises.REFERENCE.read_bytes(),
+        "hoopr_snapshot.json": hoopr.SNAPSHOT_PATH.read_bytes(),
+    }
     for name in REFERENCE_FILES:
         path = reference_dir / name
         if not path.exists():
-            path.write_text(f"verified {name}\n", encoding="utf-8")
+            payload = runtime_references.get(
+                name, f"verified {name}\n".encode()
+            )
+            path.write_bytes(payload)
 
 
 @pytest.fixture
@@ -1835,6 +1856,255 @@ def test_reference_provenance_rejects_non_regular_file(
         playoff_build._reference_provenance(verified_provenance_data)
 
 
+def test_reference_provenance_rejects_checkout_franchise_mismatch(
+    verified_provenance_data,
+):
+    reference = verified_provenance_data / "reference/franchises.csv"
+    reference.write_bytes(reference.read_bytes() + b"\n")
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="franchise reference differs from the packaged runtime reference",
+    ):
+        playoff_build._reference_provenance(verified_provenance_data)
+
+
+def test_reference_provenance_rejects_checkout_hoopr_snapshot_mismatch(
+    verified_provenance_data,
+):
+    reference = verified_provenance_data / "reference/hoopr_snapshot.json"
+    snapshot = json.loads(reference.read_text(encoding="utf-8"))
+    snapshot["commit"] = "different-commit"
+    reference.write_text(json.dumps(snapshot), encoding="utf-8")
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="hoopR snapshot reference differs from the packaged runtime reference",
+    ):
+        playoff_build._reference_provenance(verified_provenance_data)
+
+
+def test_reference_provenance_rejects_divergent_franchise_runtime_state(
+    monkeypatch, verified_provenance_data
+):
+    runtime_frame = franchises.load_reference().copy(deep=True)
+    runtime_frame.loc[0, "franchise_id"] = "DIVERGENT"
+    monkeypatch.setattr(
+        franchises, "load_reference", lambda: runtime_frame
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="franchise runtime state differs from the packaged reference",
+    ):
+        playoff_build._reference_provenance(verified_provenance_data)
+
+
+def test_reference_provenance_rejects_divergent_hoopr_runtime_state(
+    monkeypatch, verified_provenance_data
+):
+    monkeypatch.setattr(
+        hoopr,
+        "SNAPSHOT",
+        {**hoopr.SNAPSHOT, "commit": "divergent-runtime-commit"},
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="hoopR runtime state differs from the packaged reference",
+    ):
+        playoff_build._reference_provenance(verified_provenance_data)
+
+
+def _mutate_bound_input(data_dir: Path, kind: str) -> None:
+    if kind == "raw_pair":
+        path = data_dir / "raw/playoff_bref/NBA_1984_games.html"
+        payload = path.read_bytes().replace(b">113<", b">114<", 1)
+        path.write_bytes(payload)
+        _rewrite_metadata(
+            path.with_name(path.name + ".meta.json"),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            content_length=len(payload),
+        )
+    elif kind == "reference":
+        path = data_dir / "reference/playoff_site_rules.csv"
+        path.write_bytes(path.read_bytes() + b"changed\n")
+    elif kind == "historical_raw":
+        path = (
+            data_dir
+            / "raw/historical_bref/BAA_1947_games-november.html"
+        )
+        payload = path.read_bytes() + b"\n"
+        path.write_bytes(payload)
+        _rewrite_metadata(
+            path.with_name(path.name + ".meta.json"),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            content_length=len(payload),
+        )
+    elif kind == "seeded_raw":
+        path = data_dir / "raw/bref/NBA_2020_games-august.html"
+        payload = path.read_bytes() + b"\n"
+        path.write_bytes(payload)
+        _rewrite_metadata(
+            path.with_name(path.name + ".meta.json"),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            content_length=len(payload),
+        )
+    elif kind == "historical_manifest":
+        path = data_dir / "parquet/historical_games_manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["changed"] = True
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    elif kind == "hoopr":
+        path = data_dir / "raw/hoopr/nba_schedule_2020.parquet"
+        pd.DataFrame({"game_id": [2]}).to_parquet(path, index=False)
+        _rewrite_metadata(
+            path.with_name(path.name + ".meta.json"),
+            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            content_length=len(path.read_bytes()),
+        )
+    elif kind == "regular":
+        path = data_dir / "parquet/games.parquet"
+        pd.DataFrame([{
+            "season": 2020,
+            "game_date": date(2020, 1, 1),
+            "away_franchise_id": "ATL",
+            "home_franchise_id": "BOS",
+            "away_pts": 1,
+            "home_pts": 2,
+        }]).to_parquet(path, index=False)
+    elif kind == "historical_regular":
+        path = data_dir / "parquet/historical_games.parquet"
+        pd.DataFrame([{
+            "season": 1947,
+            "game_date": date(1946, 11, 1),
+            "away_franchise_id": "ATL",
+            "home_franchise_id": "BOS",
+            "away_pts": 1,
+            "home_pts": 2,
+        }]).to_parquet(path, index=False)
+    else:  # pragma: no cover - test helper contract
+        raise AssertionError(kind)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "raw_pair",
+        "historical_raw",
+        "seeded_raw",
+        "reference",
+        "historical_manifest",
+        "hoopr",
+        "regular",
+        "historical_regular",
+    ],
+)
+def test_input_snapshot_rejects_copy_boundary_mutation(
+    monkeypatch, verified_provenance_data, kind
+):
+    real_copy = playoff_build._copy_input_file
+    mutated = False
+
+    def mutate_after_copy(source, destination):
+        nonlocal mutated
+        attestation = real_copy(source, destination)
+        if not mutated:
+            target_markers = {
+                "raw_pair": "NBA_1984_games.html",
+                "historical_raw": "BAA_1947_games-november.html",
+                "seeded_raw": "NBA_2020_games-august.html",
+                "reference": "playoff_site_rules.csv",
+                "historical_manifest": "historical_games_manifest.json",
+                "hoopr": "nba_schedule_2020.parquet",
+                "regular": "games.parquet",
+                "historical_regular": "historical_games.parquet",
+            }
+            is_target = Path(source).name == target_markers[kind]
+            if kind == "seeded_raw":
+                is_target = is_target and Path(source).parent.name == "bref"
+            if is_target:
+                _mutate_bound_input(verified_provenance_data, kind)
+                mutated = True
+        return attestation
+
+    monkeypatch.setattr(
+        playoff_build, "_copy_input_file", mutate_after_copy
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="input changed while creating snapshot",
+    ):
+        playoff_build._capture_input_snapshot(verified_provenance_data)
+
+    assert mutated
+    assert not list(
+        verified_provenance_data.glob(".playoff-inputs-*")
+    )
+
+
+def test_input_snapshot_rejects_byte_identical_destination_symlink(
+    verified_provenance_data,
+):
+    snapshot = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+    try:
+        record = snapshot.files[0]
+        record.destination.unlink()
+        record.destination.symlink_to(record.source)
+
+        with pytest.raises(
+            playoff_build.PlayoffValidationError,
+            match="playoff snapshot changed",
+        ):
+            snapshot.verify_unchanged(message="playoff snapshot changed")
+    finally:
+        shutil.rmtree(snapshot.root)
+
+
+def test_input_snapshot_rejects_directory_path_swap_during_recheck(
+    monkeypatch, verified_provenance_data
+):
+    snapshot = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+    directory = snapshot.directories[0]
+    moved = directory.source.with_name(directory.source.name + "-moved")
+    real_listdir = os.listdir
+    swapped = False
+
+    def swap_after_directory_attestation(path):
+        nonlocal swapped
+        if isinstance(path, int):
+            observed_path = Path(os.readlink(f"/proc/self/fd/{path}"))
+        else:
+            observed_path = Path(path)
+        if not swapped and observed_path == directory.source:
+            os.replace(directory.source, moved)
+            directory.source.symlink_to(moved, target_is_directory=True)
+            swapped = True
+        return real_listdir(path)
+
+    monkeypatch.setattr(
+        playoff_build.os, "listdir", swap_after_directory_attestation
+    )
+    try:
+        with pytest.raises(
+            playoff_build.PlayoffValidationError,
+            match="playoff snapshot changed",
+        ):
+            snapshot.verify_unchanged(message="playoff snapshot changed")
+        assert swapped
+    finally:
+        if directory.source.is_symlink():
+            directory.source.unlink()
+        if moved.exists():
+            os.replace(moved, directory.source)
+        shutil.rmtree(snapshot.root)
+
+
 def _install_synthetic_assembly(
     monkeypatch, validation_case
 ) -> dict:
@@ -1860,6 +2130,119 @@ def _install_synthetic_assembly(
         ),
     )
     return report
+
+
+def _seed_prior_playoff_pair(data_dir: Path) -> dict[str, bytes]:
+    output = data_dir / "parquet"
+    parquet = b"prior playoff parquet"
+    manifest = json.dumps({
+        "tables": {
+            "playoff_games": {
+                "sha256": hashlib.sha256(parquet).hexdigest(),
+            },
+        },
+    }, sort_keys=True).encode()
+    payloads = {
+        "playoff_games.parquet": parquet,
+        "playoff_games_manifest.json": manifest,
+    }
+    for name, payload in payloads.items():
+        (output / name).write_bytes(payload)
+    return payloads
+
+
+def _prepare_synthetic_run(
+    monkeypatch,
+    data_dir: Path,
+    complete_validation_case: dict,
+    repo_data_dir: Path,
+):
+    (data_dir / "reference/playoff_season_counts.csv").write_bytes(
+        (
+            repo_data_dir / "reference/playoff_season_counts.csv"
+        ).read_bytes()
+    )
+    _install_synthetic_assembly(monkeypatch, complete_validation_case)
+
+
+def test_run_rejects_raw_pair_drift_after_assembly_and_preserves_prior_pair(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    _prepare_synthetic_run(
+        monkeypatch,
+        data_dir,
+        complete_validation_case,
+        repo_data_dir,
+    )
+    prior = _seed_prior_playoff_pair(data_dir)
+    snapshot_assemble = playoff_build.assemble
+
+    def mutate_original_after_assembly(snapshot_dir):
+        result = snapshot_assemble(snapshot_dir)
+        assert snapshot_dir != data_dir
+        _mutate_bound_input(data_dir, "raw_pair")
+        return result
+
+    monkeypatch.setattr(
+        playoff_build, "assemble", mutate_original_after_assembly
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="playoff input changed before publication",
+    ):
+        playoff_build.run(data_dir)
+
+    assert {
+        name: (data_dir / "parquet" / name).read_bytes()
+        for name in prior
+    } == prior
+
+
+def test_run_rejects_reference_drift_after_provenance_and_preserves_prior_pair(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    _prepare_synthetic_run(
+        monkeypatch,
+        data_dir,
+        complete_validation_case,
+        repo_data_dir,
+    )
+    prior = _seed_prior_playoff_pair(data_dir)
+    snapshot_reference_provenance = playoff_build._reference_provenance
+
+    def mutate_original_after_provenance(snapshot_dir, **kwargs):
+        result = snapshot_reference_provenance(
+            snapshot_dir, **kwargs
+        )
+        assert snapshot_dir != data_dir
+        _mutate_bound_input(data_dir, "reference")
+        return result
+
+    monkeypatch.setattr(
+        playoff_build,
+        "_reference_provenance",
+        mutate_original_after_provenance,
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="playoff input changed before publication",
+    ):
+        playoff_build.run(data_dir)
+
+    assert {
+        name: (data_dir / "parquet" / name).read_bytes()
+        for name in prior
+    } == prior
 
 
 def test_run_publishes_deterministic_attested_manifest(
@@ -1947,6 +2330,46 @@ def test_run_rejects_changed_post_reread_validation_and_cleans_stage(
         playoff_build.run(data_dir)
 
     assert not list(data_dir.glob(".playoff-stage-*"))
+
+
+def test_run_attempts_snapshot_cleanup_when_stage_cleanup_fails(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    (data_dir / "reference/playoff_season_counts.csv").write_bytes(
+        (
+            repo_data_dir / "reference/playoff_season_counts.csv"
+        ).read_bytes()
+    )
+    _install_synthetic_assembly(monkeypatch, complete_validation_case)
+    monkeypatch.setattr(
+        playoff_build,
+        "validate",
+        lambda *args, **kwargs: {"changed": True},
+    )
+    real_rmtree = shutil.rmtree
+
+    def fail_stage_cleanup(path, *args, **kwargs):
+        if Path(path).name.startswith(".playoff-stage-"):
+            raise OSError("seeded stage cleanup failure")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        playoff_build.shutil, "rmtree", fail_stage_cleanup
+    )
+    try:
+        with pytest.raises(OSError, match="seeded stage cleanup failure"):
+            playoff_build.run(data_dir)
+
+        assert not list(data_dir.glob(".playoff-inputs-*"))
+    finally:
+        for stage in data_dir.glob(".playoff-stage-*"):
+            real_rmtree(stage)
+        for snapshot in data_dir.glob(".playoff-inputs-*"):
+            real_rmtree(snapshot)
 
 
 def test_run_warns_when_committed_prior_pair_cleanup_is_retained(

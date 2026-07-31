@@ -4,10 +4,13 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 import warnings
+from typing import cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -150,6 +153,13 @@ PLAYOFF_PRODUCTS = (
     "playoff_games_manifest.json",
 )
 
+_SNAPSHOT_REFERENCE_FILES = REFERENCE_FILES
+_SNAPSHOT_PARQUET_FILES = (
+    "games.parquet",
+    "historical_games.parquet",
+    "historical_games_manifest.json",
+)
+
 
 class PlayoffValidationError(ValueError):
     """Raised when a playoff reference or site rule is invalid."""
@@ -176,6 +186,387 @@ class SiteRule:
     expected_matches: int
     source_url: str
     note: str
+
+
+@dataclass(frozen=True)
+class _InputFileAttestation:
+    source: Path
+    destination: Path
+    identity: tuple[int, int, int]
+    sha256: str
+
+
+@dataclass(frozen=True)
+class _InputDirectoryAttestation:
+    source: Path
+    identity: tuple[int, int, int]
+    entries: tuple[str, ...]
+
+
+def _sha256_pinned_regular(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int, int] | None,
+    message: str,
+) -> str:
+    """Hash one path without following it or losing its object binding."""
+    file_fd = None
+    try:
+        observed = path.lstat()
+        identity = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+        )
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or (
+                expected_identity is not None
+                and identity != expected_identity
+            )
+        ):
+            raise PlayoffValidationError(message)
+        file_fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(file_fd)
+        if (opened.st_dev, opened.st_ino, opened.st_mode) != identity:
+            raise PlayoffValidationError(message)
+        digest = hashlib.sha256()
+        with os.fdopen(os.dup(file_fd), "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        final_fd = os.fstat(file_fd)
+        final_path = path.lstat()
+        if (
+            final_fd.st_dev,
+            final_fd.st_ino,
+            final_fd.st_mode,
+        ) != identity or (
+            final_path.st_dev,
+            final_path.st_ino,
+            final_path.st_mode,
+        ) != identity:
+            raise PlayoffValidationError(message)
+        return digest.hexdigest()
+    except PlayoffValidationError:
+        raise
+    except OSError as exc:
+        raise PlayoffValidationError(message) from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+
+
+def _require_pinned_directory(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int, int],
+    expected_entries: tuple[str, ...],
+    message: str,
+) -> None:
+    """Verify one directory inventory through a pinned no-follow handle."""
+    directory_fd = None
+    try:
+        observed = path.lstat()
+        identity = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+        )
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or identity != expected_identity
+        ):
+            raise PlayoffValidationError(message)
+        directory_fd = os.open(
+            path,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(directory_fd)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+        ) != expected_identity:
+            raise PlayoffValidationError(message)
+        entries = tuple(sorted(os.listdir(directory_fd)))
+        final_fd = os.fstat(directory_fd)
+        final_path = path.lstat()
+        if (
+            entries != expected_entries
+            or (
+                final_fd.st_dev,
+                final_fd.st_ino,
+                final_fd.st_mode,
+            ) != expected_identity
+            or (
+                final_path.st_dev,
+                final_path.st_ino,
+                final_path.st_mode,
+            ) != expected_identity
+        ):
+            raise PlayoffValidationError(message)
+    except PlayoffValidationError:
+        raise
+    except OSError as exc:
+        raise PlayoffValidationError(message) from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+@dataclass
+class _InputSnapshot:
+    root: Path
+    files: list[_InputFileAttestation]
+    directories: list[_InputDirectoryAttestation]
+
+    def verify_unchanged(self, *, message: str) -> None:
+        try:
+            for directory in self.directories:
+                _require_pinned_directory(
+                    directory.source,
+                    expected_identity=directory.identity,
+                    expected_entries=directory.entries,
+                    message=f"{message}: {directory.source}",
+                )
+            for record in self.files:
+                if (
+                    _sha256_pinned_regular(
+                        record.source,
+                        expected_identity=record.identity,
+                        message=f"{message}: {record.source}",
+                    ) != record.sha256
+                    or _sha256_pinned_regular(
+                        record.destination,
+                        expected_identity=None,
+                        message=f"{message}: {record.source}",
+                    ) != record.sha256
+                ):
+                    raise PlayoffValidationError(
+                        f"{message}: {record.source}"
+                    )
+        except PlayoffValidationError:
+            raise
+        except OSError as exc:
+            raise PlayoffValidationError(message) from exc
+
+
+def _copy_input_file(
+    source: Path, destination: Path
+) -> _InputFileAttestation:
+    """Copy and bind one regular input without following either path."""
+    try:
+        observed = source.lstat()
+        if not stat.S_ISREG(observed.st_mode):
+            raise PlayoffValidationError(
+                f"playoff input must be a regular file: {source}"
+            )
+        identity = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+        )
+        source_fd = os.open(
+            source,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            opened = os.fstat(source_fd)
+            if (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+            ) != identity:
+                raise PlayoffValidationError(
+                    f"input changed while creating snapshot: {source}"
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination_fd = os.open(
+                destination,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                stat.S_IMODE(observed.st_mode),
+            )
+            digest = hashlib.sha256()
+            try:
+                with (
+                    os.fdopen(os.dup(source_fd), "rb") as source_handle,
+                    os.fdopen(
+                        os.dup(destination_fd), "wb"
+                    ) as destination_handle,
+                ):
+                    for block in iter(
+                        lambda: source_handle.read(1024 * 1024), b""
+                    ):
+                        digest.update(block)
+                        destination_handle.write(block)
+                    destination_handle.flush()
+                    os.fsync(destination_handle.fileno())
+            finally:
+                os.close(destination_fd)
+            copied_sha256 = digest.hexdigest()
+            os.lseek(source_fd, 0, os.SEEK_SET)
+            rebound = hashlib.sha256()
+            with os.fdopen(os.dup(source_fd), "rb") as source_handle:
+                for block in iter(
+                    lambda: source_handle.read(1024 * 1024), b""
+                ):
+                    rebound.update(block)
+            final_source = source.lstat()
+            final_identity = (
+                final_source.st_dev,
+                final_source.st_ino,
+                final_source.st_mode,
+            )
+            if (
+                final_identity != identity
+                or (
+                    os.fstat(source_fd).st_dev,
+                    os.fstat(source_fd).st_ino,
+                    os.fstat(source_fd).st_mode,
+                ) != identity
+                or rebound.hexdigest() != copied_sha256
+                or _sha256_pinned_regular(
+                    destination,
+                    expected_identity=None,
+                    message=(
+                        "input changed while creating snapshot: "
+                        f"{source}"
+                    ),
+                ) != copied_sha256
+            ):
+                raise PlayoffValidationError(
+                    f"input changed while creating snapshot: {source}"
+                )
+        finally:
+            os.close(source_fd)
+    except PlayoffValidationError:
+        raise
+    except OSError as exc:
+        raise PlayoffValidationError(
+            f"could not snapshot playoff input: {source}"
+        ) from exc
+    return _InputFileAttestation(
+        source=source,
+        destination=destination,
+        identity=identity,
+        sha256=copied_sha256,
+    )
+
+
+def _snapshot_directory(
+    snapshot: _InputSnapshot,
+    source: Path,
+    destination: Path,
+) -> None:
+    try:
+        observed = source.lstat()
+        if not stat.S_ISDIR(observed.st_mode):
+            raise PlayoffValidationError(
+                f"playoff input must be a regular directory: {source}"
+            )
+        entries = tuple(sorted(os.listdir(source)))
+        identity = (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+        )
+        for name in entries:
+            snapshot.files.append(
+                _copy_input_file(source / name, destination / name)
+            )
+        final = source.lstat()
+        if (
+            (final.st_dev, final.st_ino, final.st_mode) != identity
+            or tuple(sorted(os.listdir(source))) != entries
+        ):
+            raise PlayoffValidationError(
+                f"input changed while creating snapshot: {source}"
+            )
+        snapshot.directories.append(
+            _InputDirectoryAttestation(source, identity, entries)
+        )
+    except PlayoffValidationError:
+        raise
+    except OSError as exc:
+        raise PlayoffValidationError(
+            f"could not snapshot playoff input directory: {source}"
+        ) from exc
+
+
+def _capture_input_snapshot(data_dir: Path) -> _InputSnapshot:
+    """Capture every playoff build input into one private mirrored tree."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(
+        tempfile.mkdtemp(prefix=".playoff-inputs-", dir=data_dir)
+    )
+    snapshot = _InputSnapshot(root=root, files=[], directories=[])
+    try:
+        _snapshot_directory(
+            snapshot,
+            data_dir / "raw/historical_bref",
+            root / "raw/historical_bref",
+        )
+        _snapshot_directory(
+            snapshot,
+            data_dir / "raw/playoff_bref",
+            root / "raw/playoff_bref",
+        )
+        for season, month in playoff_bref.PLAY_IN_MONTHS.items():
+            name = f"NBA_{season}_games-{month}.html"
+            for suffix in ("", ".meta.json"):
+                snapshot.files.append(_copy_input_file(
+                    data_dir / "raw/bref" / f"{name}{suffix}",
+                    root / "raw/bref" / f"{name}{suffix}",
+                ))
+        for season in range(2020, 2027):
+            name = f"nba_schedule_{season}.parquet"
+            for suffix in ("", ".meta.json"):
+                snapshot.files.append(_copy_input_file(
+                    data_dir / "raw/hoopr" / f"{name}{suffix}",
+                    root / "raw/hoopr" / f"{name}{suffix}",
+                ))
+        for name in _SNAPSHOT_REFERENCE_FILES:
+            snapshot.files.append(_copy_input_file(
+                data_dir / "reference" / name,
+                root / "reference" / name,
+            ))
+        runtime_sources = {
+            "franchises.csv": cast(Path, franchises.REFERENCE),
+            "hoopr_snapshot.json": cast(Path, hoopr.SNAPSHOT_PATH),
+        }
+        for name, source in runtime_sources.items():
+            snapshot.files.append(_copy_input_file(
+                source, root / "runtime_reference" / name
+            ))
+        with publication.publication_lock(
+            data_dir / "parquet", exclusive=False
+        ):
+            for name in _SNAPSHOT_PARQUET_FILES:
+                snapshot.files.append(_copy_input_file(
+                    data_dir / "parquet" / name,
+                    root / "parquet" / name,
+                ))
+        snapshot.verify_unchanged(
+            message="input changed while creating snapshot"
+        )
+        return snapshot
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def _read_exact_csv(
@@ -1145,8 +1536,100 @@ def _raw_provenance(data_dir: Path) -> dict:
     }
 
 
-def _reference_provenance(data_dir: Path) -> dict:
+def _validate_runtime_reference_binding(
+    data_dir: Path,
+    *,
+    runtime_reference_dir: Path | None = None,
+) -> None:
+    reference_dir = data_dir / "reference"
+    runtime_dir = runtime_reference_dir
+    runtime_paths = {
+        "franchises.csv": (
+            runtime_dir / "franchises.csv"
+            if runtime_dir is not None
+            else cast(Path, franchises.REFERENCE)
+        ),
+        "hoopr_snapshot.json": (
+            runtime_dir / "hoopr_snapshot.json"
+            if runtime_dir is not None
+            else cast(Path, hoopr.SNAPSHOT_PATH)
+        ),
+    }
+    labels = {
+        "franchises.csv": "franchise reference",
+        "hoopr_snapshot.json": "hoopR snapshot reference",
+    }
+    payloads = {}
+    for name, runtime_path in runtime_paths.items():
+        try:
+            checkout_path = reference_dir / name
+            if (
+                checkout_path.is_symlink()
+                or not checkout_path.is_file()
+                or runtime_path.is_symlink()
+                or not runtime_path.is_file()
+            ):
+                raise PlayoffValidationError(
+                    f"{labels[name]} must be a regular file"
+                )
+            checkout_payload = checkout_path.read_bytes()
+            runtime_payload = runtime_path.read_bytes()
+        except OSError as exc:
+            raise PlayoffValidationError(
+                f"could not read {labels[name]}"
+            ) from exc
+        if checkout_payload != runtime_payload:
+            raise PlayoffValidationError(
+                f"{labels[name]} differs from the packaged runtime reference"
+            )
+        payloads[name] = runtime_payload
+    try:
+        runtime_franchises = pd.read_csv(
+            Path(runtime_paths["franchises.csv"]),
+            dtype={"alias": str, "franchise_id": str},
+        )
+        runtime_franchises["first_season"] = runtime_franchises[
+            "first_season"
+        ].astype("Int64")
+        runtime_franchises["last_season"] = runtime_franchises[
+            "last_season"
+        ].astype("Int64")
+        if not runtime_franchises.equals(franchises.load_reference()):
+            raise PlayoffValidationError(
+                "franchise runtime state differs from the packaged reference"
+            )
+        runtime_snapshot = json.loads(
+            payloads["hoopr_snapshot.json"].decode("utf-8")
+        )
+        if runtime_snapshot != hoopr.SNAPSHOT:
+            raise PlayoffValidationError(
+                "hoopR runtime state differs from the packaged reference"
+            )
+    except PlayoffValidationError:
+        raise
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise PlayoffValidationError(
+            "packaged runtime reference is invalid"
+        ) from exc
+
+
+def _reference_provenance(
+    data_dir: Path,
+    *,
+    runtime_reference_dir: Path | None = None,
+) -> dict:
     """Attest the exact deterministic references used by the build."""
+    _validate_runtime_reference_binding(
+        data_dir,
+        runtime_reference_dir=runtime_reference_dir,
+    )
     references = {}
     for name in REFERENCE_FILES:
         path = data_dir / "reference" / name
@@ -1163,16 +1646,26 @@ def _reference_provenance(data_dir: Path) -> dict:
 
 def run(data_dir: Path) -> None:
     """Build and transactionally publish the attested playoff pair."""
-    expected_counts = load_expected_counts(
-        data_dir / "reference/playoff_season_counts.csv"
-    )
-    games, report, evidence = assemble(data_dir)
-    provenance = _raw_provenance(data_dir)
-    references = _reference_provenance(data_dir)
-    stage_dir = Path(
-        tempfile.mkdtemp(prefix=".playoff-stage-", dir=data_dir)
-    )
+    snapshot = _capture_input_snapshot(data_dir)
+    stage_dir = None
     try:
+        runtime_reference_dir = snapshot.root / "runtime_reference"
+        _validate_runtime_reference_binding(
+            snapshot.root,
+            runtime_reference_dir=runtime_reference_dir,
+        )
+        expected_counts = load_expected_counts(
+            snapshot.root / "reference/playoff_season_counts.csv"
+        )
+        games, report, evidence = assemble(snapshot.root)
+        provenance = _raw_provenance(snapshot.root)
+        references = _reference_provenance(
+            snapshot.root,
+            runtime_reference_dir=runtime_reference_dir,
+        )
+        stage_dir = Path(
+            tempfile.mkdtemp(prefix=".playoff-stage-", dir=data_dir)
+        )
         parquet_path = stage_dir / "playoff_games.parquet"
         games.to_parquet(
             parquet_path,
@@ -1220,11 +1713,22 @@ def run(data_dir: Path) -> None:
             + "\n",
             encoding="utf-8",
         )
+        def validate_precommit_inputs() -> None:
+            snapshot.verify_unchanged(
+                message="playoff input changed before publication"
+            )
+            _validate_runtime_reference_binding(
+                snapshot.root,
+                runtime_reference_dir=runtime_reference_dir,
+            )
+
         retained_rollback = publication.publish_pair(
             stage_dir,
             data_dir / "parquet",
             PLAYOFF_PRODUCTS,
             label="playoff",
+            manifest_table="playoff_games",
+            precommit=validate_precommit_inputs,
         )
         if retained_rollback is not None:
             warnings.warn(
@@ -1234,5 +1738,9 @@ def run(data_dir: Path) -> None:
                 stacklevel=2,
             )
     finally:
-        if stage_dir.exists():
-            shutil.rmtree(stage_dir)
+        try:
+            if stage_dir is not None and stage_dir.exists():
+                shutil.rmtree(stage_dir)
+        finally:
+            if snapshot.root.exists():
+                shutil.rmtree(snapshot.root)

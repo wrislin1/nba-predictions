@@ -144,13 +144,115 @@ def test_dedicated_play_in_remark_remains_playoff(seeded_playoff_cache):
     assert dedicated_game["site_status"] == "home"
 
 
+def _load_1984_dedicated_with_remark(
+    tmp_path: Path, remark: str
+) -> pd.Series:
+    raw_dir = tmp_path / "raw"
+    path = raw_dir / "playoff_bref/NBA_1984_games.html"
+    payload = (FIXTURES / path.name).read_bytes().replace(
+        b'<td data-stat="game_remarks"></td>',
+        (
+            '<td data-stat="game_remarks">'
+            f"{remark}</td>"
+        ).encode(),
+    )
+    cache.publish_bytes(
+        path,
+        payload,
+        {
+            "provider": "basketball_reference",
+            "resource": "playoff_schedule",
+            "league": "NBA",
+            "season": 1984,
+            "month": None,
+            "url": playoff_bref.playoff_url(1984),
+        },
+        lambda value: playoff_bref.validate_dedicated_page(value, 1984),
+    )
+    return playoff_bref.load_modern_season(raw_dir, 1984).iloc[0]
+
+
+@pytest.mark.parametrize(
+    "remark",
+    [
+        "at Seattle, WA (Seattle Coliseum)",
+        "at University Park, TX",
+        'at Seattle, WA (Clarence S. "Hec" Edmundson Pavillion)',
+        "at Kingdome",
+        "at Anaheim, CA (Anaheim Convention Center)",
+        "at Las Vegas, NV",
+        "at Atlanta, GA (Alexander Memorial Coliseum at McDonald's Center)",
+    ],
+)
+def test_modern_exact_alternate_location_remarks_are_neutral(
+    tmp_path, remark
+):
+    row = _load_1984_dedicated_with_remark(tmp_path, remark.swapcase())
+
+    assert row["game_type"] == "playoff"
+    assert row["site_status"] == "neutral"
+
+
+@pytest.mark.parametrize(
+    "remark",
+    [
+        "Memorial Day Massacre",
+        "The Shot",
+        "The Shot 2",
+        "GatorLode Game",
+        "MJ's Flu Game",
+        "LeBron's 48 Special",
+    ],
+)
+def test_modern_exact_nickname_remarks_preserve_home_site(
+    tmp_path, remark
+):
+    row = _load_1984_dedicated_with_remark(tmp_path, remark)
+
+    assert row["game_type"] == "playoff"
+    assert row["site_status"] == "home"
+
+
+@pytest.mark.parametrize(
+    "remark",
+    [
+        "Play-In Game",
+        "Tiebreaker",
+        "Protest; does not count toward record",
+    ],
+)
+def test_modern_exact_type_remarks_are_not_site_signals(
+    tmp_path, remark
+):
+    row = _load_1984_dedicated_with_remark(tmp_path, remark)
+
+    assert row["game_type"] == "playoff"
+    assert row["site_status"] == "home"
+
+
+def test_modern_unrecognized_nonempty_remark_fails_closed(tmp_path):
+    with pytest.raises(
+        ValueError, match="unrecognized modern game remark"
+    ):
+        _load_1984_dedicated_with_remark(
+            tmp_path, "New unaudited nickname"
+        )
+
+
 def test_modern_union_rejects_duplicate_natural_results(seeded_playoff_cache):
     dedicated = seeded_playoff_cache / "playoff_bref/NBA_2020_games.html"
     dedicated.unlink()
     dedicated.with_name(dedicated.name + ".meta.json").unlink()
-    payload = (FIXTURES / "NBA_2020_games-august.html").read_bytes().replace(
-        b"202008150POR.html", b"202008150XXX.html"
-    )
+    payload = (FIXTURES / "NBA_2020_games.html").read_bytes()
+    for old, new in (
+        (b"Mon, Aug 17, 2020", b"Sat, Aug 15, 2020"),
+        (b"Utah Jazz", b"Memphis Grizzlies"),
+        (b">125<", b">122<"),
+        (b"Denver Nuggets", b"Portland Trail Blazers"),
+        (b">135<", b">126<"),
+        (b"202008170DEN.html", b"202008150XXX.html"),
+    ):
+        payload = payload.replace(old, new)
     cache.publish_bytes(
         dedicated,
         payload,
@@ -272,6 +374,54 @@ def test_dedicated_validator_requires_completed_box_scored_rows(tmp_path):
         path.read_bytes().replace(b'/boxscores/198404170LAL.html', b'', 1)
     )
     with pytest.raises(ValueError, match="invalid box-score href"):
+        playoff_bref.validate_dedicated_page(path, 1984)
+
+
+def test_dedicated_validator_rejects_valid_wrong_season_body(tmp_path):
+    path = tmp_path / "NBA_1984_games.html"
+    wrong_season = (
+        FIXTURES / "NBA_1984_games.html"
+    ).read_bytes().replace(b"1984", b"1985")
+    path.write_bytes(wrong_season)
+
+    with pytest.raises(
+        ValueError, match="dedicated playoff season identity mismatch"
+    ):
+        playoff_bref.validate_dedicated_page(path, 1984)
+
+
+@pytest.mark.parametrize(
+    "date_text",
+    ["Sun, Jan 1, 1984", "Mon, Dec 31, 1984"],
+)
+def test_dedicated_validator_accepts_requested_calendar_year_boundaries(
+    tmp_path, date_text
+):
+    path = tmp_path / "NBA_1984_games.html"
+    payload = (
+        FIXTURES / path.name
+    ).read_bytes().replace(b"Tue, Apr 17, 1984", date_text.encode())
+    path.write_bytes(payload)
+
+    playoff_bref.validate_dedicated_page(path, 1984)
+
+
+@pytest.mark.parametrize("year", [1983, 1985])
+def test_dedicated_validator_rejects_completed_date_outside_requested_year(
+    tmp_path, year
+):
+    path = tmp_path / "NBA_1984_games.html"
+    payload = (
+        FIXTURES / path.name
+    ).read_bytes().replace(
+        b"Tue, Apr 17, 1984",
+        f"Tue, Apr 17, {year}".encode(),
+    )
+    path.write_bytes(payload)
+
+    with pytest.raises(
+        ValueError, match="completed dates must be in 1984"
+    ):
         playoff_bref.validate_dedicated_page(path, 1984)
 
 
@@ -443,3 +593,31 @@ def test_full_historical_complement_inventory(repo_data_dir):
     assert voided["game_id"] == "bref-195211280MLH"
     assert voided["game_date"].isoformat() == "1952-11-28"
     assert voided["season"] == 1953
+
+
+@pytest.mark.integration
+def test_full_modern_remark_census_is_exact_and_fully_classified(
+    repo_data_dir,
+):
+    games = pd.concat(
+        [
+            playoff_bref.load_modern_season(
+                repo_data_dir / "raw", season
+            )
+            for season in playoff_bref.DEDICATED_SEASONS
+        ],
+        ignore_index=True,
+    )
+    dedicated = games.loc[
+        games["schedule_url"].str.contains("/playoffs/", regex=False)
+    ]
+    annotated = dedicated.loc[
+        dedicated["game_remarks"].astype("string").fillna("").str.strip().ne("")
+    ]
+
+    assert len(annotated) == 17
+    assert annotated["site_status"].value_counts().to_dict() == {
+        "neutral": 11,
+        "home": 6,
+    }
+    assert not annotated["site_status"].eq("unknown").any()
