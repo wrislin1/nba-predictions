@@ -895,7 +895,7 @@ def publish_tree(
             f"{label} stage {stage_dir} and output {output_dir} must "
             "share a parent directory"
         )
-    if stage_dir == output_dir:
+    if stage_dir.resolve() == output_dir.resolve():
         raise TreePublicationError(
             f"{label} stage and output must be distinct: {stage_dir}"
         )
@@ -909,6 +909,10 @@ def publish_tree(
         rollback_dir.lstat()
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        raise TreePublicationError(
+            f"{label} could not inspect rollback destination {rollback_dir}"
+        ) from exc
     else:
         raise TreePublicationError(
             f"{label} rollback destination already exists: {rollback_dir}"

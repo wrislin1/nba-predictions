@@ -978,6 +978,33 @@ def test_publish_tree_rejects_existing_rollback_destination(
     assert (stage / "_manifest.json").read_text() == "new manifest"
 
 
+def test_publish_tree_wraps_non_missing_rollback_lstat_error(
+    monkeypatch, tmp_path
+):
+    """A non-FileNotFoundError OSError while probing the rollback
+    destination must be wrapped in TreePublicationError, not propagate raw."""
+    stage, output = seed_tree_publication(tmp_path, with_existing=True)
+    real_lstat = Path.lstat
+
+    def fail_rollback_lstat(self):
+        if Path(self).name.startswith(f".{output.name}.rollback-"):
+            raise PermissionError("permission denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", fail_rollback_lstat)
+
+    with pytest.raises(
+        publication.TreePublicationError,
+        match="could not inspect rollback destination",
+    ) as caught:
+        publication.publish_tree(stage, output, label="PBP publication")
+
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert (output / "_manifest.json").read_text() == "old manifest"
+    assert (stage / "_manifest.json").read_text() == "new manifest"
+    assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
+
+
 def test_publish_tree_raises_when_backup_move_fails(monkeypatch, tmp_path):
     stage, output = seed_tree_publication(tmp_path, with_existing=True)
     old_snapshot = _tree_snapshot(output)
