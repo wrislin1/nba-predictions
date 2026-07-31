@@ -1,6 +1,8 @@
 """Season-aware source team names mapped to stable franchise IDs."""
 
+from dataclasses import dataclass
 from functools import lru_cache
+from io import BytesIO
 from importlib import resources
 
 import pandas as pd
@@ -19,16 +21,73 @@ class AmbiguousTeamError(ValueError):
     pass
 
 
-@lru_cache(maxsize=1)
-def load_reference() -> pd.DataFrame:
-    with resources.as_file(REFERENCE) as path:
-        frame = pd.read_csv(
-            path,
-            dtype={"alias": str, "franchise_id": str},
-        )
+def load_reference_payload(payload: bytes) -> pd.DataFrame:
+    """Parse a franchise reference from immutable captured bytes."""
+    frame = pd.read_csv(
+        BytesIO(payload),
+        dtype={"alias": str, "franchise_id": str},
+    )
     frame["first_season"] = frame["first_season"].astype("Int64")
     frame["last_season"] = frame["last_season"].astype("Int64")
     return frame
+
+
+@dataclass(frozen=True)
+class FranchiseEra:
+    alias: str
+    franchise_id: str
+    first_season: int | None
+    last_season: int | None
+
+
+@dataclass(frozen=True)
+class FranchiseResolver:
+    """An immutable season-aware resolver detached from the module cache."""
+
+    eras: tuple[FranchiseEra, ...]
+
+    @classmethod
+    def from_payload(cls, payload: bytes) -> "FranchiseResolver":
+        frame = load_reference_payload(payload)
+        return cls(tuple(
+            FranchiseEra(
+                alias=str(row.alias),
+                franchise_id=str(row.franchise_id),
+                first_season=(
+                    None if pd.isna(row.first_season)
+                    else int(row.first_season)
+                ),
+                last_season=(
+                    None if pd.isna(row.last_season)
+                    else int(row.last_season)
+                ),
+            )
+            for row in frame.itertuples(index=False)
+        ))
+
+    def resolve(self, name: str, season: int) -> str:
+        alias = name.strip()
+        matches = tuple(
+            era for era in self.eras
+            if era.alias == alias
+            and (era.first_season is None or era.first_season <= season)
+            and (era.last_season is None or era.last_season >= season)
+        )
+        if len(matches) == 1:
+            return matches[0].franchise_id
+        if not matches:
+            raise UnknownTeamError(
+                f"no franchise for {name!r} in season {season}"
+            )
+        raise AmbiguousTeamError(
+            f"multiple franchise eras for {name!r} in {season}"
+        )
+
+
+@lru_cache(maxsize=1)
+def load_reference() -> pd.DataFrame:
+    with resources.as_file(REFERENCE) as path:
+        return load_reference_payload(path.read_bytes())
 
 
 FRANCHISE_IDS = frozenset(load_reference()["franchise_id"])

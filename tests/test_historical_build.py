@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 
 import pandas as pd
 import pytest
@@ -1039,6 +1040,63 @@ def test_run_rejects_modern_publication_starting_after_1984(monkeypatch, tmp_pat
         match="modern publication must begin at ending season 1984",
     ):
         historical_build.run(tmp_path)
+
+
+def test_run_holds_shared_lock_while_reading_modern_publication(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1985]}).to_parquet(
+        output / "games.parquet"
+    )
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (assembled_game_frame(), {}),
+    )
+    real_read_parquet = historical_build.pd.read_parquet
+    read_started = threading.Event()
+    allow_read = threading.Event()
+    writer_attempting = threading.Event()
+    writer_acquired = threading.Event()
+    reader_done = threading.Event()
+
+    def paused_read(path, *args, **kwargs):
+        if Path(path).name == "games.parquet":
+            read_started.set()
+            assert allow_read.wait(5)
+        return real_read_parquet(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        historical_build.pd, "read_parquet", paused_read
+    )
+
+    def read_modern():
+        try:
+            historical_build.run(tmp_path)
+        except historical_build.HistoricalValidationError:
+            pass
+        finally:
+            reader_done.set()
+
+    def publish_observer():
+        writer_attempting.set()
+        with publication.publication_lock(output, exclusive=True):
+            writer_acquired.set()
+
+    reader = threading.Thread(target=read_modern, daemon=True)
+    writer = threading.Thread(target=publish_observer, daemon=True)
+    reader.start()
+    assert read_started.wait(5)
+    writer.start()
+    assert writer_attempting.wait(5)
+    assert not writer_acquired.wait(0.2)
+    allow_read.set()
+    assert reader_done.wait(5)
+    assert writer_acquired.wait(5)
+    reader.join(5)
+    writer.join(5)
 
 
 def test_run_preserves_prior_historical_pair_when_validation_fails(

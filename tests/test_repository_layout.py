@@ -1,4 +1,5 @@
 from pathlib import Path
+import fcntl
 import hashlib
 import json
 import os
@@ -6,9 +7,47 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def wait_for_modern_shared_flock_waiter(
+    lock_path: Path,
+    process: subprocess.Popen[str],
+    forbidden_marker: Path,
+    timeout: float = 5,
+) -> None:
+    inode = lock_path.stat().st_ino
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        locks = Path("/proc/locks").read_text(encoding="utf-8")
+        if any(
+            "->" in line
+            and " FLOCK " in line
+            and " READ " in line
+            and f":{inode} " in line
+            for line in locks.splitlines()
+        ):
+            return
+        if forbidden_marker.exists():
+            raise AssertionError("modern raw reader ran before publisher exit")
+        if process.poll() is not None:
+            raise AssertionError("modern raw reader exited before taking lock")
+        time.sleep(0.01)
+    raise AssertionError("modern raw shared-lock waiter did not appear")
+
+
+def wait_for_modern_file(path: Path, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {path}")
 
 REQUIRED_ARCHIVE_FILES = {
     "archive/dashboard/start.py",
@@ -614,11 +653,239 @@ bash scripts/restore_playoff_raw.sh
     ]
 
 
+def seed_modern_raw_lock_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    for name in (
+        "archive_raw_snapshot.sh",
+        "publication_read_lock.sh",
+        "restore_raw.sh",
+    ):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    manifest = repo / "data/parquet/build_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"tables": {"games": {"max_season": 2026}}}) + "\n",
+        encoding="utf-8",
+    )
+    raw_file = repo / "data/raw/stats_nba/leaguegamefinder_2026.json"
+    raw_file.parent.mkdir(parents=True)
+    raw_file.write_text('{"resultSets":[]}\n', encoding="utf-8")
+    return repo, tmp_path / "archive"
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_shell_reader_holds_shared_publication_lock(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Would fail if either modern raw script read outside its shared lock."""
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(repo / "data/parquet/build_manifest.json"),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+
+    fake_bin = tmp_path / "lock-test-bin"
+    fake_bin.mkdir()
+    pause_marker = tmp_path / "modern-rsync-paused"
+    pause_gate = tmp_path / "modern-rsync-continue"
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if test ! -e "$PAUSE_MARKER"; then
+  : > "$PAUSE_MARKER"
+  while test ! -e "$PAUSE_GATE"; do sleep 0.01; done
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    environment.update({
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PAUSE_GATE": str(pause_gate),
+        "PAUSE_MARKER": str(pause_marker),
+        "REAL_RSYNC": shutil.which("rsync") or "rsync",
+    })
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_modern_shared_flock_waiter(
+            lock_path,
+            process,
+            pause_marker,
+        )
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        wait_for_modern_file(pause_marker)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pause_gate.touch()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        pause_gate.touch(exist_ok=True)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_scripts_reject_symlinked_live_manifest(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    manifest = repo / "data/parquet/build_manifest.json"
+    pin_tmp = tmp_path / "manifest-tmp"
+    pin_tmp.mkdir()
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(manifest),
+        "TMPDIR": str(pin_tmp),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+    target = tmp_path / "build-manifest-target.json"
+    manifest.replace(target)
+    manifest.symlink_to(target)
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+
+    completed = subprocess.run(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "missing or unsafe build manifest" in completed.stderr
+    assert list(pin_tmp.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_scripts_reject_manifest_swapped_to_symlink_while_waiting(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Would fail if a pre-lock check authorized a later path reopen."""
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    manifest = repo / "data/parquet/build_manifest.json"
+    pin_tmp = tmp_path / "manifest-tmp"
+    pin_tmp.mkdir()
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(manifest),
+        "TMPDIR": str(pin_tmp),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_modern_shared_flock_waiter(
+            lock_path,
+            process,
+            tmp_path / "forbidden-modern-progress",
+        )
+        target = tmp_path / f"{operation}-manifest-target.json"
+        manifest.replace(target)
+        manifest.symlink_to(target)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode != 0, stdout
+    assert "missing or unsafe build manifest" in stderr
+    assert list(pin_tmp.iterdir()) == []
+
+
 def seed_raw_snapshot(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/restore_raw.sh", scripts)
+    shutil.copy2(ROOT / "scripts/publication_read_lock.sh", scripts)
     manifest = repo / "data/parquet/build_manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
@@ -680,7 +947,11 @@ def test_modern_raw_snapshot_excludes_independent_caches(tmp_path) -> None:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    for name in ("archive_raw_snapshot.sh", "restore_raw.sh"):
+    for name in (
+        "archive_raw_snapshot.sh",
+        "publication_read_lock.sh",
+        "restore_raw.sh",
+    ):
         shutil.copy2(ROOT / "scripts" / name, scripts / name)
     manifest = repo / "data/parquet/build_manifest.json"
     manifest.parent.mkdir(parents=True)

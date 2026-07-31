@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -18,6 +20,41 @@ PLAY_IN_MONTHS = {
     2021: "may",
     **{season: "april" for season in range(2022, 2027)},
 }
+
+
+def wait_for_playoff_shared_flock_waiter(
+    lock_path: Path,
+    process: subprocess.Popen[str],
+    forbidden_marker: Path,
+    timeout: float = 5,
+) -> None:
+    inode = lock_path.stat().st_ino
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        locks = Path("/proc/locks").read_text(encoding="utf-8")
+        if any(
+            "->" in line
+            and " FLOCK " in line
+            and " READ " in line
+            and f":{inode} " in line
+            for line in locks.splitlines()
+        ):
+            return
+        if forbidden_marker.exists():
+            raise AssertionError("playoff reader ran before publisher exit")
+        if process.poll() is not None:
+            raise AssertionError("playoff reader exited before taking lock")
+        time.sleep(0.01)
+    raise AssertionError("playoff shared-lock waiter did not appear")
+
+
+def wait_for_playoff_file(path: Path, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {path}")
 
 
 @dataclass(frozen=True)
@@ -327,6 +364,93 @@ def run_restore(
     )
     assert historical_after == historical_before
     return result
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+@pytest.mark.parametrize("lock_root", ["playoff", "historical"])
+def test_playoff_shell_reader_holds_all_shared_publication_locks(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    operation: str,
+    lock_root: str,
+) -> None:
+    """Would fail if either playoff script omitted or released a data lock."""
+    fixture = playoff_snapshot_fixture
+    if operation == "restore":
+        archived = run_archive(fixture)
+        assert archived.returncode == 0, archived.stderr
+        make_restore_destination_absent(fixture)
+
+    second_manifest = (
+        fixture.repo.parent
+        / "historical-repo/data/parquet/historical_games_manifest.json"
+    )
+    second_manifest.parent.mkdir(parents=True)
+    shutil.copy2(fixture.historical_manifest, second_manifest)
+    second_lock = second_manifest.parents[1] / ".parquet-publication.lock"
+    first_lock = (
+        fixture.playoff_manifest.parents[1]
+        / ".parquet-publication.lock"
+    )
+    contended_lock = (
+        first_lock if lock_root == "playoff" else second_lock
+    )
+    fake_bin, _ = install_rsync_wrapper(
+        fixture.repo.parent,
+        """#!/usr/bin/env bash
+set -euo pipefail
+if test ! -e "$PAUSE_MARKER"; then
+  : > "$PAUSE_MARKER"
+  while test ! -e "$PAUSE_GATE"; do sleep 0.01; done
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+    )
+    pause_marker = fixture.repo.parent / "playoff-rsync-paused"
+    pause_gate = fixture.repo.parent / "playoff-rsync-continue"
+    environment = playoff_environment(
+        fixture,
+        {
+            "NBA_PLAYOFF_HISTORICAL_MANIFEST": str(second_manifest),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "PAUSE_GATE": str(pause_gate),
+            "PAUSE_MARKER": str(pause_marker),
+            "REAL_RSYNC": shutil.which("rsync") or "rsync",
+        },
+    )
+    script = ARCHIVE_SCRIPT if operation == "archive" else RESTORE_SCRIPT
+    lock_fd = os.open(contended_lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        ["bash", str(script)],
+        cwd=fixture.repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_playoff_shared_flock_waiter(
+            contended_lock,
+            process,
+            pause_marker,
+        )
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        wait_for_playoff_file(pause_marker)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pause_gate.touch()
+        stdout, stderr = process.communicate(timeout=15)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        pause_gate.touch(exist_ok=True)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
 
 
 def snapshot_path(fixture: PlayoffSnapshotFixture) -> Path:

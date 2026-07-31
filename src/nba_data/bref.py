@@ -58,6 +58,11 @@ def validate_payload(path: Path) -> None:
     _read_schedule(path)
 
 
+def validate_payload_bytes(payload: bytes) -> None:
+    """Confirm captured bytes contain the expected schedule table schema."""
+    _read_schedule(payload)
+
+
 def fetch(raw_dir: Path, seasons: Iterable[int], sleep_s: float = 12) -> None:
     """Cache requested Basketball-Reference schedule pages with polite cadence."""
     session = None

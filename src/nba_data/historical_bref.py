@@ -5,7 +5,7 @@ import re
 import stat
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -137,11 +137,19 @@ def _assign_game_ids(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_index(path: Path, season: int) -> None:
-    discover_month_pages(path.read_bytes(), season)
+    validate_index_bytes(path.read_bytes(), season)
+
+
+def validate_index_bytes(payload: bytes, season: int) -> None:
+    discover_month_pages(payload, season)
 
 
 def validate_month(path: Path, season: int, url: str) -> None:
-    parse_schedule_page(path.read_bytes(), season=season, schedule_url=url)
+    validate_month_bytes(path.read_bytes(), season, url)
+
+
+def validate_month_bytes(payload: bytes, season: int, url: str) -> None:
+    parse_schedule_page(payload, season=season, schedule_url=url)
 
 
 def _playoff_separator_source_rows(
@@ -322,15 +330,38 @@ def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
         index_path,
         lambda path: validate_index(path, season),
     )
-    parsed_pages = []
-    separator_found = False
+    month_payloads = {}
     for page in discover_month_pages(payload, season):
-        month_payload = cache.require_valid(
+        month_payloads[page.filename] = cache.require_valid(
             cache_dir / page.filename,
             lambda path, value=season, url=page.url: validate_month(
                 path, value, url
             ),
         )
+    return load_season_payloads(
+        season=season,
+        index_payload=payload,
+        month_payloads=month_payloads,
+    )
+
+
+def load_season_payloads(
+    *,
+    season: int,
+    index_payload: bytes,
+    month_payloads: Mapping[str, bytes],
+) -> pd.DataFrame:
+    """Load one historical regular season from captured schedule bytes."""
+    parsed_pages = []
+    separator_found = False
+    for page in discover_month_pages(index_payload, season):
+        try:
+            month_payload = month_payloads[page.filename]
+        except KeyError as exc:
+            raise cache.CacheIntegrityError(
+                f"missing captured historical page {page.filename}"
+            ) from exc
+        validate_month_bytes(month_payload, season, page.url)
         separator_rows = _playoff_separator_source_rows(month_payload, page.url)
         if separator_found:
             if separator_rows:

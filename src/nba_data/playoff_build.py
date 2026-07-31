@@ -3,14 +3,16 @@
 from dataclasses import dataclass
 from datetime import date
 import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
 import shutil
 import stat
 import tempfile
+from types import MappingProxyType
 import warnings
-from typing import cast
+from typing import Any, Mapping, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -21,6 +23,7 @@ from nba_data import (
     build,
     cache,
     franchises,
+    historical_bref,
     historical_build,
     hoopr,
     playoff_bref,
@@ -191,9 +194,10 @@ class SiteRule:
 @dataclass(frozen=True)
 class _InputFileAttestation:
     source: Path
-    destination: Path
+    relative_path: str
     identity: tuple[int, int, int]
     sha256: str
+    payload: bytes
 
 
 @dataclass(frozen=True)
@@ -322,11 +326,67 @@ def _require_pinned_directory(
             os.close(directory_fd)
 
 
-@dataclass
-class _InputSnapshot:
-    root: Path
-    files: list[_InputFileAttestation]
-    directories: list[_InputDirectoryAttestation]
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({
+            str(key): _freeze_value(item)
+            for key, item in value.items()
+        })
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_value(item) for item in value)
+    return value
+
+
+def _thaw_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _thaw_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_thaw_value(item) for item in value]
+    if isinstance(value, frozenset):
+        return sorted(_thaw_value(item) for item in value)
+    return value
+
+
+@dataclass(frozen=True)
+class CapturedPlayoffInputs:
+    """One immutable, path-independent playoff build input generation."""
+
+    payloads: Mapping[str, bytes]
+    attestations: tuple[_InputFileAttestation, ...]
+    directories: tuple[_InputDirectoryAttestation, ...]
+    franchise_resolver: franchises.FranchiseResolver
+    hoopr_snapshot: Mapping[str, Any]
+    versions: Mapping[str, Any]
+
+    def payload(self, relative_path: str) -> bytes:
+        try:
+            return self.payloads[relative_path]
+        except KeyError as exc:
+            raise PlayoffValidationError(
+                f"captured playoff input is missing: {relative_path}"
+            ) from exc
+
+    def resolve_franchise(self, name: str, season: int) -> str:
+        return self.franchise_resolver.resolve(name, season)
+
+    def cache_pair(
+        self,
+        relative_path: str,
+        validator,
+    ) -> tuple[bytes, dict]:
+        payload = self.payload(relative_path)
+        metadata = cache.attest_bytes(
+            payload,
+            self.payload(relative_path + ".meta.json"),
+            validator,
+            label=relative_path,
+        )
+        return payload, metadata
 
     def verify_unchanged(self, *, message: str) -> None:
         try:
@@ -337,19 +397,12 @@ class _InputSnapshot:
                     expected_entries=directory.entries,
                     message=f"{message}: {directory.source}",
                 )
-            for record in self.files:
-                if (
-                    _sha256_pinned_regular(
-                        record.source,
-                        expected_identity=record.identity,
-                        message=f"{message}: {record.source}",
-                    ) != record.sha256
-                    or _sha256_pinned_regular(
-                        record.destination,
-                        expected_identity=None,
-                        message=f"{message}: {record.source}",
-                    ) != record.sha256
-                ):
+            for record in self.attestations:
+                if _sha256_pinned_regular(
+                    record.source,
+                    expected_identity=record.identity,
+                    message=f"{message}: {record.source}",
+                ) != record.sha256:
                     raise PlayoffValidationError(
                         f"{message}: {record.source}"
                     )
@@ -362,7 +415,8 @@ class _InputSnapshot:
 def _copy_input_file(
     source: Path, destination: Path
 ) -> _InputFileAttestation:
-    """Copy and bind one regular input without following either path."""
+    """Capture and bind one regular input without following its path."""
+    source_fd = None
     try:
         observed = source.lstat()
         if not stat.S_ISREG(observed.st_mode):
@@ -380,97 +434,73 @@ def _copy_input_file(
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
         )
-        try:
-            opened = os.fstat(source_fd)
-            if (
-                opened.st_dev,
-                opened.st_ino,
-                opened.st_mode,
-            ) != identity:
-                raise PlayoffValidationError(
-                    f"input changed while creating snapshot: {source}"
-                )
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination_fd = os.open(
-                destination,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                stat.S_IMODE(observed.st_mode),
+        opened = os.fstat(source_fd)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+        ) != identity:
+            raise PlayoffValidationError(
+                f"input changed while creating snapshot: {source}"
             )
-            digest = hashlib.sha256()
-            try:
-                with (
-                    os.fdopen(os.dup(source_fd), "rb") as source_handle,
-                    os.fdopen(
-                        os.dup(destination_fd), "wb"
-                    ) as destination_handle,
-                ):
-                    for block in iter(
-                        lambda: source_handle.read(1024 * 1024), b""
-                    ):
-                        digest.update(block)
-                        destination_handle.write(block)
-                    destination_handle.flush()
-                    os.fsync(destination_handle.fileno())
-            finally:
-                os.close(destination_fd)
-            copied_sha256 = digest.hexdigest()
-            os.lseek(source_fd, 0, os.SEEK_SET)
-            rebound = hashlib.sha256()
-            with os.fdopen(os.dup(source_fd), "rb") as source_handle:
-                for block in iter(
-                    lambda: source_handle.read(1024 * 1024), b""
-                ):
-                    rebound.update(block)
-            final_source = source.lstat()
-            final_identity = (
-                final_source.st_dev,
-                final_source.st_ino,
-                final_source.st_mode,
-            )
-            if (
-                final_identity != identity
-                or (
-                    os.fstat(source_fd).st_dev,
-                    os.fstat(source_fd).st_ino,
-                    os.fstat(source_fd).st_mode,
-                ) != identity
-                or rebound.hexdigest() != copied_sha256
-                or _sha256_pinned_regular(
-                    destination,
-                    expected_identity=None,
-                    message=(
-                        "input changed while creating snapshot: "
-                        f"{source}"
-                    ),
-                ) != copied_sha256
+        blocks = []
+        digest = hashlib.sha256()
+        with os.fdopen(os.dup(source_fd), "rb") as source_handle:
+            for block in iter(
+                lambda: source_handle.read(1024 * 1024), b""
             ):
-                raise PlayoffValidationError(
-                    f"input changed while creating snapshot: {source}"
-                )
-        finally:
-            os.close(source_fd)
+                digest.update(block)
+                blocks.append(block)
+        payload = b"".join(blocks)
+        captured_sha256 = digest.hexdigest()
+        final_source = source.lstat()
+        final_identity = (
+            final_source.st_dev,
+            final_source.st_ino,
+            final_source.st_mode,
+        )
+        if (
+            final_identity != identity
+            or (
+                os.fstat(source_fd).st_dev,
+                os.fstat(source_fd).st_ino,
+                os.fstat(source_fd).st_mode,
+            ) != identity
+            or _sha256_pinned_regular(
+                source,
+                expected_identity=identity,
+                message=(
+                    "input changed while creating snapshot: "
+                    f"{source}"
+                ),
+            ) != captured_sha256
+        ):
+            raise PlayoffValidationError(
+                f"input changed while creating snapshot: {source}"
+            )
     except PlayoffValidationError:
         raise
     except OSError as exc:
         raise PlayoffValidationError(
             f"could not snapshot playoff input: {source}"
         ) from exc
+    finally:
+        if source_fd is not None:
+            os.close(source_fd)
     return _InputFileAttestation(
         source=source,
-        destination=destination,
+        relative_path=destination.as_posix(),
         identity=identity,
-        sha256=copied_sha256,
+        sha256=captured_sha256,
+        payload=payload,
     )
 
 
 def _snapshot_directory(
-    snapshot: _InputSnapshot,
+    files: list[_InputFileAttestation],
+    directories: list[_InputDirectoryAttestation],
     source: Path,
-    destination: Path,
+    relative_dir: Path,
 ) -> None:
     try:
         observed = source.lstat()
@@ -485,8 +515,8 @@ def _snapshot_directory(
             observed.st_mode,
         )
         for name in entries:
-            snapshot.files.append(
-                _copy_input_file(source / name, destination / name)
+            files.append(
+                _copy_input_file(source / name, relative_dir / name)
             )
         final = source.lstat()
         if (
@@ -496,7 +526,7 @@ def _snapshot_directory(
             raise PlayoffValidationError(
                 f"input changed while creating snapshot: {source}"
             )
-        snapshot.directories.append(
+        directories.append(
             _InputDirectoryAttestation(source, identity, entries)
         )
     except PlayoffValidationError:
@@ -507,70 +537,126 @@ def _snapshot_directory(
         ) from exc
 
 
-def _capture_input_snapshot(data_dir: Path) -> _InputSnapshot:
-    """Capture every playoff build input into one private mirrored tree."""
+def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
+    """Capture every playoff build input once as immutable bytes."""
     data_dir.mkdir(parents=True, exist_ok=True)
-    root = Path(
-        tempfile.mkdtemp(prefix=".playoff-inputs-", dir=data_dir)
+    files: list[_InputFileAttestation] = []
+    directories: list[_InputDirectoryAttestation] = []
+    _snapshot_directory(
+        files,
+        directories,
+        data_dir / "raw/historical_bref",
+        Path("raw/historical_bref"),
     )
-    snapshot = _InputSnapshot(root=root, files=[], directories=[])
+    _snapshot_directory(
+        files,
+        directories,
+        data_dir / "raw/playoff_bref",
+        Path("raw/playoff_bref"),
+    )
+    for season, month in playoff_bref.PLAY_IN_MONTHS.items():
+        name = f"NBA_{season}_games-{month}.html"
+        for suffix in ("", ".meta.json"):
+            relative = Path("raw/bref") / f"{name}{suffix}"
+            files.append(_copy_input_file(
+                data_dir / relative, relative
+            ))
+    for season in range(2020, 2027):
+        name = f"nba_schedule_{season}.parquet"
+        for suffix in ("", ".meta.json"):
+            relative = Path("raw/hoopr") / f"{name}{suffix}"
+            files.append(_copy_input_file(
+                data_dir / relative, relative
+            ))
+    for name in _SNAPSHOT_REFERENCE_FILES:
+        relative = Path("reference") / name
+        files.append(_copy_input_file(data_dir / relative, relative))
+    runtime_sources = {
+        "franchises.csv": cast(Path, franchises.REFERENCE),
+        "hoopr_snapshot.json": cast(Path, hoopr.SNAPSHOT_PATH),
+    }
+    for name, source in runtime_sources.items():
+        files.append(_copy_input_file(
+            source, Path("runtime_reference") / name
+        ))
+    with publication.publication_lock(
+        data_dir / "parquet", exclusive=False
+    ):
+        for name in _SNAPSHOT_PARQUET_FILES:
+            relative = Path("parquet") / name
+            files.append(_copy_input_file(
+                data_dir / relative, relative
+            ))
+
+    payloads = MappingProxyType({
+        record.relative_path: record.payload for record in files
+    })
+    if len(payloads) != len(files):
+        raise PlayoffValidationError(
+            "playoff input capture contains duplicate paths"
+        )
+    if (
+        payloads["reference/franchises.csv"]
+        != payloads["runtime_reference/franchises.csv"]
+    ):
+        raise PlayoffValidationError(
+            "franchise reference differs from the packaged runtime reference"
+        )
+    if (
+        payloads["reference/hoopr_snapshot.json"]
+        != payloads["runtime_reference/hoopr_snapshot.json"]
+    ):
+        raise PlayoffValidationError(
+            "hoopR snapshot reference differs from the packaged runtime reference"
+        )
+    resolver = franchises.FranchiseResolver.from_payload(
+        payloads["runtime_reference/franchises.csv"]
+    )
+    parsed_franchises = franchises.load_reference_payload(
+        payloads["runtime_reference/franchises.csv"]
+    )
+    runtime_franchises = franchises.load_reference().copy(deep=True)
+    if not parsed_franchises.equals(runtime_franchises):
+        raise PlayoffValidationError(
+            "franchise runtime state differs from the packaged reference"
+        )
     try:
-        _snapshot_directory(
-            snapshot,
-            data_dir / "raw/historical_bref",
-            root / "raw/historical_bref",
+        parsed_snapshot = json.loads(
+            payloads["runtime_reference/hoopr_snapshot.json"].decode(
+                "utf-8"
+            )
         )
-        _snapshot_directory(
-            snapshot,
-            data_dir / "raw/playoff_bref",
-            root / "raw/playoff_bref",
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PlayoffValidationError(
+            "packaged hoopR snapshot reference is invalid"
+        ) from exc
+    if not isinstance(parsed_snapshot, dict):
+        raise PlayoffValidationError(
+            "packaged hoopR snapshot reference must contain an object"
         )
-        for season, month in playoff_bref.PLAY_IN_MONTHS.items():
-            name = f"NBA_{season}_games-{month}.html"
-            for suffix in ("", ".meta.json"):
-                snapshot.files.append(_copy_input_file(
-                    data_dir / "raw/bref" / f"{name}{suffix}",
-                    root / "raw/bref" / f"{name}{suffix}",
-                ))
-        for season in range(2020, 2027):
-            name = f"nba_schedule_{season}.parquet"
-            for suffix in ("", ".meta.json"):
-                snapshot.files.append(_copy_input_file(
-                    data_dir / "raw/hoopr" / f"{name}{suffix}",
-                    root / "raw/hoopr" / f"{name}{suffix}",
-                ))
-        for name in _SNAPSHOT_REFERENCE_FILES:
-            snapshot.files.append(_copy_input_file(
-                data_dir / "reference" / name,
-                root / "reference" / name,
-            ))
-        runtime_sources = {
-            "franchises.csv": cast(Path, franchises.REFERENCE),
-            "hoopr_snapshot.json": cast(Path, hoopr.SNAPSHOT_PATH),
-        }
-        for name, source in runtime_sources.items():
-            snapshot.files.append(_copy_input_file(
-                source, root / "runtime_reference" / name
-            ))
-        with publication.publication_lock(
-            data_dir / "parquet", exclusive=False
-        ):
-            for name in _SNAPSHOT_PARQUET_FILES:
-                snapshot.files.append(_copy_input_file(
-                    data_dir / "parquet" / name,
-                    root / "parquet" / name,
-                ))
-        snapshot.verify_unchanged(
-            message="input changed while creating snapshot"
+    captured_runtime_snapshot = _freeze_value(hoopr.SNAPSHOT)
+    if parsed_snapshot != _thaw_value(captured_runtime_snapshot):
+        raise PlayoffValidationError(
+            "hoopR runtime state differs from the packaged reference"
         )
-        return snapshot
-    except BaseException:
-        shutil.rmtree(root, ignore_errors=True)
-        raise
+    captured = CapturedPlayoffInputs(
+        payloads=payloads,
+        attestations=tuple(files),
+        directories=tuple(directories),
+        franchise_resolver=resolver,
+        hoopr_snapshot=_freeze_value(parsed_snapshot),
+        versions=_freeze_value(
+            build._dependency_versions(data_dir.parent)
+        ),
+    )
+    captured.verify_unchanged(
+        message="input changed while creating snapshot"
+    )
+    return captured
 
 
 def _read_exact_csv(
-    path: Path, columns: list[str], label: str
+    path: Path | BytesIO, columns: list[str], label: str
 ) -> pd.DataFrame:
     try:
         frame = pd.read_csv(path, dtype="string")
@@ -602,7 +688,9 @@ def _has_blank(series: pd.Series) -> bool:
     return bool(series.isna().any() or series.str.strip().eq("").any())
 
 
-def load_expected_counts(path: Path) -> dict[int, ExpectedSeason]:
+def load_expected_counts(
+    path: Path | BytesIO,
+) -> dict[int, ExpectedSeason]:
     """Load the exact independently curated 1947--2026 ledger."""
     frame = _read_exact_csv(path, COUNT_COLUMNS, "count")
     if _has_blank(frame["source_url"]) or _has_blank(frame["note"]):
@@ -696,7 +784,7 @@ def load_expected_counts(path: Path) -> dict[int, ExpectedSeason]:
     return expected
 
 
-def load_site_rules(path: Path) -> dict[int, SiteRule]:
+def load_site_rules(path: Path | BytesIO) -> dict[int, SiteRule]:
     """Load the single approved 2020 neutral-site rule."""
     frame = _read_exact_csv(path, SITE_RULE_COLUMNS, "site rule")
     if len(frame) != 1:
@@ -1265,17 +1353,109 @@ def validate(
     }
 
 
-def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
-    """Assemble cached BREF playoff rows and all validation evidence."""
-    raw_dir = data_dir / "raw"
+def _captured_historical_payloads(
+    inputs: CapturedPlayoffInputs,
+    season: int,
+) -> tuple[bytes, Mapping[str, bytes]]:
+    prefix = "raw/historical_bref/"
+    index_name = historical_bref.index_filename(season)
+    index_payload, _ = inputs.cache_pair(
+        prefix + index_name,
+        lambda payload: historical_bref.validate_index_bytes(
+            payload, season
+        ),
+    )
+    month_payloads = {}
+    for page in historical_bref.discover_month_pages(
+        index_payload, season
+    ):
+        payload, _ = inputs.cache_pair(
+            prefix + page.filename,
+            lambda value, url=page.url: (
+                historical_bref.validate_month_bytes(
+                    value, season, url
+                )
+            ),
+        )
+        month_payloads[page.filename] = payload
+    return index_payload, MappingProxyType(month_payloads)
+
+
+def _captured_playoff_season(
+    inputs: CapturedPlayoffInputs,
+    season: int,
+) -> pd.DataFrame:
+    if season <= 1983:
+        index_payload, month_payloads = (
+            _captured_historical_payloads(inputs, season)
+        )
+        return playoff_bref.load_historical_season_payloads(
+            season=season,
+            index_payload=index_payload,
+            month_payloads=month_payloads,
+        )
+    dedicated, _ = inputs.cache_pair(
+        "raw/playoff_bref/" + playoff_bref.playoff_filename(season),
+        lambda payload: playoff_bref.validate_dedicated_bytes(
+            payload, season
+        ),
+    )
+    play_in = None
+    if season in playoff_bref.PLAY_IN_MONTHS:
+        month = playoff_bref.PLAY_IN_MONTHS[season]
+        play_in, _ = inputs.cache_pair(
+            (
+                "raw/playoff_bref/"
+                f"NBA_{season}_games-{month}.html"
+            ),
+            lambda payload: playoff_bref.validate_seeded_play_in_bytes(
+                payload, season
+            ),
+        )
+    return playoff_bref.load_modern_season_payloads(
+        season=season,
+        dedicated_payload=dedicated,
+        play_in_payload=play_in,
+    )
+
+
+def _captured_hoopr_payload(
+    inputs: CapturedPlayoffInputs,
+    season: int,
+) -> bytes:
+    relative = f"raw/hoopr/nba_schedule_{season}.parquet"
+    payload, metadata = inputs.cache_pair(
+        relative, hoopr.validate_payload_bytes
+    )
+    expected = {
+        "provider": "hoopr",
+        "season": season,
+        "upstream_commit": inputs.hoopr_snapshot["commit"],
+    }
+    observed = {key: metadata.get(key) for key in expected}
+    if observed != expected or any(
+        type(observed[key]) is not type(expected[key])
+        for key in expected
+    ):
+        raise cache.CacheIntegrityError(
+            f"hoopR cache metadata mismatch for {relative}: "
+            f"expected {expected}, observed {observed}"
+        )
+    return payload
+
+
+def assemble_from_inputs(
+    inputs: CapturedPlayoffInputs,
+) -> tuple[pd.DataFrame, dict, dict]:
+    """Assemble playoff rows exclusively from one captured generation."""
     frames = [
-        playoff_bref.load_season(raw_dir, season)
+        _captured_playoff_season(inputs, season)
         for season in range(1947, 2027)
     ]
     source = pd.concat(frames, ignore_index=True)
     _require_source_integers(source, _SOURCE_INTEGER_COLUMNS)
     source["away_franchise_id"] = [
-        franchises.resolve(str(name), int(season))
+        inputs.resolve_franchise(str(name), int(season))
         for name, season in zip(
             source["away_team_name"],
             source["season"],
@@ -1283,7 +1463,7 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
         )
     ]
     source["home_franchise_id"] = [
-        franchises.resolve(str(name), int(season))
+        inputs.resolve_franchise(str(name), int(season))
         for name, season in zip(
             source["home_team_name"],
             source["season"],
@@ -1293,7 +1473,9 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
     source, site_rule_matches = apply_site_rules(
         source,
         load_site_rules(
-            data_dir / "reference/playoff_site_rules.csv"
+            BytesIO(inputs.payload(
+                "reference/playoff_site_rules.csv"
+            ))
         ),
     )
     source["home_margin"] = source["home_pts"] - source["away_pts"]
@@ -1301,22 +1483,28 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
     games = _enforce_schema(source)
 
     modern_regular = pd.read_parquet(
-        data_dir / "parquet/games.parquet",
+        BytesIO(inputs.payload("parquet/games.parquet")),
         columns=REGULAR_OVERLAP_KEY,
     )
     historical_regular = pd.read_parquet(
-        data_dir / "parquet/historical_games.parquet",
+        BytesIO(inputs.payload("parquet/historical_games.parquet")),
         columns=REGULAR_OVERLAP_KEY,
     )
     hoopr_games = pd.concat(
         [
-            hoopr.load_postseason(raw_dir, season)
+            hoopr.load_postseason_bytes(
+                _captured_hoopr_payload(inputs, season),
+                season,
+                inputs.resolve_franchise,
+            )
             for season in range(2020, 2027)
         ],
         ignore_index=True,
     )
     expected_counts = load_expected_counts(
-        data_dir / "reference/playoff_season_counts.csv"
+        BytesIO(inputs.payload(
+            "reference/playoff_season_counts.csv"
+        ))
     )
     report = validate(
         games,
@@ -1337,15 +1525,19 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
     return games, report, evidence_bundle
 
 
-def _raw_provenance(data_dir: Path) -> dict:
-    """Attest every source consumed by the playoff publication."""
-    manifest_path = data_dir / "parquet/historical_games_manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise PlayoffValidationError(
-            "historical games manifest must be a regular file"
-        )
+def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
+    """Capture and assemble one coherent live playoff input generation."""
+    return assemble_from_inputs(_capture_input_snapshot(data_dir))
+
+
+def _raw_provenance_from_inputs(
+    inputs: CapturedPlayoffInputs,
+) -> dict:
+    """Attest every source from the same immutable captured generation."""
     try:
-        historical_manifest_payload = manifest_path.read_bytes()
+        historical_manifest_payload = inputs.payload(
+            "parquet/historical_games_manifest.json"
+        )
         historical_manifest = json.loads(
             historical_manifest_payload.decode("utf-8")
         )
@@ -1353,9 +1545,12 @@ def _raw_provenance(data_dir: Path) -> dict:
             raise ValueError(
                 "historical games manifest must contain an object"
             )
-        historical_sources = historical_build._raw_provenance(data_dir)
+        historical_sources = (
+            historical_build._raw_provenance_from_payloads(
+                inputs.payloads
+            )
+        )
     except (
-        OSError,
         UnicodeDecodeError,
         json.JSONDecodeError,
         ValueError,
@@ -1364,18 +1559,6 @@ def _raw_provenance(data_dir: Path) -> dict:
         raise PlayoffValidationError(
             f"historical source provenance is invalid: {exc}"
         ) from exc
-    try:
-        manifest_unchanged = (
-            manifest_path.read_bytes() == historical_manifest_payload
-        )
-    except OSError as exc:
-        raise PlayoffValidationError(
-            "historical manifest changed while attesting"
-        ) from exc
-    if not manifest_unchanged:
-        raise PlayoffValidationError(
-            "historical manifest changed while attesting"
-        )
     if historical_manifest.get("sources") != historical_sources:
         raise PlayoffValidationError(
             "historical manifest sources differ from verified cache provenance"
@@ -1384,19 +1567,33 @@ def _raw_provenance(data_dir: Path) -> dict:
         historical_sources["basketball_reference"]["pages"]
     )
 
-    raw_dir = data_dir / "raw"
-    try:
-        playoff_paths = playoff_bref.validate_cache_inventory(
-            raw_dir, complete=True
-        )
-    except (OSError, ValueError, cache.CacheIntegrityError) as exc:
+    expected_bodies = {
+        *(
+            playoff_bref.playoff_filename(season)
+            for season in playoff_bref.DEDICATED_SEASONS
+        ),
+        *(
+            f"NBA_{season}_games-{month}.html"
+            for season, month in playoff_bref.PLAY_IN_MONTHS.items()
+        ),
+    }
+    prefix = "raw/playoff_bref/"
+    observed_entries = {
+        name.removeprefix(prefix)
+        for name in inputs.payloads
+        if name.startswith(prefix)
+    }
+    expected_entries = {
+        *(name for name in expected_bodies),
+        *(name + ".meta.json" for name in expected_bodies),
+    }
+    if observed_entries != expected_entries:
         raise PlayoffValidationError(
-            f"playoff cache provenance is invalid: {exc}"
-        ) from exc
+            "playoff cache inventory is incomplete"
+        )
 
     playoff_pages = []
     stable_page_fields = (
-        "path",
         "provider",
         "resource",
         "league",
@@ -1405,64 +1602,78 @@ def _raw_provenance(data_dir: Path) -> dict:
         "url",
         "sha256",
     )
-    seeded_fields = (
-        "seeded_from",
-        "seed_operation",
-        "source_sha256",
-    )
-    for path in playoff_paths:
+    for name in sorted(expected_bodies):
+        dedicated = "_games-" not in name
+        if dedicated:
+            season = int(name.removeprefix("NBA_").split("_", 1)[0])
+            validator = lambda value, year=season: (
+                playoff_bref.validate_dedicated_bytes(value, year)
+            )
+        else:
+            season = int(name.removeprefix("NBA_").split("_", 1)[0])
+            validator = lambda value, year=season: (
+                playoff_bref.validate_seeded_play_in_bytes(value, year)
+            )
         try:
-            metadata = playoff_bref.attest_cache_entry(path)
+            payload, metadata = inputs.cache_pair(
+                prefix + name, validator
+            )
+            expected = (
+                {
+                    "provider": "basketball_reference",
+                    "resource": "playoff_schedule",
+                    "league": "NBA",
+                    "season": season,
+                    "month": None,
+                    "url": playoff_bref.playoff_url(season),
+                }
+                if dedicated else playoff_bref._seed_metadata(
+                    season, payload
+                )
+            )
+            observed = {
+                key: metadata.get(key) for key in expected
+            }
+            if observed != expected or any(
+                type(observed[key]) is not type(expected[key])
+                for key in expected
+            ):
+                raise PlayoffValidationError(
+                    "playoff page metadata mismatch"
+                )
             record = {
-                "path": path.relative_to(data_dir).as_posix(),
+                "path": prefix + name,
                 **{
                     field: metadata[field]
                     for field in stable_page_fields
-                    if field != "path"
                 },
             }
-            if metadata["resource"] == "play_in_schedule_month":
-                record.update({
-                    field: metadata[field] for field in seeded_fields
-                })
-                seeded_from = Path(metadata["seeded_from"])
-                if (
-                    seeded_from.is_absolute()
-                    or ".." in seeded_from.parts
-                    or seeded_from.as_posix()
-                    != (
-                        "raw/bref/"
-                        f"NBA_{metadata['season']}_games-"
-                        f"{metadata['month']}.html"
-                    )
+            if not dedicated:
+                for field in (
+                    "seeded_from",
+                    "seed_operation",
+                    "source_sha256",
                 ):
-                    raise PlayoffValidationError(
-                        "seeded playoff source path is invalid"
-                    )
-                source_path = data_dir / seeded_from
-                source_attestation = cache.read_attested(
-                    source_path, bref.validate_payload
+                    record[field] = metadata[field]
+                source_relative = metadata["seeded_from"]
+                source_payload, source_metadata = inputs.cache_pair(
+                    source_relative, bref.validate_payload_bytes
                 )
-                if source_attestation is None:
-                    raise PlayoffValidationError(
-                        "seeded playoff source is missing"
-                    )
-                source_payload, source_metadata = source_attestation
-                source_identity = {
+                source_expected = {
                     "provider": "basketball_reference",
-                    "season": metadata["season"],
-                    "month": metadata["month"],
+                    "season": season,
+                    "month": playoff_bref.PLAY_IN_MONTHS[season],
                 }
-                if any(
-                    source_metadata.get(key) != value
-                    for key, value in source_identity.items()
-                ):
-                    raise PlayoffValidationError(
-                        "seeded playoff source sidecar identity mismatch"
-                    )
-                source_sha256 = hashlib.sha256(source_payload).hexdigest()
+                source_observed = {
+                    key: source_metadata.get(key)
+                    for key in source_expected
+                }
+                source_sha256 = hashlib.sha256(
+                    source_payload
+                ).hexdigest()
                 if (
-                    source_sha256 != metadata["source_sha256"]
+                    source_observed != source_expected
+                    or source_sha256 != metadata["source_sha256"]
                     or source_sha256 != metadata["sha256"]
                 ):
                     raise PlayoffValidationError(
@@ -1473,51 +1684,33 @@ def _raw_provenance(data_dir: Path) -> dict:
             raise
         except (
             KeyError,
-            OSError,
             UnicodeDecodeError,
             json.JSONDecodeError,
             ValueError,
             cache.CacheIntegrityError,
         ) as exc:
             raise PlayoffValidationError(
-                f"playoff page provenance is invalid for {path.name}: {exc}"
+                f"playoff page provenance is invalid for {name}: {exc}"
             ) from exc
 
+    commit = inputs.hoopr_snapshot["commit"]
     hoopr_schedules = []
     for season in range(2020, 2027):
-        path = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
-        try:
-            payload = hoopr._read_pinned_cache(path, season)
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            ValueError,
-            cache.CacheIntegrityError,
-        ) as exc:
-            raise PlayoffValidationError(
-                f"hoopR provenance is invalid for season {season}: {exc}"
-            ) from exc
-        if payload is None:
-            raise PlayoffValidationError(
-                f"hoopR pinned schedule is missing for season {season}"
-            )
-        url = (
-            "https://raw.githubusercontent.com/"
-            "sportsdataverse/hoopR-nba-data/"
-            f"{hoopr.SNAPSHOT['commit']}/nba/schedules/parquet/"
-            f"nba_schedule_{season}.parquet"
-        )
+        payload = _captured_hoopr_payload(inputs, season)
         hoopr_schedules.append({
-            "path": path.relative_to(data_dir).as_posix(),
+            "path": f"raw/hoopr/nba_schedule_{season}.parquet",
             "provider": "hoopr",
             "resource": "pinned_schedule",
             "season": season,
-            "url": url,
-            "upstream_commit": hoopr.SNAPSHOT["commit"],
+            "url": (
+                "https://raw.githubusercontent.com/"
+                "sportsdataverse/hoopR-nba-data/"
+                f"{commit}/nba/schedules/parquet/"
+                f"nba_schedule_{season}.parquet"
+            ),
+            "upstream_commit": commit,
             "sha256": hashlib.sha256(payload).hexdigest(),
         })
-
     return {
         "basketball_reference": {
             "historical_manifest": {
@@ -1530,10 +1723,26 @@ def _raw_provenance(data_dir: Path) -> dict:
             "playoff_pages": playoff_pages,
         },
         "hoopr": {
-            "upstream_commit": hoopr.SNAPSHOT["commit"],
+            "upstream_commit": commit,
             "schedules": hoopr_schedules,
         },
     }
+
+
+def _raw_provenance_path(data_dir: Path) -> dict:
+    """Compatibility alias for captured path provenance."""
+    return _raw_provenance(data_dir)
+
+
+def _raw_provenance(
+    source: Path | CapturedPlayoffInputs,
+) -> dict:
+    """Attest a captured generation, capturing a live Path just once."""
+    inputs = (
+        source if isinstance(source, CapturedPlayoffInputs)
+        else _capture_input_snapshot(source)
+    )
+    return _raw_provenance_from_inputs(inputs)
 
 
 def _validate_runtime_reference_binding(
@@ -1620,6 +1829,35 @@ def _validate_runtime_reference_binding(
         ) from exc
 
 
+def _reference_provenance_from_inputs(
+    inputs: CapturedPlayoffInputs,
+) -> dict:
+    """Attest deterministic references from immutable captured bytes."""
+    if (
+        inputs.payload("reference/franchises.csv")
+        != inputs.payload("runtime_reference/franchises.csv")
+    ):
+        raise PlayoffValidationError(
+            "franchise reference differs from the packaged runtime reference"
+        )
+    if (
+        inputs.payload("reference/hoopr_snapshot.json")
+        != inputs.payload("runtime_reference/hoopr_snapshot.json")
+    ):
+        raise PlayoffValidationError(
+            "hoopR snapshot reference differs from the packaged runtime reference"
+        )
+    return {
+        name: {
+            "path": f"reference/{name}",
+            "sha256": hashlib.sha256(
+                inputs.payload(f"reference/{name}")
+            ).hexdigest(),
+        }
+        for name in REFERENCE_FILES
+    }
+
+
 def _reference_provenance(
     data_dir: Path,
     *,
@@ -1644,25 +1882,39 @@ def _reference_provenance(
     return references
 
 
+def _validate_captured_runtime_state(
+    inputs: CapturedPlayoffInputs,
+) -> None:
+    expected_frame = franchises.load_reference_payload(
+        inputs.payload("runtime_reference/franchises.csv")
+    )
+    if not expected_frame.equals(
+        franchises.load_reference().copy(deep=True)
+    ):
+        raise PlayoffValidationError(
+            "franchise runtime state differs from the packaged reference"
+        )
+    if _thaw_value(inputs.hoopr_snapshot) != _thaw_value(
+        _freeze_value(hoopr.SNAPSHOT)
+    ):
+        raise PlayoffValidationError(
+            "hoopR runtime state differs from the packaged reference"
+        )
+
+
 def run(data_dir: Path) -> None:
     """Build and transactionally publish the attested playoff pair."""
-    snapshot = _capture_input_snapshot(data_dir)
+    inputs = _capture_input_snapshot(data_dir)
     stage_dir = None
     try:
-        runtime_reference_dir = snapshot.root / "runtime_reference"
-        _validate_runtime_reference_binding(
-            snapshot.root,
-            runtime_reference_dir=runtime_reference_dir,
-        )
         expected_counts = load_expected_counts(
-            snapshot.root / "reference/playoff_season_counts.csv"
+            BytesIO(inputs.payload(
+                "reference/playoff_season_counts.csv"
+            ))
         )
-        games, report, evidence = assemble(snapshot.root)
-        provenance = _raw_provenance(snapshot.root)
-        references = _reference_provenance(
-            snapshot.root,
-            runtime_reference_dir=runtime_reference_dir,
-        )
+        games, report, evidence = assemble_from_inputs(inputs)
+        provenance = _raw_provenance_from_inputs(inputs)
+        references = _reference_provenance_from_inputs(inputs)
         stage_dir = Path(
             tempfile.mkdtemp(prefix=".playoff-stage-", dir=data_dir)
         )
@@ -1699,7 +1951,7 @@ def run(data_dir: Path) -> None:
             "schema_version": 1,
             "sources": provenance,
             "references": references,
-            "versions": build._dependency_versions(data_dir.parent),
+            "versions": _thaw_value(inputs.versions),
             "tables": {"playoff_games": table_manifest},
             "validation": reread_report,
         }
@@ -1714,13 +1966,10 @@ def run(data_dir: Path) -> None:
             encoding="utf-8",
         )
         def validate_precommit_inputs() -> None:
-            snapshot.verify_unchanged(
+            inputs.verify_unchanged(
                 message="playoff input changed before publication"
             )
-            _validate_runtime_reference_binding(
-                snapshot.root,
-                runtime_reference_dir=runtime_reference_dir,
-            )
+            _validate_captured_runtime_state(inputs)
 
         retained_rollback = publication.publish_pair(
             stage_dir,
@@ -1738,9 +1987,5 @@ def run(data_dir: Path) -> None:
                 stacklevel=2,
             )
     finally:
-        try:
-            if stage_dir is not None and stage_dir.exists():
-                shutil.rmtree(stage_dir)
-        finally:
-            if snapshot.root.exists():
-                shutil.rmtree(snapshot.root)
+        if stage_dir is not None and stage_dir.exists():
+            shutil.rmtree(stage_dir)

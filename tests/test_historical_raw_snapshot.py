@@ -4,6 +4,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
+
+import fcntl
 
 import pytest
 
@@ -11,6 +14,41 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 ARCHIVE_SCRIPT = SCRIPTS / "archive_historical_raw_snapshot.sh"
 RESTORE_SCRIPT = SCRIPTS / "restore_historical_raw.sh"
+
+
+def wait_for_shared_flock_waiter(
+    lock_path: Path,
+    process: subprocess.Popen[str],
+    forbidden_marker: Path,
+    timeout: float = 5,
+) -> None:
+    inode = lock_path.stat().st_ino
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        locks = Path("/proc/locks").read_text(encoding="utf-8")
+        if any(
+            "->" in line
+            and " FLOCK " in line
+            and " READ " in line
+            and f":{inode} " in line
+            for line in locks.splitlines()
+        ):
+            return
+        if forbidden_marker.exists():
+            raise AssertionError("historical reader ran before publisher exit")
+        if process.poll() is not None:
+            raise AssertionError("historical reader exited before taking lock")
+        time.sleep(0.01)
+    raise AssertionError("historical shared-lock waiter did not appear")
+
+
+def wait_for_file(path: Path, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {path}")
 
 
 def inventory(directory: Path) -> dict[str, str]:
@@ -169,6 +207,74 @@ def test_archive_and_restore_are_exact_inverses(tmp_path: Path) -> None:
 
     assert restored.returncode == 0, restored.stderr
     assert inventory(repo / "restored/historical_bref") == source_files
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_historical_shell_reader_holds_shared_publication_lock(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Would fail if either historical script read outside its shared lock."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    if operation == "restore":
+        archived = archive(repo, archive_root)
+        assert archived.returncode == 0, archived.stderr
+
+    fake_bin = tmp_path / "lock-test-bin"
+    fake_bin.mkdir()
+    pause_marker = tmp_path / "historical-rsync-paused"
+    pause_gate = tmp_path / "historical-rsync-continue"
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if test ! -e "$PAUSE_MARKER"; then
+  : > "$PAUSE_MARKER"
+  while test ! -e "$PAUSE_GATE"; do sleep 0.01; done
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    environment = historical_environment(repo, archive_root)
+    environment.update({
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PAUSE_GATE": str(pause_gate),
+        "PAUSE_MARKER": str(pause_marker),
+        "REAL_RSYNC": shutil.which("rsync") or "rsync",
+    })
+    script = ARCHIVE_SCRIPT if operation == "archive" else RESTORE_SCRIPT
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        ["bash", str(script)],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_shared_flock_waiter(lock_path, process, pause_marker)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        wait_for_file(pause_marker)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pause_gate.touch()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        pause_gate.touch(exist_ok=True)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
 
 
 def test_archive_rejects_body_bytes_that_differ_from_manifest_sha(
@@ -835,6 +941,71 @@ def test_archive_rejects_symlinked_live_manifest(tmp_path: Path) -> None:
     assert archived.returncode != 0
     assert not destination.exists()
     assert list(archive_root.glob(".historical-archive.*")) == []
+
+
+def test_restore_rejects_symlinked_live_manifest(tmp_path: Path) -> None:
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    archived = archive(repo, archive_root)
+    assert archived.returncode == 0, archived.stderr
+    manifest = repo / "data/parquet/historical_games_manifest.json"
+    target = tmp_path / "historical-games-manifest-target.json"
+    manifest.replace(target)
+    manifest.symlink_to(target)
+
+    restored = restore(repo, archive_root)
+
+    assert restored.returncode != 0
+    assert "missing or unsafe historical manifest" in restored.stderr
+    assert not (repo / "restored/historical_bref").exists()
+
+
+def test_restore_rejects_manifest_swapped_to_symlink_while_waiting(
+    tmp_path: Path,
+) -> None:
+    """Would fail if restore reopened a pre-lock manifest pathname."""
+    repo, archive_root, _ = seed_historical_snapshot_fixture(tmp_path)
+    archived = archive(repo, archive_root)
+    assert archived.returncode == 0, archived.stderr
+    manifest = repo / "data/parquet/historical_games_manifest.json"
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    pin_tmp = tmp_path / "manifest-tmp"
+    pin_tmp.mkdir()
+    environment = historical_environment(repo, archive_root)
+    environment["TMPDIR"] = str(pin_tmp)
+    process = subprocess.Popen(
+        ["bash", str(RESTORE_SCRIPT)],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_shared_flock_waiter(
+            lock_path,
+            process,
+            tmp_path / "forbidden-historical-progress",
+        )
+        target = tmp_path / "historical-manifest-target.json"
+        manifest.replace(target)
+        manifest.symlink_to(target)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode != 0, stdout
+    assert "missing or unsafe historical manifest" in stderr
+    assert not (repo / "restored/historical_bref").exists()
+    assert list(pin_tmp.iterdir()) == []
 
 
 @pytest.mark.parametrize("entry_kind", ["symlink", "nested_dir", "fifo"])

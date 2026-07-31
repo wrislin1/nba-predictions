@@ -30,6 +30,23 @@ def _identity(value: os.stat_result) -> tuple[int, int, int]:
     return value.st_dev, value.st_ino, value.st_mode
 
 
+def _require_directory_binding(
+    path: Path,
+    expected: os.stat_result,
+    *,
+    message: str,
+) -> None:
+    try:
+        observed = path.lstat()
+    except OSError as exc:
+        raise PairPublicationError(message) from exc
+    if (
+        not stat.S_ISDIR(observed.st_mode)
+        or _identity(observed) != _identity(expected)
+    ):
+        raise PairPublicationError(message)
+
+
 def lock_path(output_dir: Path) -> Path:
     """Return the stable lock path governing ``output_dir`` publications."""
     return output_dir.parent / LOCK_FILENAME
@@ -39,10 +56,42 @@ def lock_path(output_dir: Path) -> Path:
 def publication_lock(
     output_dir: Path, *, exclusive: bool
 ) -> Iterator[None]:
-    """Hold the mandatory stable reader/writer publication lock."""
-    parent_fd = _open_directory(output_dir.parent)
+    """Hold the publication lock below one stable parent trust anchor."""
+    data_root = output_dir.parent
+    trust_anchor = data_root.parent
+    anchor_fd = _open_directory(trust_anchor)
+    anchor_observed = os.fstat(anchor_fd)
+    parent_fd = None
     lock_fd = None
+    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     try:
+        # The repository/fixture root is the protocol trust anchor.  Every
+        # compliant participant takes it before opening the data root, so a
+        # replacement data-root inode cannot split the lock generation.
+        fcntl.flock(anchor_fd, operation)
+        _require_directory_binding(
+            trust_anchor,
+            anchor_observed,
+            message="publication trust anchor changed while waiting",
+        )
+        parent_fd = _open_directory(data_root)
+        parent_observed = os.fstat(parent_fd)
+        _require_directory_binding(
+            data_root,
+            parent_observed,
+            message="publication data root changed while opening",
+        )
+        fcntl.flock(parent_fd, operation)
+        _require_directory_binding(
+            trust_anchor,
+            anchor_observed,
+            message="publication trust anchor changed while waiting",
+        )
+        _require_directory_binding(
+            data_root,
+            parent_observed,
+            message="publication data root changed while waiting",
+        )
         prior = _entry_stat(parent_fd, LOCK_FILENAME)
         if prior is not None and not stat.S_ISREG(prior.st_mode):
             raise PairPublicationError(
@@ -78,7 +127,6 @@ def publication_lock(
             raise PairPublicationError(
                 "publication lock changed while opening"
             )
-        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         fcntl.flock(lock_fd, operation)
         path_after_wait = _entry_stat(parent_fd, LOCK_FILENAME)
         if (
@@ -89,13 +137,35 @@ def publication_lock(
                 "publication lock changed while waiting"
             )
         yield
+        path_before_release = _entry_stat(parent_fd, LOCK_FILENAME)
+        if (
+            path_before_release is None
+            or _identity(path_before_release) != _identity(observed)
+        ):
+            raise PairPublicationError(
+                "publication lock changed while held"
+            )
+        _require_directory_binding(
+            data_root,
+            parent_observed,
+            message="publication data root changed while held",
+        )
+        _require_directory_binding(
+            trust_anchor,
+            anchor_observed,
+            message="publication trust anchor changed while held",
+        )
     finally:
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
-        os.close(parent_fd)
+        if parent_fd is not None:
+            fcntl.flock(parent_fd, fcntl.LOCK_UN)
+            os.close(parent_fd)
+        fcntl.flock(anchor_fd, fcntl.LOCK_UN)
+        os.close(anchor_fd)
 
 
 def _entry_stat(directory_fd: int, name: str) -> os.stat_result | None:

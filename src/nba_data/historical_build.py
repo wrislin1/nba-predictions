@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from typing import Mapping
 import warnings
 
 import pandas as pd
@@ -467,6 +468,176 @@ def _cache_error(exc: Exception) -> HistoricalValidationError:
     return HistoricalValidationError(str(exc))
 
 
+def _raw_provenance_from_payloads(
+    payloads: Mapping[str, bytes],
+) -> dict:
+    """Attest historical cache pairs from immutable captured bytes."""
+    prefix = "raw/historical_bref/"
+    entries = {
+        name.removeprefix(prefix): payload
+        for name, payload in payloads.items()
+        if name.startswith(prefix)
+    }
+    if not entries:
+        return {"basketball_reference": {"pages": []}}
+    bodies = {
+        name for name in entries
+        if name.endswith(".html")
+    }
+    sidecars = {
+        name.removesuffix(".meta.json")
+        for name in entries
+        if name.endswith(".html.meta.json")
+    }
+    if any(
+        not (
+            name.endswith(".html")
+            or name.endswith(".html.meta.json")
+        )
+        for name in entries
+    ):
+        raise HistoricalValidationError(
+            "unexpected historical cache entry"
+        )
+    if bodies != sidecars:
+        raise HistoricalValidationError("incomplete historical cache pair")
+    if any(
+        _HISTORICAL_CACHE_NAME.fullmatch(name) is None
+        for name in bodies
+    ):
+        raise HistoricalValidationError(
+            "unexpected historical cache entry"
+        )
+
+    by_season: dict[int, list[str]] = {}
+    for name in sorted(bodies):
+        match = _HISTORICAL_CACHE_NAME.fullmatch(name)
+        assert match is not None
+        season = int(match["season"])
+        try:
+            expected_league = historical_bref.league_for_season(season)
+        except ValueError as exc:
+            raise _cache_error(exc) from exc
+        if match["league"] != expected_league:
+            raise HistoricalValidationError(
+                "historical cache metadata mismatch"
+            )
+        by_season.setdefault(season, []).append(name)
+
+    pages = []
+    identities = set()
+    urls = set()
+    for season, names in sorted(by_season.items()):
+        indexes = [name for name in names if "_games-" not in name]
+        if len(indexes) != 1:
+            raise HistoricalValidationError(
+                "historical cache requires exactly one season index"
+            )
+        index_name = indexes[0]
+        try:
+            index_metadata = cache.attest_bytes(
+                entries[index_name],
+                entries[index_name + ".meta.json"],
+                lambda value: historical_bref.validate_index_bytes(
+                    value, season
+                ),
+                label=prefix + index_name,
+            )
+            discovered = historical_bref.discover_month_pages(
+                entries[index_name], season
+            )
+        except (
+            cache.CacheIntegrityError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise _cache_error(exc) from exc
+        discovered_by_name = {
+            page.filename: page for page in discovered
+        }
+        actual_month_names = {
+            name for name in names if name != index_name
+        }
+        if actual_month_names != set(discovered_by_name):
+            raise HistoricalValidationError(
+                "historical cache month pages differ from discovered index"
+            )
+
+        for name in sorted(names):
+            match = _HISTORICAL_CACHE_NAME.fullmatch(name)
+            assert match is not None
+            month = match["month"]
+            is_index = month is None
+            url = (
+                historical_bref.index_url(season)
+                if is_index else discovered_by_name[name].url
+            )
+            resource = (
+                "historical_schedule_index"
+                if is_index else "historical_schedule_month"
+            )
+            try:
+                metadata = (
+                    index_metadata if is_index else cache.attest_bytes(
+                        entries[name],
+                        entries[name + ".meta.json"],
+                        lambda value, page_url=url: (
+                            historical_bref.validate_month_bytes(
+                                value, season, page_url
+                            )
+                        ),
+                        label=prefix + name,
+                    )
+                )
+            except (
+                cache.CacheIntegrityError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise _cache_error(exc) from exc
+            expected = {
+                "provider": "basketball_reference",
+                "resource": resource,
+                "league": match["league"],
+                "season": season,
+                "month": month,
+                "url": url,
+            }
+            observed = {
+                key: metadata.get(key) for key in expected
+            }
+            if observed != expected or any(
+                type(observed[key]) is not type(expected[key])
+                for key in expected
+            ):
+                raise HistoricalValidationError(
+                    "historical cache metadata mismatch"
+                )
+            identity = (
+                metadata.get("resource"),
+                metadata.get("league"),
+                metadata.get("season"),
+                metadata.get("month"),
+            )
+            if identity in identities or metadata["url"] in urls:
+                raise HistoricalValidationError(
+                    "duplicate historical cache identity"
+                )
+            identities.add(identity)
+            urls.add(metadata["url"])
+            pages.append({
+                "path": prefix + name,
+                "provider": metadata["provider"],
+                "resource": metadata["resource"],
+                "league": metadata["league"],
+                "season": metadata["season"],
+                "month": metadata.get("month"),
+                "url": metadata["url"],
+                "sha256": metadata["sha256"],
+            })
+    return {"basketball_reference": {"pages": pages}}
+
+
 def _raw_provenance(data_dir: Path) -> dict:
     """Attest every historical schedule cache body and its exact sidecar."""
     cache_dir = data_dir / "raw/historical_bref"
@@ -655,9 +826,12 @@ def _publish_historical_pair(
 def run(data_dir: Path) -> None:
     """Build and atomically publish the independently attested history."""
     games, report = assemble(data_dir)
-    modern_seasons = pd.read_parquet(
-        data_dir / "parquet/games.parquet", columns=["season"]
-    )["season"]
+    with publication.publication_lock(
+        data_dir / "parquet", exclusive=False
+    ):
+        modern_seasons = pd.read_parquet(
+            data_dir / "parquet/games.parquet", columns=["season"]
+        )["season"]
     modern_min_season = int(modern_seasons.min())
     if modern_min_season != 1984:
         raise HistoricalValidationError(

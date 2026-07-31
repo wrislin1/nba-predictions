@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import threading
 
 import pytest
@@ -648,7 +649,11 @@ def test_publication_lock_rejects_path_replacement_while_waiting(
     def swap_after_acquire(lock_fd, operation):
         nonlocal swapped
         real_flock(lock_fd, operation)
-        if operation != publication.fcntl.LOCK_UN and not swapped:
+        if (
+            operation != publication.fcntl.LOCK_UN
+            and stat.S_ISREG(os.fstat(lock_fd).st_mode)
+            and not swapped
+        ):
             replacement = tmp_path / "replacement-lock"
             replacement.write_bytes(b"")
             os.replace(replacement, publication.lock_path(output))

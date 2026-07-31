@@ -6,7 +6,7 @@ import re
 import stat
 from pathlib import Path
 import time
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from lxml import etree, html
 import pandas as pd
@@ -138,8 +138,12 @@ def _reject_unfinalized_rows(payload: bytes, *, url: str) -> None:
 
 def validate_dedicated_page(path: Path, season: int) -> None:
     """Require a completed, box-score-backed dedicated playoff schedule."""
+    validate_dedicated_bytes(path.read_bytes(), season)
+
+
+def validate_dedicated_bytes(payload: bytes, season: int) -> None:
+    """Validate captured dedicated playoff schedule bytes."""
     url = playoff_url(season)
-    payload = path.read_bytes()
     try:
         root = html.fromstring(payload)
     except (TypeError, ValueError, etree.ParserError) as exc:
@@ -164,11 +168,16 @@ def validate_dedicated_page(path: Path, season: int) -> None:
 
 def validate_seeded_play_in_page(path: Path, season: int) -> None:
     """Require a completed play-in row in its verified regular-month page."""
+    validate_seeded_play_in_bytes(path.read_bytes(), season)
+
+
+def validate_seeded_play_in_bytes(payload: bytes, season: int) -> None:
+    """Validate captured seeded play-in schedule bytes."""
     if season not in PLAY_IN_MONTHS:
         raise ValueError(f"season has no play-in month: {season}")
     url = _play_in_url(season)
     frame = bref_schedule.parse_schedule_page(
-        path.read_bytes(), season=season, league="NBA", schedule_url=url
+        payload, season=season, league="NBA", schedule_url=url
     )
     _validate_frame(frame, label=url)
     remarks = frame["game_remarks"].astype("string").str.strip().str.casefold()
@@ -246,20 +255,49 @@ def classify_historical_complement(frame: pd.DataFrame) -> pd.DataFrame:
 
 def load_historical_season(raw_dir: Path, season: int) -> pd.DataFrame:
     """Load 1947–1983 games absent from the proven regular-season selector."""
-    regular = historical_bref.load_season(raw_dir, season)
     cache_dir = raw_dir / "historical_bref"
     index_payload = cache.require_valid(
         cache_dir / historical_bref.index_filename(season),
         lambda path: historical_bref.validate_index(path, season),
     )
-    frames = []
+    month_payloads = {}
     for page in historical_bref.discover_month_pages(index_payload, season):
-        payload = cache.require_valid(
+        month_payloads[page.filename] = cache.require_valid(
             cache_dir / page.filename,
             lambda path, value=season, url=page.url: historical_bref.validate_month(
                 path, value, url
             ),
         )
+    return load_historical_season_payloads(
+        season=season,
+        index_payload=index_payload,
+        month_payloads=month_payloads,
+    )
+
+
+def load_historical_season_payloads(
+    *,
+    season: int,
+    index_payload: bytes,
+    month_payloads: Mapping[str, bytes],
+) -> pd.DataFrame:
+    """Load a historical postseason complement from captured bytes."""
+    regular = historical_bref.load_season_payloads(
+        season=season,
+        index_payload=index_payload,
+        month_payloads=month_payloads,
+    )
+    frames = []
+    for page in historical_bref.discover_month_pages(
+        index_payload, season
+    ):
+        try:
+            payload = month_payloads[page.filename]
+        except KeyError as exc:
+            raise cache.CacheIntegrityError(
+                f"missing captured historical page {page.filename}"
+            ) from exc
+        historical_bref.validate_month_bytes(payload, season, page.url)
         frames.append(bref_schedule.parse_schedule_page(
             payload,
             season=season,
@@ -290,11 +328,36 @@ def load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame:
         raise ValueError(f"modern playoff season must be 1984..2026: {season}")
     cache_dir = raw_dir / "playoff_bref"
     dedicated_path = cache_dir / playoff_filename(season)
+    dedicated_payload = cache.require_valid(
+        dedicated_path,
+        lambda path: validate_dedicated_page(path, season),
+    )
+    play_in_payload = None
+    if season in PLAY_IN_MONTHS:
+        play_in_path = cache_dir / _play_in_filename(season)
+        play_in_payload = cache.require_valid(
+            play_in_path,
+            lambda path: validate_seeded_play_in_page(path, season),
+        )
+    return load_modern_season_payloads(
+        season=season,
+        dedicated_payload=dedicated_payload,
+        play_in_payload=play_in_payload,
+    )
+
+
+def load_modern_season_payloads(
+    *,
+    season: int,
+    dedicated_payload: bytes,
+    play_in_payload: bytes | None,
+) -> pd.DataFrame:
+    """Load a modern postseason schedule from captured bytes."""
+    if season not in DEDICATED_SEASONS:
+        raise ValueError(f"modern playoff season must be 1984..2026: {season}")
+    validate_dedicated_bytes(dedicated_payload, season)
     dedicated = bref_schedule.parse_schedule_page(
-        cache.require_valid(
-            dedicated_path,
-            lambda path: validate_dedicated_page(path, season),
-        ),
+        dedicated_payload,
         season=season,
         league="NBA",
         schedule_url=playoff_url(season),
@@ -302,12 +365,13 @@ def load_modern_season(raw_dir: Path, season: int) -> pd.DataFrame:
     dedicated["game_type"] = "playoff"
     frames = [_classify_modern_remarks(dedicated)]
     if season in PLAY_IN_MONTHS:
-        play_in_path = cache_dir / _play_in_filename(season)
+        if play_in_payload is None:
+            raise cache.CacheIntegrityError(
+                f"missing captured play-in page for {season}"
+            )
+        validate_seeded_play_in_bytes(play_in_payload, season)
         seeded = bref_schedule.parse_schedule_page(
-            cache.require_valid(
-                play_in_path,
-                lambda path: validate_seeded_play_in_page(path, season),
-            ),
+            play_in_payload,
             season=season,
             league="NBA",
             schedule_url=_play_in_url(season),

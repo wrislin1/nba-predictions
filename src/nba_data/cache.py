@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import tempfile
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,30 @@ class CacheIntegrityError(RuntimeError):
 
 class SourceAccessError(RuntimeError):
     pass
+
+
+def attest_bytes(
+    payload: bytes,
+    sidecar_payload: bytes,
+    validator,
+    *,
+    label: str,
+) -> dict:
+    """Validate one already-captured body/sidecar pair without reopening paths."""
+    try:
+        metadata = json.loads(sidecar_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CacheIntegrityError(
+            f"invalid cache sidecar for {label}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise CacheIntegrityError(
+            f"cache sidecar must contain an object for {label}"
+        )
+    if hashlib.sha256(payload).hexdigest() != metadata.get("sha256"):
+        raise CacheIntegrityError(f"SHA-256 mismatch for {label}")
+    validator(payload)
+    return deepcopy(metadata)
 
 
 def sha256_file(path: Path) -> str:

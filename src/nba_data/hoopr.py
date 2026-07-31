@@ -4,7 +4,7 @@ import json
 from io import BytesIO
 from importlib import resources
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -34,7 +34,12 @@ _CROSS_SOURCE_KEY = POSTSEASON_COLUMNS
 
 def validate_payload(path: Path) -> None:
     """Confirm that a cached schedule response is readable Parquet."""
-    pq.ParquetFile(path)
+    validate_payload_bytes(path.read_bytes())
+
+
+def validate_payload_bytes(payload: bytes) -> None:
+    """Confirm that captured schedule bytes are readable Parquet."""
+    pq.ParquetFile(BytesIO(payload))
 
 
 def _read_pinned_cache(path: Path, season: int) -> bytes | None:
@@ -126,6 +131,21 @@ def load_postseason(raw_dir: Path, season: int) -> pd.DataFrame:
     payload = _read_pinned_cache(path, season)
     if payload is None:
         raise cache.CacheIntegrityError(f"missing cache entry for {path}")
+    return load_postseason_bytes(
+        payload, season, franchises.resolve
+    )
+
+
+def load_postseason_bytes(
+    payload: bytes,
+    season: int,
+    resolve_franchise: Callable[[str, int], str],
+) -> pd.DataFrame:
+    """Load postseason evidence from captured bytes and a bound resolver."""
+    if season not in range(2020, 2027):
+        raise ValueError(
+            f"hoopR postseason season must be 2020..2026: {season}"
+        )
     raw = pd.read_parquet(BytesIO(payload))
     postseason = raw["season_type"].isin([3, 5])
     status = raw["status_type_completed"]
@@ -148,10 +168,10 @@ def load_postseason(raw_dir: Path, season: int) -> pd.DataFrame:
             {3: "playoff", 5: "play_in"}
         ).astype("string"),
         "away_franchise_id": completed["away_display_name"].map(
-            lambda name: franchises.resolve(str(name), season)
+            lambda name: resolve_franchise(str(name), season)
         ),
         "home_franchise_id": completed["home_display_name"].map(
-            lambda name: franchises.resolve(str(name), season)
+            lambda name: resolve_franchise(str(name), season)
         ),
         "away_pts": _normalize_postseason_scores(
             completed["away_score"], label="away"

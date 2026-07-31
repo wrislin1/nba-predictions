@@ -12,6 +12,8 @@ historical_validator="$root/scripts/archive_historical_raw_snapshot.sh"
 
 # shellcheck source=playoff_raw_snapshot_common.sh
 source "$root/scripts/playoff_raw_snapshot_common.sh"
+# shellcheck source=publication_read_lock.sh
+source "$root/scripts/publication_read_lock.sh"
 
 test "$#" -eq 0 || {
   printf 'usage: %s\n' "$0" >&2
@@ -40,8 +42,11 @@ cleanup() {
       rm -f -- "$state_file"
     fi
   done
+  release_publication_read_locks || true
 }
 trap cleanup EXIT
+
+acquire_publication_read_locks "$manifest" "$historical_manifest"
 
 test ! -L "$manifest" && test -f "$manifest" || {
   printf 'missing or unsafe playoff manifest: %s\n' "$manifest" >&2
@@ -59,20 +64,25 @@ test ! -L "$archive_root" && test -d "$archive_root" || {
 }
 archive_root="$(cd "$archive_root" && pwd -P)"
 
-trusted_manifest="$(
-  mktemp "${TMPDIR:-/tmp}/.playoff-restore-manifest.XXXXXX"
-)"
-cp -- "$manifest" "$trusted_manifest"
-chmod 400 "$trusted_manifest"
+if ! trusted_manifest="$(
+  capture_publication_manifest "$manifest" \
+    "${TMPDIR:-/tmp}/.playoff-restore-manifest.XXXXXX"
+)"; then
+  printf 'missing or unsafe playoff manifest: %s\n' "$manifest" >&2
+  exit 1
+fi
 manifest_sha="$(sha256sum "$trusted_manifest" | cut -d' ' -f1)"
 validate_manifest_pin \
   "$manifest" "$trusted_manifest" "$manifest_sha" "playoff"
 
-trusted_historical_manifest="$(
-  mktemp "${TMPDIR:-/tmp}/.playoff-restore-historical-manifest.XXXXXX"
-)"
-cp -- "$historical_manifest" "$trusted_historical_manifest"
-chmod 400 "$trusted_historical_manifest"
+if ! trusted_historical_manifest="$(
+  capture_publication_manifest "$historical_manifest" \
+    "${TMPDIR:-/tmp}/.playoff-restore-historical-manifest.XXXXXX"
+)"; then
+  printf 'missing or unsafe historical manifest: %s\n' \
+    "$historical_manifest" >&2
+  exit 1
+fi
 historical_manifest_sha="$(
   sha256sum "$trusted_historical_manifest" | cut -d' ' -f1
 )"
@@ -156,5 +166,6 @@ trusted_manifest=
 trusted_historical_manifest=
 protected_state=
 payload_state=
+release_publication_read_locks
 trap - EXIT
 printf 'verified playoff raw restore: %s\n' "$destination"
