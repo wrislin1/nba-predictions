@@ -125,6 +125,49 @@ def test_parse_game_accepts_modern_blanks_and_double_overtime():
     assert report["max_period"] == 6
 
 
+def test_parse_game_preserves_exact_raw_score_strings():
+    # Global constraint: "Preserve the exact source score strings in
+    # score_home_raw and score_away_raw; derive non-null running scores
+    # separately." This must hold even where the derived score_home/
+    # score_away differ from the raw string (historical zero sentinels)
+    # or where the raw string is blank (modern carried-forward blanks).
+    sentinel_frame, _ = pbp_build.parse_game_payload(
+        (FIXTURES / "early_score_sentinel.json").read_bytes(),
+        worklist_row(),
+    )
+    assert sentinel_frame["score_home_raw"].tolist() == [
+        "0", "0", "0", "0", "25", "50", "98", "98",
+    ]
+    assert sentinel_frame["score_away_raw"].tolist() == [
+        "0", "2", "0", "0", "30", "60", "108", "107",
+    ]
+
+    blank_frame, _ = pbp_build.parse_game_payload(
+        (FIXTURES / "modern_blank_score.json").read_bytes(),
+        worklist_row(
+            game_id="0022500001",
+            season=2026,
+            game_date=date(2025, 10, 21),
+            away_franchise_id="HOU",
+            home_franchise_id="OKC",
+            away_pts=124,
+            home_pts=125,
+        ),
+    )
+    assert blank_frame["score_home_raw"].tolist() == [
+        "0", "", "30", "60", "100", "112", "125",
+    ]
+    assert blank_frame["score_away_raw"].tolist() == [
+        "0", "", "32", "61", "100", "112", "124",
+    ]
+    # The blank pair must stay the empty string, not be cast to NaN/null
+    # by the nullable "string" dtype.
+    assert blank_frame.loc[1, "score_home_raw"] == ""
+    assert blank_frame.loc[1, "score_away_raw"] == ""
+    assert blank_frame["score_home_raw"].notna().all()
+    assert blank_frame["score_away_raw"].notna().all()
+
+
 def _document_bytes(mutator):
     document = json.loads(
         (FIXTURES / "early_score_sentinel.json").read_bytes()
