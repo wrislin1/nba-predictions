@@ -11,5 +11,6 @@ __pycache__/
 desktop.ini
 
 data/raw/
+data/.parquet-publication.lock
 nba-stats/
 *.duckdb

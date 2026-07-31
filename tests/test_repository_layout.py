@@ -84,7 +84,15 @@ def test_analysis_first_layout_exists() -> None:
 
 def test_gitignore_protects_generated_and_raw_state() -> None:
     rules = set((ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
-    assert {".venv/", "venv/", "data/raw/", "nba-stats/", "*.duckdb", ".serena/"} <= rules
+    assert {
+        ".venv/",
+        "venv/",
+        "data/raw/",
+        "data/.parquet-publication.lock",
+        "nba-stats/",
+        "*.duckdb",
+        ".serena/",
+    } <= rules
 
 
 def test_requirements_are_utf8_and_pinned() -> None:
@@ -505,6 +513,12 @@ def test_playoff_documentation_matches_the_delivered_contract() -> None:
     )
     for document in (readme, dictionary):
         for term in required_terms:
+            assert term in document
+        for term in (
+            "data/.parquet-publication.lock",
+            "shared lock",
+            "direct-path readers",
+        ):
             assert term in document
 
     manifest_ledger_intro = (

@@ -103,6 +103,14 @@ reference, table, and validation evidence. Publishing or rebuilding this pair
 leaves both the modern and historical regular-season publications
 byte-identical.
 
+All three writers coordinate through the stable advisory lock
+`data/.parquet-publication.lock`, which remains outside the replaceable
+`data/parquet/` directory. Pair and directory writers take its exclusive
+lock; compliant readers must take its shared lock for the complete read (the
+Python helper is `nba_data.publication.publication_lock`). The atomic
+visibility guarantee applies only to participants in that protocol:
+direct-path readers that ignore the lock can observe intermediate path states.
+
 From a repository checkout, use this operator flow in order:
 
 ```bash

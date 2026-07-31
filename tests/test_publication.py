@@ -1,5 +1,8 @@
+import hashlib
+import json
 import os
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -18,6 +21,20 @@ def _seed_pair(directory: Path, prefix: str) -> dict[str, bytes]:
 
 def _read_pair(directory: Path) -> dict[str, bytes]:
     return {name: (directory / name).read_bytes() for name in PRODUCTS}
+
+
+def _write_bound_stage(directory: Path, payload: bytes) -> None:
+    (directory / PRODUCTS[0]).write_bytes(payload)
+    (directory / PRODUCTS[1]).write_text(
+        json.dumps({
+            "tables": {
+                "games": {
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
 
 
 def _replace_operand(value, directory_fd=None) -> Path:
@@ -536,3 +553,260 @@ def test_publish_pair_rejects_prior_object_swapped_during_backup(
         and (output / name).read_bytes().startswith(b"new-")
         for name in PRODUCTS
     )
+
+
+def test_compliant_pair_reader_blocks_until_complete_publication(
+    monkeypatch, tmp_path
+):
+    stage = tmp_path / "stage"
+    output = tmp_path / "output"
+    stage.mkdir()
+    output.mkdir()
+    _seed_pair(stage, "new")
+    _seed_pair(output, "old")
+    real_replace = os.replace
+    transaction_started = threading.Event()
+    allow_writer = threading.Event()
+    reader_finished = threading.Event()
+    observed = {}
+
+    def pause_after_first_backup(source, destination, *args, **kwargs):
+        source_path = _replace_operand(source, kwargs.get("src_dir_fd"))
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        result = real_replace(source, destination, *args, **kwargs)
+        if (
+            source_path == output / PRODUCTS[0]
+            and destination_path.parent.name.startswith(
+                ".playoff-rollback-"
+            )
+        ):
+            transaction_started.set()
+            assert allow_writer.wait(timeout=5)
+        return result
+
+    def publish():
+        publication.publish_pair(
+            stage, output, PRODUCTS, label="playoff"
+        )
+
+    def read():
+        observed.update(
+            publication.read_pair_bytes(
+                output, PRODUCTS, label="playoff"
+            )
+        )
+        reader_finished.set()
+
+    monkeypatch.setattr(publication.os, "replace", pause_after_first_backup)
+    writer = threading.Thread(target=publish)
+    writer.start()
+    assert transaction_started.wait(timeout=5)
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert not reader_finished.wait(timeout=0.2)
+    allow_writer.set()
+    writer.join(timeout=5)
+    reader.join(timeout=5)
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert observed == {
+        name: f"new-{name}".encode() for name in PRODUCTS
+    }
+
+
+def test_publication_lock_remains_stable_when_output_directory_is_replaced(
+    tmp_path,
+):
+    output = tmp_path / "parquet"
+    replacement = tmp_path / "replacement"
+    output.mkdir()
+    replacement.mkdir()
+
+    with publication.publication_lock(output, exclusive=False):
+        lock_path = publication.lock_path(output)
+        before = lock_path.stat()
+        os.replace(output, tmp_path / "prior")
+        os.replace(replacement, output)
+        after = lock_path.stat()
+
+    assert lock_path.parent == output.parent
+    assert lock_path.parent != output
+    assert (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+
+
+def test_publication_lock_rejects_path_replacement_while_waiting(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "parquet"
+    output.mkdir()
+    real_flock = publication.fcntl.flock
+    swapped = False
+
+    def swap_after_acquire(lock_fd, operation):
+        nonlocal swapped
+        real_flock(lock_fd, operation)
+        if operation != publication.fcntl.LOCK_UN and not swapped:
+            replacement = tmp_path / "replacement-lock"
+            replacement.write_bytes(b"")
+            os.replace(replacement, publication.lock_path(output))
+            swapped = True
+
+    monkeypatch.setattr(publication.fcntl, "flock", swap_after_acquire)
+
+    with pytest.raises(
+        publication.PairPublicationError,
+        match="publication lock changed while waiting",
+    ):
+        with publication.publication_lock(output, exclusive=False):
+            pytest.fail("replaced lock path must not enter the critical section")
+
+    assert swapped
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "fifo"])
+def test_publication_lock_rejects_non_regular_lock_path(tmp_path, kind):
+    output = tmp_path / "parquet"
+    output.mkdir()
+    lock = publication.lock_path(output)
+    if kind == "directory":
+        lock.mkdir()
+    elif kind == "symlink":
+        lock.symlink_to(tmp_path / "missing-lock-target")
+    else:
+        os.mkfifo(lock)
+
+    with pytest.raises(
+        publication.PairPublicationError,
+        match="publication lock must be a regular file",
+    ):
+        with publication.publication_lock(output, exclusive=False):
+            pytest.fail("non-regular lock must not enter the critical section")
+
+
+def test_publish_pair_rolls_back_same_inode_content_mutation(
+    monkeypatch, tmp_path
+):
+    stage = tmp_path / "stage"
+    output = tmp_path / "output"
+    stage.mkdir()
+    output.mkdir()
+    _write_bound_stage(stage, b"new parquet bytes")
+    old = _seed_pair(output, "old")
+    real_replace = os.replace
+    mutated = False
+
+    def mutate_after_first_publication(source, destination, *args, **kwargs):
+        nonlocal mutated
+        source_path = _replace_operand(source, kwargs.get("src_dir_fd"))
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        result = real_replace(source, destination, *args, **kwargs)
+        if (
+            not mutated
+            and source_path == stage / PRODUCTS[0]
+            and destination_path == output / PRODUCTS[0]
+        ):
+            with destination_path.open("r+b") as handle:
+                handle.seek(0)
+                handle.write(b"evil")
+                handle.flush()
+                os.fsync(handle.fileno())
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        publication.os, "replace", mutate_after_first_publication
+    )
+
+    with pytest.raises(
+        publication.PairPublicationError,
+        match="content changed during publication",
+    ):
+        publication.publish_pair(
+            stage,
+            output,
+            PRODUCTS,
+            label="playoff",
+            manifest_table="games",
+        )
+
+    assert _read_pair(output) == old
+    assert list(tmp_path.glob(".playoff-rollback-*")) == []
+
+
+def test_publish_pair_rejects_same_inode_stage_mutation_before_any_move(
+    monkeypatch, tmp_path
+):
+    stage = tmp_path / "stage"
+    output = tmp_path / "output"
+    stage.mkdir()
+    output.mkdir()
+    _write_bound_stage(stage, b"new parquet bytes")
+    old = _seed_pair(output, "old")
+    real_replace = os.replace
+    replace_calls = 0
+
+    def count_replace(*args, **kwargs):
+        nonlocal replace_calls
+        replace_calls += 1
+        return real_replace(*args, **kwargs)
+
+    def mutate_stage_in_place():
+        with (stage / PRODUCTS[0]).open("r+b") as handle:
+            handle.seek(0)
+            handle.write(b"evil")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    monkeypatch.setattr(publication.os, "replace", count_replace)
+
+    with pytest.raises(
+        publication.PairPublicationError,
+        match="content changed during publication",
+    ):
+        publication.publish_pair(
+            stage,
+            output,
+            PRODUCTS,
+            label="playoff",
+            manifest_table="games",
+            precommit=mutate_stage_in_place,
+        )
+
+    assert replace_calls == 0
+    assert _read_pair(output) == old
+    assert list(tmp_path.glob(".playoff-rollback-*")) == []
+
+
+def test_publish_pair_rejects_manifest_that_does_not_bind_staged_product(
+    tmp_path,
+):
+    stage = tmp_path / "stage"
+    output = tmp_path / "output"
+    stage.mkdir()
+    output.mkdir()
+    _write_bound_stage(stage, b"new parquet bytes")
+    manifest = json.loads((stage / PRODUCTS[1]).read_text(encoding="utf-8"))
+    manifest["tables"]["games"]["sha256"] = "0" * 64
+    (stage / PRODUCTS[1]).write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    old = _seed_pair(output, "old")
+
+    with pytest.raises(
+        publication.PairPublicationError,
+        match="manifest does not bind published Parquet",
+    ):
+        publication.publish_pair(
+            stage,
+            output,
+            PRODUCTS,
+            label="playoff",
+            manifest_table="games",
+        )
+
+    assert _read_pair(output) == old

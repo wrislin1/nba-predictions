@@ -258,6 +258,17 @@ pair. Two consecutive offline builds must reproduce both files byte for byte,
 and modern or historical regular rebuilds must leave all seven locked regular
 artifact hashes unchanged.
 
+Publication visibility uses the stable advisory lock
+`data/.parquet-publication.lock`, outside the directory-swapped
+`data/parquet/` tree. Historical and playoff pair publishers and the modern
+directory publisher hold its exclusive lock through their transactions.
+Compliant readers must hold its shared lock across the complete pair or
+directory read; Python callers can use
+`nba_data.publication.publication_lock(data_dir / "parquet", exclusive=False)`.
+This is a mandatory application protocol, not unlocked filesystem
+linearizability: direct-path readers that ignore the lock can observe
+intermediate path states.
+
 #### Playoff scope limitations
 
 The publication intentionally has no round, seed, or series metadata; no ABA

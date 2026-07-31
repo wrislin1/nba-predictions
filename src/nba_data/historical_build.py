@@ -646,6 +646,7 @@ def _publish_historical_pair(
             output_dir,
             HISTORICAL_PRODUCTS,
             label="historical",
+            manifest_table="historical_games",
         )
     except publication.PairPublicationError as exc:
         raise HistoricalValidationError(str(exc)) from exc

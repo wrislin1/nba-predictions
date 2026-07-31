@@ -38,6 +38,25 @@ def _replace_operand(value, directory_fd=None) -> Path:
     return directory / path
 
 
+def _write_bound_historical_pair(
+    directory: Path, parquet_payload: bytes
+) -> dict[str, bytes]:
+    manifest_payload = json.dumps({
+        "tables": {
+            "historical_games": {
+                "sha256": hashlib.sha256(parquet_payload).hexdigest(),
+            },
+        },
+    }).encode()
+    payloads = {
+        "historical_games.parquet": parquet_payload,
+        "historical_games_manifest.json": manifest_payload,
+    }
+    for name, payload in payloads.items():
+        (directory / name).write_bytes(payload)
+    return payloads
+
+
 def write_counts(tmp_path, rows):
     path = tmp_path / "counts.csv"
     pd.DataFrame(rows, columns=COUNT_COLUMNS).to_csv(path, index=False)
@@ -548,7 +567,7 @@ def test_publish_historical_pair_restores_complete_pair_after_replace_failure(
     }
     for name, payload in old.items():
         (output / name).write_bytes(payload)
-        (stage / name).write_bytes(b"new " + payload)
+    _write_bound_historical_pair(stage, b"new old games")
     actual_replace = os.replace
     moves = 0
 
@@ -585,8 +604,7 @@ def test_publish_historical_pair_restores_empty_output_after_second_move_failure
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
-    for name in historical_build.HISTORICAL_PRODUCTS:
-        (stage / name).write_bytes(name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     moves = 0
 
@@ -632,7 +650,7 @@ def test_publish_historical_pair_restores_prior_after_second_backup_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     backups = 0
 
@@ -678,7 +696,7 @@ def test_publish_historical_pair_retains_recovery_after_restoration_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     publication_moves = 0
 
@@ -739,7 +757,7 @@ def test_publish_retains_complete_pair_after_second_restoration_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     publication_moves = 0
     restoration_moves = 0
@@ -802,12 +820,10 @@ def test_publish_historical_pair_retains_prior_after_commit_cleanup_failure(
     output.mkdir()
     stage.mkdir()
     old = {}
-    new = {}
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
-        new[name] = b"new " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(new[name])
+    new = _write_bound_historical_pair(stage, b"new historical games")
     real_rmtree = publication.shutil.rmtree
 
     def retain_rollback(path):
@@ -969,8 +985,8 @@ def test_publish_historical_pair_rejects_non_regular_products(tmp_path, kind):
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
+    _write_bound_historical_pair(stage, b"stage")
     for name in historical_build.HISTORICAL_PRODUCTS:
-        (stage / name).write_bytes(b"stage")
         (output / name).write_bytes(b"prior")
     target = stage if kind.startswith("stage") else output
     product = target / historical_build.HISTORICAL_PRODUCTS[0]
@@ -1000,7 +1016,7 @@ def test_publish_historical_pair_rejects_orphan_stage_or_prior_pair(tmp_path):
     with pytest.raises(historical_build.HistoricalValidationError):
         historical_build._publish_historical_pair(stage, output)
 
-    (stage / historical_build.HISTORICAL_PRODUCTS[1]).write_bytes(b"stage")
+    _write_bound_historical_pair(stage, b"stage")
     (output / historical_build.HISTORICAL_PRODUCTS[0]).write_bytes(b"prior")
     with pytest.raises(
         historical_build.HistoricalValidationError,
