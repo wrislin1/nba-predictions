@@ -1,6 +1,7 @@
 """Parse Basketball-Reference schedule pages into normalized game rows."""
 
 import re
+from typing import NamedTuple
 from urllib.parse import urljoin
 
 from lxml import html
@@ -15,6 +16,53 @@ OVERTIME_PATTERN = re.compile(r"^(?:(\d+)OT|OT)?$")
 BOXSCORE_PATTERN = re.compile(r"^/boxscores/(\d{9}[A-Z0-9]{3})\.html$")
 EXPLICIT_NEUTRAL_REMARKS = frozenset({"neutral site"})
 VALID_LEAGUES = frozenset({"BAA", "NBA"})
+
+
+class RegexPolicy(NamedTuple):
+    """Immutable, serializable regular-expression policy."""
+
+    pattern: str
+    flags: int
+
+    def compile(self) -> re.Pattern[str]:
+        return re.compile(self.pattern, self.flags)
+
+
+class BrefSchedulePolicy(NamedTuple):
+    """Recursively immutable Basketball-Reference parser policy."""
+
+    required_stats: frozenset[str]
+    overtime_pattern: RegexPolicy
+    boxscore_pattern: RegexPolicy
+    explicit_neutral_remarks: frozenset[str]
+    valid_leagues: frozenset[str]
+    base_url: str
+
+
+def capture_policy() -> BrefSchedulePolicy:
+    """Snapshot the current parser policy without mutable aliases."""
+    return BrefSchedulePolicy(
+        required_stats=frozenset(str(stat) for stat in REQUIRED_STATS),
+        overtime_pattern=RegexPolicy(
+            pattern=str(OVERTIME_PATTERN.pattern),
+            flags=int(OVERTIME_PATTERN.flags),
+        ),
+        boxscore_pattern=RegexPolicy(
+            pattern=str(BOXSCORE_PATTERN.pattern),
+            flags=int(BOXSCORE_PATTERN.flags),
+        ),
+        explicit_neutral_remarks=frozenset(
+            str(remark) for remark in EXPLICIT_NEUTRAL_REMARKS
+        ),
+        valid_leagues=frozenset(str(league) for league in VALID_LEAGUES),
+        base_url=str(BASE_URL),
+    )
+
+
+def _policy_or_current(
+    policy: BrefSchedulePolicy | None,
+) -> BrefSchedulePolicy:
+    return capture_policy() if policy is None else policy
 
 
 def _document(payload: bytes, label: str):
@@ -39,9 +87,14 @@ def _cell_href(row, stat: str) -> str | None:
     return str(hrefs[0]) if hrefs else None
 
 
-def overtime_periods(marker: str) -> int:
+def overtime_periods(
+    marker: str,
+    *,
+    policy: BrefSchedulePolicy | None = None,
+) -> int:
+    policy = _policy_or_current(policy)
     normalized = marker.strip().upper()
-    match = OVERTIME_PATTERN.fullmatch(normalized)
+    match = policy.overtime_pattern.compile().fullmatch(normalized)
     if match is None:
         raise ValueError(f"unsupported overtime marker: {marker!r}")
     if not normalized:
@@ -66,8 +119,10 @@ def parse_schedule_page(
     season: int,
     league: str,
     schedule_url: str,
+    policy: BrefSchedulePolicy | None = None,
 ) -> pd.DataFrame:
-    if league not in VALID_LEAGUES:
+    policy = _policy_or_current(policy)
+    if league not in policy.valid_leagues:
         raise ValueError(f"unsupported league: {league}")
     root = _document(payload, schedule_url)
     tables = root.xpath("//table[@id='schedule']")
@@ -76,9 +131,10 @@ def parse_schedule_page(
             f"{schedule_url}: expected one schedule table, found {len(tables)}"
         )
     stats = set(tables[0].xpath(".//*[@data-stat]/@data-stat"))
-    missing = sorted(REQUIRED_STATS - stats)
+    missing = sorted(policy.required_stats - stats)
     if missing:
         raise ValueError(f"{schedule_url}: missing schedule stats {missing}")
+    boxscore_pattern = policy.boxscore_pattern.compile()
     records = []
     for source_row, row in enumerate(tables[0].xpath("./tbody/tr"), start=1):
         away_pts = _cell_text(row, "visitor_pts")
@@ -88,7 +144,7 @@ def parse_schedule_page(
         box_href = _cell_href(row, "box_score_text")
         box_match = None
         if box_href is not None:
-            box_match = BOXSCORE_PATTERN.fullmatch(box_href)
+            box_match = boxscore_pattern.fullmatch(box_href)
             if box_match is None:
                 raise ValueError(
                     f"{schedule_url}: source row {source_row} has invalid "
@@ -99,7 +155,8 @@ def parse_schedule_page(
         normalized_remarks = remarks.casefold()
         site_status = (
             "home" if not remarks else (
-                "neutral" if normalized_remarks in EXPLICIT_NEUTRAL_REMARKS
+                "neutral"
+                if normalized_remarks in policy.explicit_neutral_remarks
                 else "unknown"
             )
         )
@@ -114,12 +171,17 @@ def parse_schedule_page(
             "away_pts": int(away_pts),
             "home_pts": int(home_pts),
             "overtime_marker": _cell_text(row, "overtimes"),
-            "overtime_periods": overtime_periods(_cell_text(row, "overtimes")),
+            "overtime_periods": overtime_periods(
+                _cell_text(row, "overtimes"), policy=policy
+            ),
             "site_status": site_status,
             "venue_name": _cell_text(row, "arena_name") or pd.NA,
             "attendance": attendance,
             "attendance_status": attendance_status,
-            "boxscore_url": urljoin(BASE_URL, box_href) if box_match else pd.NA,
+            "boxscore_url": (
+                urljoin(policy.base_url, box_href)
+                if box_match else pd.NA
+            ),
             "boxscore_slug": box_match.group(1) if box_match else pd.NA,
             "schedule_url": schedule_url,
             "game_remarks": remarks,

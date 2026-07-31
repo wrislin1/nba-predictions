@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
+from typing import NamedTuple
 
 
 class PairPublicationError(ValueError):
@@ -17,6 +18,24 @@ class PairPublicationError(ValueError):
 
 
 LOCK_FILENAME = ".parquet-publication.lock"
+
+
+class PublicationPolicy(NamedTuple):
+    """Immutable publication-protocol policy."""
+
+    lock_filename: str
+
+
+def capture_policy() -> PublicationPolicy:
+    """Snapshot the current publication policy."""
+    return PublicationPolicy(lock_filename=str(LOCK_FILENAME))
+
+
+def _lock_filename_or_current(lock_filename: str | None) -> str:
+    return (
+        capture_policy().lock_filename
+        if lock_filename is None else lock_filename
+    )
 
 
 def _open_directory(path: Path) -> int:
@@ -47,16 +66,25 @@ def _require_directory_binding(
         raise PairPublicationError(message)
 
 
-def lock_path(output_dir: Path) -> Path:
+def lock_path(
+    output_dir: Path,
+    *,
+    lock_filename: str | None = None,
+) -> Path:
     """Return the stable lock path governing ``output_dir`` publications."""
-    return output_dir.parent / LOCK_FILENAME
+    lock_filename = _lock_filename_or_current(lock_filename)
+    return output_dir.parent / lock_filename
 
 
 @contextmanager
 def publication_lock(
-    output_dir: Path, *, exclusive: bool
+    output_dir: Path,
+    *,
+    exclusive: bool,
+    lock_filename: str | None = None,
 ) -> Iterator[None]:
     """Hold the publication lock below one stable parent trust anchor."""
+    lock_filename = _lock_filename_or_current(lock_filename)
     data_root = output_dir.parent
     trust_anchor = data_root.parent
     anchor_fd = _open_directory(trust_anchor)
@@ -92,7 +120,7 @@ def publication_lock(
             parent_observed,
             message="publication data root changed while waiting",
         )
-        prior = _entry_stat(parent_fd, LOCK_FILENAME)
+        prior = _entry_stat(parent_fd, lock_filename)
         if prior is not None and not stat.S_ISREG(prior.st_mode):
             raise PairPublicationError(
                 "publication lock must be a regular file"
@@ -102,13 +130,13 @@ def publication_lock(
         flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
             lock_fd = os.open(
-                LOCK_FILENAME,
+                lock_filename,
                 flags,
                 0o600,
                 dir_fd=parent_fd,
             )
         except OSError as exc:
-            failed = _entry_stat(parent_fd, LOCK_FILENAME)
+            failed = _entry_stat(parent_fd, lock_filename)
             if failed is not None and not stat.S_ISREG(failed.st_mode):
                 raise PairPublicationError(
                     "publication lock must be a regular file"
@@ -119,7 +147,7 @@ def publication_lock(
             raise PairPublicationError(
                 "publication lock must be a regular file"
             )
-        path_observed = _entry_stat(parent_fd, LOCK_FILENAME)
+        path_observed = _entry_stat(parent_fd, lock_filename)
         if (
             path_observed is None
             or _identity(path_observed) != _identity(observed)
@@ -128,7 +156,7 @@ def publication_lock(
                 "publication lock changed while opening"
             )
         fcntl.flock(lock_fd, operation)
-        path_after_wait = _entry_stat(parent_fd, LOCK_FILENAME)
+        path_after_wait = _entry_stat(parent_fd, lock_filename)
         if (
             path_after_wait is None
             or _identity(path_after_wait) != _identity(observed)
@@ -137,7 +165,7 @@ def publication_lock(
                 "publication lock changed while waiting"
             )
         yield
-        path_before_release = _entry_stat(parent_fd, LOCK_FILENAME)
+        path_before_release = _entry_stat(parent_fd, lock_filename)
         if (
             path_before_release is None
             or _identity(path_before_release) != _identity(observed)
@@ -353,9 +381,15 @@ def read_pair_bytes(
     *,
     label: str,
     manifest_table: str | None = None,
+    lock_filename: str | None = None,
 ) -> dict[str, bytes]:
     """Read one coherent pair while holding the mandatory shared lock."""
-    with publication_lock(output_dir, exclusive=False):
+    lock_filename = _lock_filename_or_current(lock_filename)
+    with publication_lock(
+        output_dir,
+        exclusive=False,
+        lock_filename=lock_filename,
+    ):
         return _read_pair_bytes_locked(
             output_dir,
             products,
@@ -740,9 +774,15 @@ def publish_pair(
     label: str,
     manifest_table: str | None = None,
     precommit: Callable[[], None] | None = None,
+    lock_filename: str | None = None,
 ) -> Path | None:
     """Publish a pair under the mandatory exclusive publication lock."""
-    with publication_lock(output_dir, exclusive=True):
+    lock_filename = _lock_filename_or_current(lock_filename)
+    with publication_lock(
+        output_dir,
+        exclusive=True,
+        lock_filename=lock_filename,
+    ):
         return _publish_pair_locked(
             stage_dir,
             output_dir,

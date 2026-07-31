@@ -1,9 +1,9 @@
 """Season-aware source team names mapped to stable franchise IDs."""
 
-from dataclasses import dataclass
 from functools import lru_cache
 from io import BytesIO
 from importlib import resources
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -32,16 +32,14 @@ def load_reference_payload(payload: bytes) -> pd.DataFrame:
     return frame
 
 
-@dataclass(frozen=True)
-class FranchiseEra:
+class FranchiseEra(NamedTuple):
     alias: str
     franchise_id: str
     first_season: int | None
     last_season: int | None
 
 
-@dataclass(frozen=True)
-class FranchiseResolver:
+class FranchiseResolver(NamedTuple):
     """An immutable season-aware resolver detached from the module cache."""
 
     eras: tuple[FranchiseEra, ...]

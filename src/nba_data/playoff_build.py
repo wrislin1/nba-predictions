@@ -1,6 +1,7 @@
 """Typed playoff reference loaders and authoritative site rules."""
 
-from dataclasses import dataclass
+from __future__ import annotations
+
 from datetime import date
 import hashlib
 from io import BytesIO
@@ -12,7 +13,7 @@ import stat
 import tempfile
 from types import MappingProxyType
 import warnings
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, NamedTuple, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -164,12 +165,99 @@ _SNAPSHOT_PARQUET_FILES = (
 )
 
 
+class PlayoffBuildPolicy(NamedTuple):
+    """One recursively immutable playoff parser and publication contract."""
+
+    bref: bref.BrefPolicy
+    bref_schedule: bref_schedule.BrefSchedulePolicy
+    historical_bref: historical_bref.HistoricalBrefPolicy
+    playoff_bref: playoff_bref.PlayoffBrefPolicy
+    hoopr: hoopr.HooprPolicy
+    historical_provenance: historical_build.HistoricalProvenancePolicy
+    publication: publication.PublicationPolicy
+    count_columns: tuple[str, ...]
+    site_rule_columns: tuple[str, ...]
+    type_count_columns: tuple[str, ...]
+    fixed_type_counts: tuple[
+        tuple[int, tuple[tuple[str, int], ...]], ...
+    ]
+    playoff_columns: tuple[str, ...]
+    playoff_dtypes: tuple[tuple[str, str], ...]
+    cross_source_key: tuple[str, ...]
+    regular_overlap_key: tuple[str, ...]
+    expected_game_types: frozenset[str]
+    type_to_count_field: tuple[tuple[str, str], ...]
+    voided_identity: tuple[tuple[str, Any], ...]
+    source_integer_columns: tuple[str, ...]
+    reference_files: tuple[str, ...]
+    playoff_products: tuple[str, str]
+    snapshot_reference_files: tuple[str, ...]
+    snapshot_parquet_files: tuple[str, ...]
+
+
+def capture_policy() -> PlayoffBuildPolicy:
+    """Copy all authored build policy before any build input is read."""
+    return PlayoffBuildPolicy(
+        bref=bref.capture_policy(),
+        bref_schedule=bref_schedule.capture_policy(),
+        historical_bref=historical_bref.capture_policy(),
+        playoff_bref=playoff_bref.capture_policy(),
+        hoopr=hoopr.capture_policy(),
+        historical_provenance=(
+            historical_build.capture_provenance_policy()
+        ),
+        publication=publication.capture_policy(),
+        count_columns=tuple(COUNT_COLUMNS),
+        site_rule_columns=tuple(SITE_RULE_COLUMNS),
+        type_count_columns=tuple(TYPE_COUNT_COLUMNS),
+        fixed_type_counts=tuple(sorted(
+            (
+                int(season),
+                tuple(sorted(
+                    (str(name), int(value))
+                    for name, value in counts.items()
+                )),
+            )
+            for season, counts in FIXED_TYPE_COUNTS.items()
+        )),
+        playoff_columns=tuple(PLAYOFF_COLUMNS),
+        playoff_dtypes=tuple(sorted(
+            (str(name), str(dtype))
+            for name, dtype in PLAYOFF_DTYPES.items()
+        )),
+        cross_source_key=tuple(CROSS_SOURCE_KEY),
+        regular_overlap_key=tuple(REGULAR_OVERLAP_KEY),
+        expected_game_types=frozenset(_EXPECTED_GAME_TYPES),
+        type_to_count_field=tuple(sorted(
+            (str(name), str(field_name))
+            for name, field_name in _TYPE_TO_COUNT_FIELD.items()
+        )),
+        voided_identity=tuple(
+            (name, _VOIDED_IDENTITY[name])
+            for name in ("game_id", "season", "game_date", "game_type")
+        ),
+        source_integer_columns=tuple(_SOURCE_INTEGER_COLUMNS),
+        reference_files=tuple(REFERENCE_FILES),
+        playoff_products=(
+            str(PLAYOFF_PRODUCTS[0]),
+            str(PLAYOFF_PRODUCTS[1]),
+        ),
+        snapshot_reference_files=tuple(_SNAPSHOT_REFERENCE_FILES),
+        snapshot_parquet_files=tuple(_SNAPSHOT_PARQUET_FILES),
+    )
+
+
+def _policy_or_current(
+    policy: PlayoffBuildPolicy | None,
+) -> PlayoffBuildPolicy:
+    return capture_policy() if policy is None else policy
+
+
 class PlayoffValidationError(ValueError):
     """Raised when a playoff reference or site rule is invalid."""
 
 
-@dataclass(frozen=True)
-class ExpectedSeason:
+class ExpectedSeason(NamedTuple):
     season: int
     playoff_games: int
     play_in_games: int
@@ -182,8 +270,7 @@ class ExpectedSeason:
     note: str
 
 
-@dataclass(frozen=True)
-class SiteRule:
+class SiteRule(NamedTuple):
     season: int
     site_status: str
     expected_matches: int
@@ -191,18 +278,16 @@ class SiteRule:
     note: str
 
 
-@dataclass(frozen=True)
-class _InputFileAttestation:
-    source: Path
+class _InputFileAttestation(NamedTuple):
+    source: str
     relative_path: str
     identity: tuple[int, int, int]
     sha256: str
     payload: bytes
 
 
-@dataclass(frozen=True)
-class _InputDirectoryAttestation:
-    source: Path
+class _InputDirectoryAttestation(NamedTuple):
+    source: str
     identity: tuple[int, int, int]
     entries: tuple[str, ...]
 
@@ -352,8 +437,7 @@ def _thaw_value(value: Any) -> Any:
     return value
 
 
-@dataclass(frozen=True)
-class CapturedPlayoffInputs:
+class CapturedPlayoffInputs(NamedTuple):
     """One immutable, path-independent playoff build input generation."""
 
     payloads: Mapping[str, bytes]
@@ -362,6 +446,7 @@ class CapturedPlayoffInputs:
     franchise_resolver: franchises.FranchiseResolver
     hoopr_snapshot: Mapping[str, Any]
     versions: Mapping[str, Any]
+    policy: PlayoffBuildPolicy
 
     def payload(self, relative_path: str) -> bytes:
         try:
@@ -391,20 +476,22 @@ class CapturedPlayoffInputs:
     def verify_unchanged(self, *, message: str) -> None:
         try:
             for directory in self.directories:
+                source = Path(directory.source)
                 _require_pinned_directory(
-                    directory.source,
+                    source,
                     expected_identity=directory.identity,
                     expected_entries=directory.entries,
-                    message=f"{message}: {directory.source}",
+                    message=f"{message}: {source}",
                 )
             for record in self.attestations:
+                source = Path(record.source)
                 if _sha256_pinned_regular(
-                    record.source,
+                    source,
                     expected_identity=record.identity,
-                    message=f"{message}: {record.source}",
+                    message=f"{message}: {source}",
                 ) != record.sha256:
                     raise PlayoffValidationError(
-                        f"{message}: {record.source}"
+                        f"{message}: {source}"
                     )
         except PlayoffValidationError:
             raise
@@ -488,7 +575,7 @@ def _copy_input_file(
         if source_fd is not None:
             os.close(source_fd)
     return _InputFileAttestation(
-        source=source,
+        source=str(source),
         relative_path=destination.as_posix(),
         identity=identity,
         sha256=captured_sha256,
@@ -527,7 +614,7 @@ def _snapshot_directory(
                 f"input changed while creating snapshot: {source}"
             )
         directories.append(
-            _InputDirectoryAttestation(source, identity, entries)
+            _InputDirectoryAttestation(str(source), identity, entries)
         )
     except PlayoffValidationError:
         raise
@@ -539,6 +626,7 @@ def _snapshot_directory(
 
 def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
     """Capture every playoff build input once as immutable bytes."""
+    policy = capture_policy()
     data_dir.mkdir(parents=True, exist_ok=True)
     files: list[_InputFileAttestation] = []
     directories: list[_InputDirectoryAttestation] = []
@@ -554,21 +642,21 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
         data_dir / "raw/playoff_bref",
         Path("raw/playoff_bref"),
     )
-    for season, month in playoff_bref.PLAY_IN_MONTHS.items():
+    for season, month in policy.playoff_bref.play_in_months:
         name = f"NBA_{season}_games-{month}.html"
         for suffix in ("", ".meta.json"):
             relative = Path("raw/bref") / f"{name}{suffix}"
             files.append(_copy_input_file(
                 data_dir / relative, relative
             ))
-    for season in range(2020, 2027):
+    for season in policy.hoopr.snapshot_seasons:
         name = f"nba_schedule_{season}.parquet"
         for suffix in ("", ".meta.json"):
             relative = Path("raw/hoopr") / f"{name}{suffix}"
             files.append(_copy_input_file(
                 data_dir / relative, relative
             ))
-    for name in _SNAPSHOT_REFERENCE_FILES:
+    for name in policy.snapshot_reference_files:
         relative = Path("reference") / name
         files.append(_copy_input_file(data_dir / relative, relative))
     runtime_sources = {
@@ -580,9 +668,11 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
             source, Path("runtime_reference") / name
         ))
     with publication.publication_lock(
-        data_dir / "parquet", exclusive=False
+        data_dir / "parquet",
+        exclusive=False,
+        lock_filename=policy.publication.lock_filename,
     ):
-        for name in _SNAPSHOT_PARQUET_FILES:
+        for name in policy.snapshot_parquet_files:
             relative = Path("parquet") / name
             files.append(_copy_input_file(
                 data_dir / relative, relative
@@ -634,7 +724,11 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
         raise PlayoffValidationError(
             "packaged hoopR snapshot reference must contain an object"
         )
-    captured_runtime_snapshot = _freeze_value(hoopr.SNAPSHOT)
+    captured_runtime_snapshot = _freeze_value({
+        "repository": policy.hoopr.snapshot_repository,
+        "commit": policy.hoopr.snapshot_commit,
+        "seasons": list(policy.hoopr.snapshot_seasons),
+    })
     if parsed_snapshot != _thaw_value(captured_runtime_snapshot):
         raise PlayoffValidationError(
             "hoopR runtime state differs from the packaged reference"
@@ -648,6 +742,7 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
         versions=_freeze_value(
             build._dependency_versions(data_dir.parent)
         ),
+        policy=policy,
     )
     captured.verify_unchanged(
         message="input changed while creating snapshot"
@@ -690,9 +785,20 @@ def _has_blank(series: pd.Series) -> bool:
 
 def load_expected_counts(
     path: Path | BytesIO,
+    *,
+    policy: PlayoffBuildPolicy | None = None,
 ) -> dict[int, ExpectedSeason]:
     """Load the exact independently curated 1947--2026 ledger."""
-    frame = _read_exact_csv(path, COUNT_COLUMNS, "count")
+    policy = _policy_or_current(policy)
+    expected_seasons = list(policy.playoff_bref.playoff_seasons)
+    type_count_columns = list(policy.type_count_columns)
+    fixed_type_counts = {
+        season: dict(counts)
+        for season, counts in policy.fixed_type_counts
+    }
+    frame = _read_exact_csv(
+        path, list(policy.count_columns), "count"
+    )
     if _has_blank(frame["source_url"]) or _has_blank(frame["note"]):
         raise PlayoffValidationError(
             "counts require nonblank source URL and note"
@@ -700,19 +806,19 @@ def load_expected_counts(
     if not frame["source_url"].str.startswith("https://").all():
         raise PlayoffValidationError("count source URLs must use HTTPS")
 
-    numeric_columns = ["season", *TYPE_COUNT_COLUMNS, "total_games"]
+    numeric_columns = ["season", *type_count_columns, "total_games"]
     frame = _parse_integer_columns(
         frame, numeric_columns, "count fields must be integers"
     )
     if (
-        len(frame) != 80
+        len(frame) != len(expected_seasons)
         or frame["season"].duplicated(keep=False).any()
-        or frame["season"].tolist() != list(range(1947, 2027))
+        or frame["season"].tolist() != expected_seasons
     ):
         raise PlayoffValidationError(
             "counts must cover exactly 1947..2026 in ascending order"
         )
-    if frame[TYPE_COUNT_COLUMNS].lt(0).any().any():
+    if frame[type_count_columns].lt(0).any().any():
         raise PlayoffValidationError("type counts cannot be negative")
     if (
         frame["playoff_games"].le(0).any()
@@ -721,15 +827,15 @@ def load_expected_counts(
         raise PlayoffValidationError(
             "playoff_games and total_games must be positive"
         )
-    if not frame[TYPE_COUNT_COLUMNS].sum(axis=1).equals(
+    if not frame[type_count_columns].sum(axis=1).equals(
         frame["total_games"]
     ):
         raise PlayoffValidationError(
             "type counts must sum to total_games"
         )
 
-    for season in range(1947, 2027):
-        fixed = FIXED_TYPE_COUNTS.get(season, {})
+    for season in expected_seasons:
+        fixed = fixed_type_counts.get(season, {})
         row = frame.loc[frame["season"].eq(season)].iloc[0]
         for column in [
             "play_in_games",
@@ -784,9 +890,16 @@ def load_expected_counts(
     return expected
 
 
-def load_site_rules(path: Path | BytesIO) -> dict[int, SiteRule]:
+def load_site_rules(
+    path: Path | BytesIO,
+    *,
+    policy: PlayoffBuildPolicy | None = None,
+) -> dict[int, SiteRule]:
     """Load the single approved 2020 neutral-site rule."""
-    frame = _read_exact_csv(path, SITE_RULE_COLUMNS, "site rule")
+    policy = _policy_or_current(policy)
+    frame = _read_exact_csv(
+        path, list(policy.site_rule_columns), "site rule"
+    )
     if len(frame) != 1:
         raise PlayoffValidationError(
             "site rules must contain exactly one row"
@@ -890,17 +1003,22 @@ def _require_source_integers(
         )
 
 
-def _enforce_schema(frame: pd.DataFrame) -> pd.DataFrame:
+def _enforce_schema(
+    frame: pd.DataFrame,
+    *,
+    policy: PlayoffBuildPolicy | None = None,
+) -> pd.DataFrame:
     """Publish the exact ordered and typed playoff-game contract."""
-    output = frame.loc[:, PLAYOFF_COLUMNS].copy()
+    policy = _policy_or_current(policy)
+    output = frame.loc[:, list(policy.playoff_columns)].copy()
     _require_source_integers(
         output,
-        [*_SOURCE_INTEGER_COLUMNS, "home_margin"],
+        [*policy.source_integer_columns, "home_margin"],
     )
     output["game_date"] = pd.to_datetime(
         output["game_date"], errors="raise"
     ).dt.date
-    for column, dtype in PLAYOFF_DTYPES.items():
+    for column, dtype in policy.playoff_dtypes:
         output[column] = output[column].astype(dtype)
     return output.sort_values(
         ["season", "game_date", "game_id"], kind="stable"
@@ -923,16 +1041,21 @@ def _has_any(values: pd.Series | pd.DataFrame) -> bool:
     return bool(False if pd.isna(result) else result)
 
 
-def _normalize_regular_keys(frame: pd.DataFrame) -> pd.DataFrame:
+def _normalize_regular_keys(
+    frame: pd.DataFrame,
+    *,
+    policy: PlayoffBuildPolicy | None = None,
+) -> pd.DataFrame:
+    policy = _policy_or_current(policy)
     missing = [
-        column for column in REGULAR_OVERLAP_KEY
+        column for column in policy.regular_overlap_key
         if column not in frame.columns
     ]
     if missing:
         raise PlayoffValidationError(
             f"regular publication missing overlap columns: {missing}"
         )
-    normalized = frame.loc[:, REGULAR_OVERLAP_KEY].copy()
+    normalized = frame.loc[:, list(policy.regular_overlap_key)].copy()
     normalized["season"] = pd.to_numeric(
         normalized["season"], errors="coerce"
     )
@@ -946,12 +1069,23 @@ def _normalize_regular_keys(frame: pd.DataFrame) -> pd.DataFrame:
     return normalized
 
 
-def _mismatch_sample(frame: pd.DataFrame, side: str) -> list[dict]:
-    rows = frame.loc[frame["_merge"].eq(side), CROSS_SOURCE_KEY].copy()
+def _mismatch_sample(
+    frame: pd.DataFrame,
+    side: str,
+    *,
+    policy: PlayoffBuildPolicy | None = None,
+) -> list[dict]:
+    policy = _policy_or_current(policy)
+    rows = frame.loc[
+        frame["_merge"].eq(side), list(policy.cross_source_key)
+    ].copy()
     if rows.empty:
         return []
     rows = rows.sort_values(
-        [column for column in CROSS_SOURCE_KEY if column in rows],
+        [
+            column for column in policy.cross_source_key
+            if column in rows
+        ],
         kind="stable",
     )
     return rows.head(3).to_dict("records")
@@ -966,26 +1100,35 @@ def validate(
     modern_regular: pd.DataFrame,
     historical_regular: pd.DataFrame,
     site_rule_matches: dict[int, int],
+    policy: PlayoffBuildPolicy | None = None,
 ) -> dict:
     """Enforce all playoff publication gates and return an audit report."""
+    policy = _policy_or_current(policy)
+    playoff_columns = list(policy.playoff_columns)
+    playoff_dtypes = dict(policy.playoff_dtypes)
+    cross_source_key = list(policy.cross_source_key)
+    regular_overlap_key = list(policy.regular_overlap_key)
+    expected_seasons = list(policy.playoff_bref.playoff_seasons)
+    type_to_count_field = dict(policy.type_to_count_field)
+    voided_identity = dict(policy.voided_identity)
     errors: list[str] = []
     unique_columns = games.loc[
         :, ~games.columns.duplicated(keep="first")
     ]
     schema_ok = (
         not games.columns.has_duplicates
-        and games.columns.tolist() == PLAYOFF_COLUMNS
+        and games.columns.tolist() == playoff_columns
         and str(games["game_date"].dtype) == "object"
         and all(
             column in games
             and str(games[column].dtype) == dtype
-            for column, dtype in PLAYOFF_DTYPES.items()
+            for column, dtype in playoff_dtypes.items()
         )
     )
     if not schema_ok:
         errors.append("playoff columns and dtypes differ from publication schema")
 
-    frame = unique_columns.reindex(columns=PLAYOFF_COLUMNS).copy()
+    frame = unique_columns.reindex(columns=playoff_columns).copy()
     for column in [
         "season",
         "away_pts",
@@ -996,7 +1139,6 @@ def validate(
     ]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
-    expected_seasons = list(range(1947, 2027))
     actual_seasons = sorted(
         int(value) for value in frame["season"].dropna().unique()
         if float(value).is_integer()
@@ -1017,7 +1159,7 @@ def validate(
         errors.append("league/season mismatch")
 
     if _has_any(
-        ~frame["game_type"].isin(_EXPECTED_GAME_TYPES)
+        ~frame["game_type"].isin(policy.expected_game_types)
         | frame["game_type"].isna()
     ):
         errors.append("unsupported game_type")
@@ -1030,7 +1172,7 @@ def validate(
 
     nullable = {"venue_name", "attendance", "boxscore_url"}
     required = [
-        column for column in PLAYOFF_COLUMNS if column not in nullable
+        column for column in playoff_columns if column not in nullable
     ]
     if any(_has_any(frame[column].isna()) for column in required):
         errors.append("required playoff value is null")
@@ -1095,7 +1237,9 @@ def validate(
             for marker in overtime_evidence["overtime_marker"]:
                 try:
                     decoded.append(
-                        bref_schedule.overtime_periods(str(marker))
+                        bref_schedule.overtime_periods(
+                            str(marker), policy=policy.bref_schedule
+                        )
                     )
                 except (TypeError, ValueError):
                     decoded.append(pd.NA)
@@ -1147,7 +1291,7 @@ def validate(
         type_counts = season_rows["game_type"].value_counts()
         actual = {
             game_type: int(type_counts.get(game_type, 0))
-            for game_type in _TYPE_TO_COUNT_FIELD
+            for game_type in type_to_count_field
         }
         actual_counts[season] = actual
         expected = expected_counts.get(season)
@@ -1155,7 +1299,7 @@ def validate(
             any(
                 actual[game_type]
                 != getattr(expected, field)
-                for game_type, field in _TYPE_TO_COUNT_FIELD.items()
+                for game_type, field in type_to_count_field.items()
             )
             or len(season_rows) != expected.total_games
         ):
@@ -1189,11 +1333,11 @@ def validate(
 
     voided = frame.loc[
         frame["game_type"].eq("voided"),
-        list(_VOIDED_IDENTITY),
+        list(voided_identity),
     ]
     valid_voided = (
         len(voided) == 1
-        and voided.iloc[0].to_dict() == _VOIDED_IDENTITY
+        and voided.iloc[0].to_dict() == voided_identity
     )
     if not valid_voided:
         errors.append("invalid voided-game exemption")
@@ -1202,15 +1346,19 @@ def validate(
     try:
         regular_keys = pd.concat(
             [
-                _normalize_regular_keys(modern_regular),
-                _normalize_regular_keys(historical_regular),
+                _normalize_regular_keys(
+                    modern_regular, policy=policy
+                ),
+                _normalize_regular_keys(
+                    historical_regular, policy=policy
+                ),
             ],
             ignore_index=True,
         ).drop_duplicates()
-        playoff_keys = _normalize_regular_keys(frame)
+        playoff_keys = _normalize_regular_keys(frame, policy=policy)
         overlap = playoff_keys.merge(
             regular_keys,
-            on=REGULAR_OVERLAP_KEY,
+            on=regular_overlap_key,
             how="inner",
         )
         overlap_rows = len(overlap)
@@ -1241,25 +1389,25 @@ def validate(
         bref_keys = frame.loc[
             frame["season"].between(2020, 2026)
             & frame["game_type"].isin(["playoff", "play_in"]),
-            CROSS_SOURCE_KEY,
+            cross_source_key,
         ].copy()
         missing_hoopr = [
-            column for column in CROSS_SOURCE_KEY
+            column for column in cross_source_key
             if column not in hoopr_games.columns
         ]
         if missing_hoopr:
             raise ValueError(
                 f"missing hoopR key columns {missing_hoopr}"
             )
-        hoopr_keys = hoopr_games.loc[:, CROSS_SOURCE_KEY].copy()
+        hoopr_keys = hoopr_games.loc[:, cross_source_key].copy()
         if (
-            bref_keys.duplicated(CROSS_SOURCE_KEY).any()
-            or hoopr_keys.duplicated(CROSS_SOURCE_KEY).any()
+            bref_keys.duplicated(cross_source_key).any()
+            or hoopr_keys.duplicated(cross_source_key).any()
         ):
             raise ValueError("duplicate cross-source key")
         comparison = bref_keys.merge(
             hoopr_keys,
-            on=CROSS_SOURCE_KEY,
+            on=cross_source_key,
             how="outer",
             indicator=True,
             validate="one_to_one",
@@ -1271,15 +1419,15 @@ def validate(
         ):
             errors.append(
                 "BREF/hoopR postseason mismatch: "
-                f"left_only={_mismatch_sample(comparison, 'left_only')}, "
-                f"right_only={_mismatch_sample(comparison, 'right_only')}"
+                f"left_only={_mismatch_sample(comparison, 'left_only', policy=policy)}, "
+                f"right_only={_mismatch_sample(comparison, 'right_only', policy=policy)}"
             )
     except (KeyError, TypeError, ValueError, pd.errors.MergeError) as error:
         errors.append(f"BREF/hoopR postseason mismatch: {error}")
 
     if (
         not games.columns.has_duplicates
-        and games.columns.tolist() == PLAYOFF_COLUMNS
+        and games.columns.tolist() == playoff_columns
     ):
         sorted_games = games.sort_values(
             ["season", "game_date", "game_id"], kind="stable"
@@ -1357,23 +1505,32 @@ def _captured_historical_payloads(
     inputs: CapturedPlayoffInputs,
     season: int,
 ) -> tuple[bytes, Mapping[str, bytes]]:
+    policy = inputs.policy
     prefix = "raw/historical_bref/"
-    index_name = historical_bref.index_filename(season)
+    index_name = historical_bref.index_filename(
+        season, policy=policy.historical_bref
+    )
     index_payload, _ = inputs.cache_pair(
         prefix + index_name,
         lambda payload: historical_bref.validate_index_bytes(
-            payload, season
+            payload, season, policy=policy.historical_bref
         ),
     )
     month_payloads = {}
     for page in historical_bref.discover_month_pages(
-        index_payload, season
+        index_payload,
+        season,
+        policy=policy.historical_bref,
     ):
         payload, _ = inputs.cache_pair(
             prefix + page.filename,
             lambda value, url=page.url: (
                 historical_bref.validate_month_bytes(
-                    value, season, url
+                    value,
+                    season,
+                    url,
+                    policy=policy.historical_bref,
+                    schedule_policy=policy.bref_schedule,
                 )
             ),
         )
@@ -1385,6 +1542,7 @@ def _captured_playoff_season(
     inputs: CapturedPlayoffInputs,
     season: int,
 ) -> pd.DataFrame:
+    policy = inputs.policy
     if season <= 1983:
         index_payload, month_payloads = (
             _captured_historical_payloads(inputs, season)
@@ -1393,29 +1551,43 @@ def _captured_playoff_season(
             season=season,
             index_payload=index_payload,
             month_payloads=month_payloads,
+            policy=policy.playoff_bref,
+            historical_policy=policy.historical_bref,
+            schedule_policy=policy.bref_schedule,
         )
     dedicated, _ = inputs.cache_pair(
-        "raw/playoff_bref/" + playoff_bref.playoff_filename(season),
+        "raw/playoff_bref/" + playoff_bref.playoff_filename(
+            season, policy=policy.playoff_bref
+        ),
         lambda payload: playoff_bref.validate_dedicated_bytes(
-            payload, season
+            payload,
+            season,
+            policy=policy.playoff_bref,
+            schedule_policy=policy.bref_schedule,
         ),
     )
     play_in = None
-    if season in playoff_bref.PLAY_IN_MONTHS:
-        month = playoff_bref.PLAY_IN_MONTHS[season]
+    play_in_months = dict(policy.playoff_bref.play_in_months)
+    if season in play_in_months:
+        month = play_in_months[season]
         play_in, _ = inputs.cache_pair(
             (
                 "raw/playoff_bref/"
                 f"NBA_{season}_games-{month}.html"
             ),
             lambda payload: playoff_bref.validate_seeded_play_in_bytes(
-                payload, season
+                payload,
+                season,
+                policy=policy.playoff_bref,
+                schedule_policy=policy.bref_schedule,
             ),
         )
     return playoff_bref.load_modern_season_payloads(
         season=season,
         dedicated_payload=dedicated,
         play_in_payload=play_in,
+        policy=policy.playoff_bref,
+        schedule_policy=policy.bref_schedule,
     )
 
 
@@ -1425,7 +1597,10 @@ def _captured_hoopr_payload(
 ) -> bytes:
     relative = f"raw/hoopr/nba_schedule_{season}.parquet"
     payload, metadata = inputs.cache_pair(
-        relative, hoopr.validate_payload_bytes
+        relative,
+        lambda value: hoopr.validate_payload_bytes(
+            value, policy=inputs.policy.hoopr
+        ),
     )
     expected = {
         "provider": "hoopr",
@@ -1448,12 +1623,15 @@ def assemble_from_inputs(
     inputs: CapturedPlayoffInputs,
 ) -> tuple[pd.DataFrame, dict, dict]:
     """Assemble playoff rows exclusively from one captured generation."""
+    policy = inputs.policy
     frames = [
         _captured_playoff_season(inputs, season)
-        for season in range(1947, 2027)
+        for season in policy.playoff_bref.playoff_seasons
     ]
     source = pd.concat(frames, ignore_index=True)
-    _require_source_integers(source, _SOURCE_INTEGER_COLUMNS)
+    _require_source_integers(
+        source, list(policy.source_integer_columns)
+    )
     source["away_franchise_id"] = [
         inputs.resolve_franchise(str(name), int(season))
         for name, season in zip(
@@ -1475,20 +1653,21 @@ def assemble_from_inputs(
         load_site_rules(
             BytesIO(inputs.payload(
                 "reference/playoff_site_rules.csv"
-            ))
+            )),
+            policy=policy,
         ),
     )
     source["home_margin"] = source["home_pts"] - source["away_pts"]
     source_rows = source[["game_id", "overtime_marker"]].copy()
-    games = _enforce_schema(source)
+    games = _enforce_schema(source, policy=policy)
 
     modern_regular = pd.read_parquet(
         BytesIO(inputs.payload("parquet/games.parquet")),
-        columns=REGULAR_OVERLAP_KEY,
+        columns=list(policy.regular_overlap_key),
     )
     historical_regular = pd.read_parquet(
         BytesIO(inputs.payload("parquet/historical_games.parquet")),
-        columns=REGULAR_OVERLAP_KEY,
+        columns=list(policy.regular_overlap_key),
     )
     hoopr_games = pd.concat(
         [
@@ -1496,15 +1675,17 @@ def assemble_from_inputs(
                 _captured_hoopr_payload(inputs, season),
                 season,
                 inputs.resolve_franchise,
+                policy=policy.hoopr,
             )
-            for season in range(2020, 2027)
+            for season in policy.hoopr.snapshot_seasons
         ],
         ignore_index=True,
     )
     expected_counts = load_expected_counts(
         BytesIO(inputs.payload(
             "reference/playoff_season_counts.csv"
-        ))
+        )),
+        policy=policy,
     )
     report = validate(
         games,
@@ -1514,6 +1695,7 @@ def assemble_from_inputs(
         modern_regular=modern_regular,
         historical_regular=historical_regular,
         site_rule_matches=site_rule_matches,
+        policy=policy,
     )
     evidence_bundle = {
         "source_rows": source_rows,
@@ -1534,6 +1716,8 @@ def _raw_provenance_from_inputs(
     inputs: CapturedPlayoffInputs,
 ) -> dict:
     """Attest every source from the same immutable captured generation."""
+    policy = inputs.policy
+    play_in_months = dict(policy.playoff_bref.play_in_months)
     try:
         historical_manifest_payload = inputs.payload(
             "parquet/historical_games_manifest.json"
@@ -1547,7 +1731,10 @@ def _raw_provenance_from_inputs(
             )
         historical_sources = (
             historical_build._raw_provenance_from_payloads(
-                inputs.payloads
+                inputs.payloads,
+                policy=policy.historical_provenance,
+                historical_policy=policy.historical_bref,
+                schedule_policy=policy.bref_schedule,
             )
         )
     except (
@@ -1569,12 +1756,14 @@ def _raw_provenance_from_inputs(
 
     expected_bodies = {
         *(
-            playoff_bref.playoff_filename(season)
-            for season in playoff_bref.DEDICATED_SEASONS
+            playoff_bref.playoff_filename(
+                season, policy=policy.playoff_bref
+            )
+            for season in policy.playoff_bref.dedicated_seasons
         ),
         *(
             f"NBA_{season}_games-{month}.html"
-            for season, month in playoff_bref.PLAY_IN_MONTHS.items()
+            for season, month in policy.playoff_bref.play_in_months
         ),
     }
     prefix = "raw/playoff_bref/"
@@ -1607,12 +1796,22 @@ def _raw_provenance_from_inputs(
         if dedicated:
             season = int(name.removeprefix("NBA_").split("_", 1)[0])
             validator = lambda value, year=season: (
-                playoff_bref.validate_dedicated_bytes(value, year)
+                playoff_bref.validate_dedicated_bytes(
+                    value,
+                    year,
+                    policy=policy.playoff_bref,
+                    schedule_policy=policy.bref_schedule,
+                )
             )
         else:
             season = int(name.removeprefix("NBA_").split("_", 1)[0])
             validator = lambda value, year=season: (
-                playoff_bref.validate_seeded_play_in_bytes(value, year)
+                playoff_bref.validate_seeded_play_in_bytes(
+                    value,
+                    year,
+                    policy=policy.playoff_bref,
+                    schedule_policy=policy.bref_schedule,
+                )
             )
         try:
             payload, metadata = inputs.cache_pair(
@@ -1625,10 +1824,12 @@ def _raw_provenance_from_inputs(
                     "league": "NBA",
                     "season": season,
                     "month": None,
-                    "url": playoff_bref.playoff_url(season),
+                    "url": playoff_bref.playoff_url(
+                        season, policy=policy.playoff_bref
+                    ),
                 }
                 if dedicated else playoff_bref._seed_metadata(
-                    season, payload
+                    season, payload, policy=policy.playoff_bref
                 )
             )
             observed = {
@@ -1657,12 +1858,15 @@ def _raw_provenance_from_inputs(
                     record[field] = metadata[field]
                 source_relative = metadata["seeded_from"]
                 source_payload, source_metadata = inputs.cache_pair(
-                    source_relative, bref.validate_payload_bytes
+                    source_relative,
+                    lambda value: bref.validate_payload_bytes(
+                        value, policy=policy.bref
+                    ),
                 )
                 source_expected = {
                     "provider": "basketball_reference",
                     "season": season,
-                    "month": playoff_bref.PLAY_IN_MONTHS[season],
+                    "month": play_in_months[season],
                 }
                 source_observed = {
                     key: source_metadata.get(key)
@@ -1694,8 +1898,9 @@ def _raw_provenance_from_inputs(
             ) from exc
 
     commit = inputs.hoopr_snapshot["commit"]
+    repository = inputs.hoopr_snapshot["repository"]
     hoopr_schedules = []
-    for season in range(2020, 2027):
+    for season in policy.hoopr.snapshot_seasons:
         payload = _captured_hoopr_payload(inputs, season)
         hoopr_schedules.append({
             "path": f"raw/hoopr/nba_schedule_{season}.parquet",
@@ -1704,7 +1909,7 @@ def _raw_provenance_from_inputs(
             "season": season,
             "url": (
                 "https://raw.githubusercontent.com/"
-                "sportsdataverse/hoopR-nba-data/"
+                f"{repository}/"
                 f"{commit}/nba/schedules/parquet/"
                 f"nba_schedule_{season}.parquet"
             ),
@@ -1854,7 +2059,7 @@ def _reference_provenance_from_inputs(
                 inputs.payload(f"reference/{name}")
             ).hexdigest(),
         }
-        for name in REFERENCE_FILES
+        for name in inputs.policy.reference_files
     }
 
 
@@ -1885,6 +2090,10 @@ def _reference_provenance(
 def _validate_captured_runtime_state(
     inputs: CapturedPlayoffInputs,
 ) -> None:
+    if capture_policy() != inputs.policy:
+        raise PlayoffValidationError(
+            "playoff runtime policy changed before publication"
+        )
     expected_frame = franchises.load_reference_payload(
         inputs.payload("runtime_reference/franchises.csv")
     )
@@ -1910,7 +2119,8 @@ def run(data_dir: Path) -> None:
         expected_counts = load_expected_counts(
             BytesIO(inputs.payload(
                 "reference/playoff_season_counts.csv"
-            ))
+            )),
+            policy=inputs.policy,
         )
         games, report, evidence = assemble_from_inputs(inputs)
         provenance = _raw_provenance_from_inputs(inputs)
@@ -1936,6 +2146,7 @@ def run(data_dir: Path) -> None:
             modern_regular=evidence["modern_regular"],
             historical_regular=evidence["historical_regular"],
             site_rule_matches=evidence["site_rule_matches"],
+            policy=inputs.policy,
         )
         if reread_report != report:
             raise PlayoffValidationError(
@@ -1974,10 +2185,11 @@ def run(data_dir: Path) -> None:
         retained_rollback = publication.publish_pair(
             stage_dir,
             data_dir / "parquet",
-            PLAYOFF_PRODUCTS,
+            inputs.policy.playoff_products,
             label="playoff",
             manifest_table="playoff_games",
             precommit=validate_precommit_inputs,
+            lock_filename=inputs.policy.publication.lock_filename,
         )
         if retained_rollback is not None:
             warnings.warn(

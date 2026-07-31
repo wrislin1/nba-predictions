@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Mapping
+from typing import Mapping, NamedTuple
 import warnings
 
 import pandas as pd
@@ -74,6 +74,20 @@ _HISTORICAL_CACHE_NAME = re.compile(
     r"(?P<league>BAA|NBA)_(?P<season>\d{4})_games"
     r"(?:-(?P<month>[a-z]+))?\.html$"
 )
+
+
+class HistoricalProvenancePolicy(NamedTuple):
+    """Immutable contract for historical cache provenance names."""
+
+    cache_name_pattern: str
+    cache_name_flags: int
+
+
+def capture_provenance_policy() -> HistoricalProvenancePolicy:
+    return HistoricalProvenancePolicy(
+        cache_name_pattern=str(_HISTORICAL_CACHE_NAME.pattern),
+        cache_name_flags=int(_HISTORICAL_CACHE_NAME.flags),
+    )
 
 
 class HistoricalValidationError(ValueError):
@@ -470,8 +484,25 @@ def _cache_error(exc: Exception) -> HistoricalValidationError:
 
 def _raw_provenance_from_payloads(
     payloads: Mapping[str, bytes],
+    *,
+    policy: HistoricalProvenancePolicy | None = None,
+    historical_policy: historical_bref.HistoricalBrefPolicy | None = None,
+    schedule_policy=None,
 ) -> dict:
     """Attest historical cache pairs from immutable captured bytes."""
+    policy = (
+        capture_provenance_policy() if policy is None else policy
+    )
+    historical_policy = (
+        historical_bref.capture_policy()
+        if historical_policy is None
+        else historical_policy
+    )
+    if schedule_policy is None:
+        schedule_policy = bref_schedule.capture_policy()
+    cache_name = re.compile(
+        policy.cache_name_pattern, policy.cache_name_flags
+    )
     prefix = "raw/historical_bref/"
     entries = {
         name.removeprefix(prefix): payload
@@ -502,7 +533,7 @@ def _raw_provenance_from_payloads(
     if bodies != sidecars:
         raise HistoricalValidationError("incomplete historical cache pair")
     if any(
-        _HISTORICAL_CACHE_NAME.fullmatch(name) is None
+        cache_name.fullmatch(name) is None
         for name in bodies
     ):
         raise HistoricalValidationError(
@@ -511,11 +542,13 @@ def _raw_provenance_from_payloads(
 
     by_season: dict[int, list[str]] = {}
     for name in sorted(bodies):
-        match = _HISTORICAL_CACHE_NAME.fullmatch(name)
+        match = cache_name.fullmatch(name)
         assert match is not None
         season = int(match["season"])
         try:
-            expected_league = historical_bref.league_for_season(season)
+            expected_league = historical_bref.league_for_season(
+                season, policy=historical_policy
+            )
         except ValueError as exc:
             raise _cache_error(exc) from exc
         if match["league"] != expected_league:
@@ -539,12 +572,14 @@ def _raw_provenance_from_payloads(
                 entries[index_name],
                 entries[index_name + ".meta.json"],
                 lambda value: historical_bref.validate_index_bytes(
-                    value, season
+                    value, season, policy=historical_policy
                 ),
                 label=prefix + index_name,
             )
             discovered = historical_bref.discover_month_pages(
-                entries[index_name], season
+                entries[index_name],
+                season,
+                policy=historical_policy,
             )
         except (
             cache.CacheIntegrityError,
@@ -564,12 +599,14 @@ def _raw_provenance_from_payloads(
             )
 
         for name in sorted(names):
-            match = _HISTORICAL_CACHE_NAME.fullmatch(name)
+            match = cache_name.fullmatch(name)
             assert match is not None
             month = match["month"]
             is_index = month is None
             url = (
-                historical_bref.index_url(season)
+                historical_bref.index_url(
+                    season, policy=historical_policy
+                )
                 if is_index else discovered_by_name[name].url
             )
             resource = (
@@ -583,7 +620,11 @@ def _raw_provenance_from_payloads(
                         entries[name + ".meta.json"],
                         lambda value, page_url=url: (
                             historical_bref.validate_month_bytes(
-                                value, season, page_url
+                                value,
+                                season,
+                                page_url,
+                                policy=historical_policy,
+                                schedule_policy=schedule_policy,
                             )
                         ),
                         label=prefix + name,

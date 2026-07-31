@@ -1,11 +1,10 @@
 """Fetch and normalize cached Basketball-Reference historical schedules."""
 
-from dataclasses import dataclass
 import re
 import stat
 import time
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, NamedTuple
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -26,15 +25,13 @@ EXCLUDED_REGULAR_SEASON_REMARKS = frozenset({
 })
 
 
-@dataclass(frozen=True, order=True)
-class HistoricalPage:
+class HistoricalPage(NamedTuple):
     month: str
     url: str
     filename: str
 
 
-@dataclass(frozen=True)
-class _CuratedPlayoffBoundary:
+class _CuratedPlayoffBoundary(NamedTuple):
     first_playoff_game_id: str
     schedule_url: str
     note: str
@@ -74,26 +71,109 @@ VERIFIED_DUPLICATE_SEPARATOR_REGIONS = {
 }
 
 
-def league_for_season(season: int) -> str:
-    if season not in HISTORICAL_SEASONS:
+class HistoricalBrefPolicy(NamedTuple):
+    """Recursively immutable historical schedule parsing policy."""
+
+    base_url: str
+    historical_seasons: tuple[int, ...]
+    calendar_months: tuple[str, ...]
+    excluded_regular_season_remarks: frozenset[str]
+    curated_playoff_boundaries: tuple[
+        tuple[int, _CuratedPlayoffBoundary], ...
+    ]
+    verified_duplicate_playoff_separators: tuple[
+        tuple[str, tuple[int, ...]], ...
+    ]
+    verified_duplicate_separator_regions: tuple[
+        tuple[str, tuple[tuple[str, ...], tuple[str, ...]]], ...
+    ]
+
+
+def capture_policy() -> HistoricalBrefPolicy:
+    """Snapshot the current module policy without retaining mutable aliases."""
+    return HistoricalBrefPolicy(
+        base_url=str(BASE_URL),
+        historical_seasons=tuple(HISTORICAL_SEASONS),
+        calendar_months=tuple(CALENDAR_MONTHS),
+        excluded_regular_season_remarks=frozenset(
+            EXCLUDED_REGULAR_SEASON_REMARKS
+        ),
+        curated_playoff_boundaries=tuple(sorted(
+            (
+                int(season),
+                _CuratedPlayoffBoundary(
+                    first_playoff_game_id=str(boundary.first_playoff_game_id),
+                    schedule_url=str(boundary.schedule_url),
+                    note=str(boundary.note),
+                ),
+            )
+            for season, boundary in CURATED_PLAYOFF_BOUNDARIES.items()
+        )),
+        verified_duplicate_playoff_separators=tuple(sorted(
+            (str(url), tuple(int(row) for row in rows))
+            for url, rows in VERIFIED_DUPLICATE_PLAYOFF_SEPARATORS.items()
+        )),
+        verified_duplicate_separator_regions=tuple(sorted(
+            (
+                str(url),
+                (
+                    tuple(str(game_id) for game_id in regions[0]),
+                    tuple(str(game_id) for game_id in regions[1]),
+                ),
+            )
+            for url, regions in VERIFIED_DUPLICATE_SEPARATOR_REGIONS.items()
+        )),
+    )
+
+
+def _policy_or_current(
+    policy: HistoricalBrefPolicy | None,
+) -> HistoricalBrefPolicy:
+    return capture_policy() if policy is None else policy
+
+
+def league_for_season(
+    season: int,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+) -> str:
+    policy = _policy_or_current(policy)
+    if season not in policy.historical_seasons:
         raise ValueError(f"historical season must be 1947..1983: {season}")
     return "BAA" if season <= 1949 else "NBA"
 
 
-def index_filename(season: int) -> str:
-    return f"{league_for_season(season)}_{season}_games.html"
+def index_filename(
+    season: int,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+) -> str:
+    policy = _policy_or_current(policy)
+    return f"{league_for_season(season, policy=policy)}_{season}_games.html"
 
 
-def index_url(season: int) -> str:
-    return f"{BASE_URL}/leagues/{index_filename(season)}"
+def index_url(
+    season: int,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+) -> str:
+    policy = _policy_or_current(policy)
+    return (
+        f"{policy.base_url}/leagues/"
+        f"{index_filename(season, policy=policy)}"
+    )
 
 
 def discover_month_pages(
     payload: bytes,
     season: int,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
 ) -> tuple[HistoricalPage, ...]:
-    league = league_for_season(season)
-    root = bref_schedule._document(payload, index_url(season))
+    policy = _policy_or_current(policy)
+    league = league_for_season(season, policy=policy)
+    source_url = index_url(season, policy=policy)
+    root = bref_schedule._document(payload, source_url)
     pattern = re.compile(rf"^/leagues/{league}_{season}_games-([a-z]+)\.html$")
     pages = {}
     for href in root.xpath("//a/@href"):
@@ -101,21 +181,23 @@ def discover_month_pages(
         if match is None:
             continue
         month = match.group(1)
-        if month not in CALENDAR_MONTHS:
+        if month not in policy.calendar_months:
             continue
         page = HistoricalPage(
             month=month,
-            url=urljoin(BASE_URL, str(href)),
+            url=urljoin(policy.base_url, str(href)),
             filename=f"{league}_{season}_games-{month}.html",
         )
         pages[page.url] = page
     if not pages:
-        raise ValueError(f"{index_url(season)}: no regular-season month links")
+        raise ValueError(f"{source_url}: no regular-season month links")
     return tuple(pages.values())
 
 
-def _overtime_periods(marker: str) -> int:
-    return bref_schedule.overtime_periods(marker)
+def _overtime_periods(marker: str, *, schedule_policy=None) -> int:
+    return bref_schedule.overtime_periods(
+        marker, policy=schedule_policy
+    )
 
 
 def parse_schedule_page(
@@ -123,12 +205,16 @@ def parse_schedule_page(
     *,
     season: int,
     schedule_url: str,
+    policy: HistoricalBrefPolicy | None = None,
+    schedule_policy=None,
 ) -> pd.DataFrame:
+    policy = _policy_or_current(policy)
     return bref_schedule.parse_schedule_page(
         payload,
         season=season,
-        league=league_for_season(season),
+        league=league_for_season(season, policy=policy),
         schedule_url=schedule_url,
+        policy=schedule_policy,
     )
 
 
@@ -137,25 +223,55 @@ def _assign_game_ids(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_index(path: Path, season: int) -> None:
-    validate_index_bytes(path.read_bytes(), season)
+    policy = capture_policy()
+    validate_index_bytes(path.read_bytes(), season, policy=policy)
 
 
-def validate_index_bytes(payload: bytes, season: int) -> None:
-    discover_month_pages(payload, season)
+def validate_index_bytes(
+    payload: bytes,
+    season: int,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+) -> None:
+    discover_month_pages(payload, season, policy=policy)
 
 
 def validate_month(path: Path, season: int, url: str) -> None:
-    validate_month_bytes(path.read_bytes(), season, url)
+    policy = capture_policy()
+    schedule_policy = bref_schedule.capture_policy()
+    validate_month_bytes(
+        path.read_bytes(),
+        season,
+        url,
+        policy=policy,
+        schedule_policy=schedule_policy,
+    )
 
 
-def validate_month_bytes(payload: bytes, season: int, url: str) -> None:
-    parse_schedule_page(payload, season=season, schedule_url=url)
+def validate_month_bytes(
+    payload: bytes,
+    season: int,
+    url: str,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+    schedule_policy=None,
+) -> None:
+    parse_schedule_page(
+        payload,
+        season=season,
+        schedule_url=url,
+        policy=policy,
+        schedule_policy=schedule_policy,
+    )
 
 
 def _playoff_separator_source_rows(
     payload: bytes,
     schedule_url: str,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
 ) -> tuple[int, ...]:
+    policy = _policy_or_current(policy)
     root = bref_schedule._document(payload, schedule_url)
     tables = root.xpath("//table[@id='schedule']")
     if len(tables) != 1:
@@ -171,7 +287,9 @@ def _playoff_separator_source_rows(
         and " ".join("".join(row.itertext()).split()) == "Playoffs"
     ]
     separator_rows = tuple(matches)
-    expected_rows = VERIFIED_DUPLICATE_PLAYOFF_SEPARATORS.get(schedule_url)
+    expected_rows = dict(
+        policy.verified_duplicate_playoff_separators
+    ).get(schedule_url)
     if expected_rows is not None and separator_rows != expected_rows:
         raise ValueError(
             f"{schedule_url}: verified duplicate Playoffs separator rows "
@@ -185,19 +303,31 @@ def _playoff_separator_source_rows(
     return separator_rows
 
 
-def _without_excluded_remarks(frame: pd.DataFrame) -> pd.DataFrame:
+def _without_excluded_remarks(
+    frame: pd.DataFrame,
+    *,
+    policy: HistoricalBrefPolicy | None = None,
+) -> pd.DataFrame:
+    policy = _policy_or_current(policy)
     remarks = frame["game_remarks"].str.casefold()
-    return frame.loc[~remarks.isin(EXCLUDED_REGULAR_SEASON_REMARKS)]
+    return frame.loc[
+        ~remarks.isin(policy.excluded_regular_season_remarks)
+    ]
 
 
 def _verified_duplicate_separator_frame(
     frame: pd.DataFrame,
     schedule_url: str,
     separator_rows: tuple[int, ...],
+    *,
+    policy: HistoricalBrefPolicy | None = None,
 ) -> pd.DataFrame:
+    policy = _policy_or_current(policy)
     first_separator, second_separator = separator_rows
     output = frame.loc[frame["source_row"] < first_separator]
-    regions = VERIFIED_DUPLICATE_SEPARATOR_REGIONS.get(schedule_url)
+    regions = dict(
+        policy.verified_duplicate_separator_regions
+    ).get(schedule_url)
     if regions is None:
         return output
     regular_ids, postseason_ids = regions
@@ -263,6 +393,8 @@ def fetch(
     seasons: Iterable[int] = HISTORICAL_SEASONS,
     sleep_s: float = 12,
 ) -> None:
+    policy = capture_policy()
+    schedule_policy = bref_schedule.capture_policy()
     cache_dir = raw_dir / "historical_bref"
     _validate_cache_root(cache_dir)
     session = requests.Session()
@@ -289,21 +421,25 @@ def fetch(
         return payload
 
     for season in tuple(seasons):
-        league = league_for_season(season)
-        index_path = cache_dir / index_filename(season)
+        league = league_for_season(season, policy=policy)
+        index_path = cache_dir / index_filename(season, policy=policy)
         page_payload = obtain(
             index_path,
-            index_url(season),
+            index_url(season, policy=policy),
             {
                 "provider": "basketball_reference",
                 "resource": "historical_schedule_index",
                 "league": league,
                 "season": season,
-                "url": index_url(season),
+                "url": index_url(season, policy=policy),
             },
-            lambda path, value=season: validate_index(path, value),
+            lambda path, value=season: validate_index_bytes(
+                path.read_bytes(), value, policy=policy
+            ),
         )
-        for page in discover_month_pages(page_payload, season):
+        for page in discover_month_pages(
+            page_payload, season, policy=policy
+        ):
             destination = cache_dir / page.filename
             obtain(
                 destination,
@@ -316,32 +452,46 @@ def fetch(
                     "month": page.month,
                     "url": page.url,
                 },
-                lambda path, value=season, url=page.url: validate_month(
-                    path, value, url
+                lambda path, value=season, url=page.url: validate_month_bytes(
+                    path.read_bytes(),
+                    value,
+                    url,
+                    policy=policy,
+                    schedule_policy=schedule_policy,
                 ),
             )
 
 
 def load_season(raw_dir: Path, season: int) -> pd.DataFrame:
+    policy = capture_policy()
+    schedule_policy = bref_schedule.capture_policy()
     cache_dir = raw_dir / "historical_bref"
     _validate_cache_root(cache_dir)
-    index_path = cache_dir / index_filename(season)
+    index_path = cache_dir / index_filename(season, policy=policy)
     payload = cache.require_valid(
         index_path,
-        lambda path: validate_index(path, season),
+        lambda path: validate_index_bytes(
+            path.read_bytes(), season, policy=policy
+        ),
     )
     month_payloads = {}
-    for page in discover_month_pages(payload, season):
+    for page in discover_month_pages(payload, season, policy=policy):
         month_payloads[page.filename] = cache.require_valid(
             cache_dir / page.filename,
-            lambda path, value=season, url=page.url: validate_month(
-                path, value, url
+            lambda path, value=season, url=page.url: validate_month_bytes(
+                path.read_bytes(),
+                value,
+                url,
+                policy=policy,
+                schedule_policy=schedule_policy,
             ),
         )
     return load_season_payloads(
         season=season,
         index_payload=payload,
         month_payloads=month_payloads,
+        policy=policy,
+        schedule_policy=schedule_policy,
     )
 
 
@@ -350,19 +500,34 @@ def load_season_payloads(
     season: int,
     index_payload: bytes,
     month_payloads: Mapping[str, bytes],
+    policy: HistoricalBrefPolicy | None = None,
+    schedule_policy=None,
 ) -> pd.DataFrame:
     """Load one historical regular season from captured schedule bytes."""
+    policy = _policy_or_current(policy)
+    if schedule_policy is None:
+        schedule_policy = bref_schedule.capture_policy()
     parsed_pages = []
     separator_found = False
-    for page in discover_month_pages(index_payload, season):
+    for page in discover_month_pages(
+        index_payload, season, policy=policy
+    ):
         try:
             month_payload = month_payloads[page.filename]
         except KeyError as exc:
             raise cache.CacheIntegrityError(
                 f"missing captured historical page {page.filename}"
             ) from exc
-        validate_month_bytes(month_payload, season, page.url)
-        separator_rows = _playoff_separator_source_rows(month_payload, page.url)
+        validate_month_bytes(
+            month_payload,
+            season,
+            page.url,
+            policy=policy,
+            schedule_policy=schedule_policy,
+        )
+        separator_rows = _playoff_separator_source_rows(
+            month_payload, page.url, policy=policy
+        )
         if separator_found:
             if separator_rows:
                 raise ValueError(
@@ -371,7 +536,11 @@ def load_season_payloads(
                 )
             continue
         frame = parse_schedule_page(
-            month_payload, season=season, schedule_url=page.url
+            month_payload,
+            season=season,
+            schedule_url=page.url,
+            policy=policy,
+            schedule_policy=schedule_policy,
         )
         if separator_rows:
             if len(separator_rows) == 1:
@@ -380,15 +549,23 @@ def load_season_payloads(
                 ]
             else:
                 selected = _verified_duplicate_separator_frame(
-                    frame, page.url, separator_rows
+                    frame,
+                    page.url,
+                    separator_rows,
+                    policy=policy,
                 )
-            selected = _without_excluded_remarks(selected)
+            selected = _without_excluded_remarks(
+                selected, policy=policy
+            )
             parsed_pages.append((page, selected))
             separator_found = True
             continue
-        parsed_pages.append((page, _without_excluded_remarks(frame)))
+        parsed_pages.append((
+            page,
+            _without_excluded_remarks(frame, policy=policy),
+        ))
     if not separator_found:
-        boundary = CURATED_PLAYOFF_BOUNDARIES.get(season)
+        boundary = dict(policy.curated_playoff_boundaries).get(season)
         if boundary is None:
             raise ValueError(
                 f"{season}: no postseason boundary in source or curated data"

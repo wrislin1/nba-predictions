@@ -1,9 +1,12 @@
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from datetime import date
 import hashlib
 from io import BytesIO
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 from types import MappingProxyType
@@ -14,6 +17,7 @@ import pyarrow.parquet as pq
 
 from nba_data import (
     bref,
+    bref_schedule,
     cache,
     franchises,
     historical_bref,
@@ -23,6 +27,9 @@ from nba_data import (
     playoff_build,
     publication,
 )
+
+
+SEATTLE_COLISEUM_REMARK = "at seattle, wa (seattle coliseum)"
 
 
 COUNT_COLUMNS = [
@@ -970,6 +977,7 @@ def _captured_assembly_inputs(
             "commit": hoopr.SNAPSHOT["commit"],
         }),
         versions=MappingProxyType({}),
+        policy=playoff_build.capture_policy(),
     )
 
 
@@ -1015,7 +1023,7 @@ def test_assemble_resolves_franchises_and_enforces_schema(
         lambda captured, season: source_rows[season].copy(),
     )
 
-    def fake_hoopr_loader(payload, season, resolver):
+    def fake_hoopr_loader(payload, season, resolver, *, policy=None):
         return _typed_games(source_rows).loc[
             lambda frame: frame["season"].eq(season)
             & frame["game_type"].isin(["playoff", "play_in"]),
@@ -2083,6 +2091,46 @@ def test_input_snapshot_rejects_copy_boundary_mutation(
     )
 
 
+def test_input_snapshot_captures_policy_before_first_input_read(
+    monkeypatch, verified_provenance_data
+):
+    real_snapshot_directory = playoff_build._snapshot_directory
+    neutral_before = playoff_bref.MODERN_NEUTRAL_REMARKS
+    mutated_neutral = frozenset(
+        neutral_before - {SEATTLE_COLISEUM_REMARK}
+    )
+    mutated = False
+
+    def mutate_before_first_directory_read(*args, **kwargs):
+        nonlocal mutated
+        if not mutated:
+            monkeypatch.setattr(
+                playoff_bref,
+                "MODERN_NEUTRAL_REMARKS",
+                mutated_neutral,
+            )
+            mutated = True
+        return real_snapshot_directory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        playoff_build,
+        "_snapshot_directory",
+        mutate_before_first_directory_read,
+    )
+
+    captured = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+
+    assert mutated
+    assert SEATTLE_COLISEUM_REMARK in (
+        captured.policy.playoff_bref.modern_neutral_remarks
+    )
+    assert SEATTLE_COLISEUM_REMARK not in (
+        playoff_bref.MODERN_NEUTRAL_REMARKS
+    )
+
+
 def test_captured_inputs_are_immune_to_transient_files_and_globals(
     verified_provenance_data,
 ):
@@ -2159,6 +2207,181 @@ def test_captured_inputs_are_immune_to_transient_files_and_globals(
     assert not list(data_dir.glob(".playoff-inputs-*"))
 
 
+@pytest.mark.integration
+def test_same_capture_ignores_transient_modern_classification_policy(
+    repo_data_dir,
+):
+    captured = playoff_build._capture_input_snapshot(
+        repo_data_dir
+    )
+    expected_games, expected_report, _ = (
+        playoff_build.assemble_from_inputs(captured)
+    )
+    neutral_before = playoff_bref.MODERN_NEUTRAL_REMARKS
+    nonsite_before = playoff_bref.MODERN_NONSITE_REMARKS
+
+    try:
+        playoff_bref.MODERN_NEUTRAL_REMARKS = frozenset(
+            neutral_before - {SEATTLE_COLISEUM_REMARK}
+        )
+        playoff_bref.MODERN_NONSITE_REMARKS = frozenset(
+            nonsite_before | {SEATTLE_COLISEUM_REMARK}
+        )
+        actual_games, actual_report, _ = (
+            playoff_build.assemble_from_inputs(captured)
+        )
+    finally:
+        playoff_bref.MODERN_NEUTRAL_REMARKS = neutral_before
+        playoff_bref.MODERN_NONSITE_REMARKS = nonsite_before
+
+    pd.testing.assert_frame_equal(actual_games, expected_games)
+    assert actual_report == expected_report
+    assert actual_games.loc[
+        actual_games["game_id"].eq("bref-198404210SEA"),
+        "site_status",
+    ].item() == "neutral"
+
+
+@pytest.mark.integration
+def test_captured_policy_covers_material_maps_sets_and_schemas(
+    repo_data_dir,
+):
+    data_dir = repo_data_dir
+    captured = playoff_build._capture_input_snapshot(data_dir)
+    expected_games = pd.read_parquet(
+        data_dir / "parquet/playoff_games.parquet"
+    )
+    expected_manifest = json.loads(
+        (data_dir / "parquet/playoff_games_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    mutations = [
+        (bref, "SCHEDULE_COLUMNS", ("mutant",)),
+        (bref_schedule, "REQUIRED_STATS", frozenset({"mutant"})),
+        (historical_bref, "CURATED_PLAYOFF_BOUNDARIES", {}),
+        (
+            historical_bref,
+            "VERIFIED_DUPLICATE_PLAYOFF_SEPARATORS",
+            {},
+        ),
+        (playoff_bref, "PLAY_IN_MONTHS", {}),
+        (playoff_bref, "TYPE_REMARKS", {}),
+        (hoopr, "POSTSEASON_COLUMNS", ("mutant",)),
+        (historical_build, "_HISTORICAL_CACHE_NAME", re.compile(r"$^")),
+        (playoff_build, "PLAYOFF_COLUMNS", ("mutant",)),
+        (playoff_build, "REFERENCE_FILES", ("mutant",)),
+    ]
+    originals = [
+        (module, name, getattr(module, name))
+        for module, name, _ in mutations
+    ]
+
+    try:
+        for module, name, replacement in mutations:
+            setattr(module, name, replacement)
+        actual_games, actual_report, _ = (
+            playoff_build.assemble_from_inputs(captured)
+        )
+        actual_sources = playoff_build._raw_provenance_from_inputs(
+            captured
+        )
+        actual_references = (
+            playoff_build._reference_provenance_from_inputs(captured)
+        )
+    finally:
+        for module, name, original in originals:
+            setattr(module, name, original)
+
+    pd.testing.assert_frame_equal(actual_games, expected_games)
+    assert actual_report == expected_manifest["validation"]
+    assert actual_sources == expected_manifest["sources"]
+    assert actual_references == expected_manifest["references"]
+    assert isinstance(
+        captured.policy.playoff_bref.modern_neutral_remarks,
+        frozenset,
+    )
+    assert isinstance(
+        captured.policy.historical_bref.curated_playoff_boundaries,
+        tuple,
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        captured.policy.playoff_bref = captured.policy.playoff_bref
+
+
+def _assert_capture_graph_is_reflectively_immutable(value, seen=None):
+    if seen is None:
+        seen = set()
+    if id(value) in seen:
+        return
+    seen.add(id(value))
+    if is_dataclass(value):
+        names = tuple(item.name for item in fields(value))
+    elif isinstance(value, tuple) and hasattr(type(value), "_fields"):
+        names = tuple(type(value)._fields)
+    else:
+        names = ()
+    if names:
+        assert not hasattr(value, "__dict__"), type(value).__name__
+        for name in names:
+            current = getattr(value, name)
+            with pytest.raises((AttributeError, TypeError)):
+                object.__setattr__(value, name, current)
+            _assert_capture_graph_is_reflectively_immutable(
+                current, seen
+            )
+        return
+    if isinstance(value, Mapping):
+        assert type(value) is MappingProxyType
+        for key, item in value.items():
+            _assert_capture_graph_is_reflectively_immutable(key, seen)
+            _assert_capture_graph_is_reflectively_immutable(item, seen)
+        return
+    if isinstance(value, (tuple, frozenset)):
+        for item in value:
+            _assert_capture_graph_is_reflectively_immutable(item, seen)
+        return
+    assert isinstance(
+        value,
+        (bytes, str, int, float, bool, date, type(None)),
+    ), type(value).__name__
+
+
+def test_captured_input_graph_is_reflectively_immutable(
+    verified_provenance_data,
+):
+    captured = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+
+    _assert_capture_graph_is_reflectively_immutable(captured)
+
+
+def test_captured_policy_rejects_reflective_field_replacement(
+    verified_provenance_data,
+):
+    captured = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+    policy = captured.policy.playoff_bref
+    original = policy.modern_neutral_remarks
+
+    try:
+        with pytest.raises((AttributeError, TypeError)):
+            object.__setattr__(
+                policy,
+                "modern_neutral_remarks",
+                frozenset(),
+            )
+    finally:
+        if policy.modern_neutral_remarks != original:
+            object.__setattr__(
+                policy,
+                "modern_neutral_remarks",
+                original,
+            )
+
+
 @pytest.mark.parametrize("entrypoint", ["assemble", "raw_provenance"])
 def test_standalone_reader_holds_shared_lock_for_publication_inputs(
     monkeypatch,
@@ -2175,25 +2398,32 @@ def test_standalone_reader_holds_shared_lock_for_publication_inputs(
     writer_acquired = threading.Event()
     reader_done = threading.Event()
     errors = []
+    real_copy_input_file = playoff_build._copy_input_file
+    publication_copy_count = 0
 
-    def observed_publication_files():
-        yield publication_files[0]
-        # The generator resumes only after the first copy returns.  Under the
-        # required protocol this gap and every later copy remain inside the
-        # same shared critical section.
-        first_copy_completed.set()
-        assert writer_attempting.wait(5)
-        assert not writer_acquired.wait(0.2)
-        yield from publication_files[1:-1]
-        assert not writer_acquired.is_set()
-        final_copy_entered.set()
-        assert allow_final_copy.wait(5)
-        yield publication_files[-1]
+    def observed_publication_copy(source, destination):
+        nonlocal publication_copy_count
+        relative = Path(destination)
+        is_publication = relative.parent == Path("parquet")
+        if not is_publication:
+            return real_copy_input_file(source, destination)
+        publication_copy_count += 1
+        if publication_copy_count == 1:
+            result = real_copy_input_file(source, destination)
+            first_copy_completed.set()
+            assert writer_attempting.wait(5)
+            assert not writer_acquired.wait(0.2)
+            return result
+        if publication_copy_count == len(publication_files):
+            assert not writer_acquired.is_set()
+            final_copy_entered.set()
+            assert allow_final_copy.wait(5)
+        return real_copy_input_file(source, destination)
 
     monkeypatch.setattr(
         playoff_build,
-        "_SNAPSHOT_PARQUET_FILES",
-        observed_publication_files(),
+        "_copy_input_file",
+        observed_publication_copy,
     )
     if entrypoint == "assemble":
         monkeypatch.setattr(
@@ -2258,7 +2488,8 @@ def test_input_snapshot_rejects_directory_path_swap_during_recheck(
         verified_provenance_data
     )
     directory = snapshot.directories[0]
-    moved = directory.source.with_name(directory.source.name + "-moved")
+    directory_path = Path(directory.source)
+    moved = directory_path.with_name(directory_path.name + "-moved")
     real_listdir = os.listdir
     swapped = False
 
@@ -2268,9 +2499,9 @@ def test_input_snapshot_rejects_directory_path_swap_during_recheck(
             observed_path = Path(os.readlink(f"/proc/self/fd/{path}"))
         else:
             observed_path = Path(path)
-        if not swapped and observed_path == directory.source:
-            os.replace(directory.source, moved)
-            directory.source.symlink_to(moved, target_is_directory=True)
+        if not swapped and observed_path == directory_path:
+            os.replace(directory_path, moved)
+            directory_path.symlink_to(moved, target_is_directory=True)
             swapped = True
         return real_listdir(path)
 
@@ -2285,10 +2516,10 @@ def test_input_snapshot_rejects_directory_path_swap_during_recheck(
             snapshot.verify_unchanged(message="playoff snapshot changed")
         assert swapped
     finally:
-        if directory.source.is_symlink():
-            directory.source.unlink()
+        if directory_path.is_symlink():
+            directory_path.unlink()
         if moved.exists():
-            os.replace(moved, directory.source)
+            os.replace(moved, directory_path)
 
 
 def _install_synthetic_assembly(
@@ -2431,6 +2662,49 @@ def test_run_rejects_reference_drift_after_provenance_and_preserves_prior_pair(
     } == prior
 
 
+def test_run_rejects_persistent_policy_drift_and_preserves_prior_pair(
+    monkeypatch,
+    verified_provenance_data,
+    complete_validation_case,
+    repo_data_dir,
+):
+    data_dir = verified_provenance_data
+    _prepare_synthetic_run(
+        monkeypatch,
+        data_dir,
+        complete_validation_case,
+        repo_data_dir,
+    )
+    prior = _seed_prior_playoff_pair(data_dir)
+    captured_assemble = playoff_build.assemble_from_inputs
+
+    def mutate_policy_after_assembly(inputs):
+        result = captured_assemble(inputs)
+        monkeypatch.setattr(
+            playoff_bref,
+            "BASE_URL",
+            "https://mutant.invalid",
+        )
+        return result
+
+    monkeypatch.setattr(
+        playoff_build,
+        "assemble_from_inputs",
+        mutate_policy_after_assembly,
+    )
+
+    with pytest.raises(
+        playoff_build.PlayoffValidationError,
+        match="runtime policy changed before publication",
+    ):
+        playoff_build.run(data_dir)
+
+    assert {
+        name: (data_dir / "parquet" / name).read_bytes()
+        for name in prior
+    } == prior
+
+
 def test_run_publishes_deterministic_attested_manifest(
     monkeypatch,
     verified_provenance_data,
@@ -2520,6 +2794,8 @@ def test_run_ignores_transient_mutate_use_restore_inputs(
     franchise_frame = franchises.load_reference()
     franchise_before = franchise_frame.copy(deep=True)
     snapshot_before = dict(hoopr.SNAPSHOT)
+    neutral_before = playoff_bref.MODERN_NEUTRAL_REMARKS
+    nonsite_before = playoff_bref.MODERN_NONSITE_REMARKS
     real_assemble = playoff_build.assemble_from_inputs
 
     def reviewer_mutant(inputs):
@@ -2555,6 +2831,12 @@ def test_run_ignores_transient_mutate_use_restore_inputs(
             "franchise_id",
         ] = "ATL"
         hoopr.SNAPSHOT["commit"] = "0" * 40
+        playoff_bref.MODERN_NEUTRAL_REMARKS = frozenset(
+            neutral_before - {SEATTLE_COLISEUM_REMARK}
+        )
+        playoff_bref.MODERN_NONSITE_REMARKS = frozenset(
+            nonsite_before | {SEATTLE_COLISEUM_REMARK}
+        )
         try:
             return real_assemble(inputs)
         finally:
@@ -2563,6 +2845,8 @@ def test_run_ignores_transient_mutate_use_restore_inputs(
             franchise_frame.loc[:, :] = franchise_before.to_numpy()
             hoopr.SNAPSHOT.clear()
             hoopr.SNAPSHOT.update(snapshot_before)
+            playoff_bref.MODERN_NEUTRAL_REMARKS = neutral_before
+            playoff_bref.MODERN_NONSITE_REMARKS = nonsite_before
 
     monkeypatch.setattr(
         playoff_build, "assemble_from_inputs", reviewer_mutant
