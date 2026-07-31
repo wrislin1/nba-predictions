@@ -12,12 +12,20 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import functools
 import json
+import os
 from pathlib import Path
+import re
 import stat
+import time
+from typing import Callable
+from urllib.parse import urlsplit
 
 import pandas as pd
+import requests
+from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV3
+from nba_api.stats.library.http import NBAStatsHTTP
 
-from nba_data import cache, franchises
+from nba_data import cache, franchises, pbp_build, stats_nba
 
 
 class PBPValidationError(ValueError):
@@ -852,4 +860,312 @@ def validate_cache_inventory(
         Path(data_dir) / "raw/stats_nba/pbp",
         required_seasons=required_seasons,
         require_complete=require_complete,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Serialized retries, capacity gates, and resumable acquisition
+#
+# One shared ``RequestPacer`` enforces >=1.5s spacing between PBP request
+# *starts* across both the worklist and game phases (never parallel). Each
+# logical request gets five total attempts on a transient failure (five
+# HTTP statuses plus connection errors/timeouts), with fixed 5/10/20/40s
+# backoff, honoring a larger numeric ``Retry-After`` up to 120s. A 200
+# response is returned as-is; whether its body is valid is a publish-time
+# (``cache.publish_bytes``) concern, deliberately outside this retry loop.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RequestPacer:
+    minimum_interval_s: float = MIN_REQUEST_INTERVAL_S
+    now: Callable[[], float] = time.monotonic
+    sleeper: Callable[[float], None] = time.sleep
+    last_started: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.minimum_interval_s < MIN_REQUEST_INTERVAL_S:
+            raise ValueError(
+                "RequestPacer minimum_interval_s must be >= "
+                f"{MIN_REQUEST_INTERVAL_S}: {self.minimum_interval_s}"
+            )
+
+    def wait(self) -> None:
+        current = self.now()
+        if self.last_started is not None:
+            delay = self.last_started + self.minimum_interval_s - current
+            if delay > 0:
+                self.sleeper(delay)
+                current = self.now()
+        self.last_started = current
+
+
+_TOTAL_ATTEMPTS = len(RETRY_DELAYS_S) + 1
+_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_AFTER_PATTERN = re.compile(r"^\d+$")
+_SOURCE_HOST = "stats.nba.com"
+
+
+def _parse_retry_after(value: str | None, *, context: str) -> int | None:
+    if value is None:
+        return None
+    if not _RETRY_AFTER_PATTERN.fullmatch(value.strip()):
+        raise cache.SourceAccessError(
+            f"{context}: invalid Retry-After header {value!r}"
+        )
+    return int(value)
+
+
+def _request_bytes(
+    *,
+    session: requests.Session,
+    pacer: RequestPacer,
+    endpoint_name: str,
+    parameters: Mapping[str, object],
+    context: str,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> bytes:
+    """Send one paced, retried PBP request and return the response body.
+
+    Only the raw response bytes of a definitive HTTP 200 are returned;
+    schema/transport validation and publication are the caller's concern
+    (``publish_worklist_payload``/``publish_game_payload``), so a
+    malformed-but-200 body is never retried here.
+    """
+    url = NBAStatsHTTP.base_url.format(endpoint=endpoint_name)
+    params = sorted(parameters.items())
+    headers = dict(NBAStatsHTTP.headers)
+
+    for attempt in range(1, _TOTAL_ATTEMPTS + 1):
+        pacer.wait()
+        try:
+            response = session.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=90,
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            if attempt == _TOTAL_ATTEMPTS:
+                raise cache.SourceAccessError(
+                    f"{context}: exhausted retries after {attempt} attempts "
+                    f"(final {type(exc).__name__}: {exc})"
+                ) from exc
+            sleeper(RETRY_DELAYS_S[attempt - 1])
+            continue
+
+        response_host = urlsplit(response.url).hostname
+        if response_host != _SOURCE_HOST:
+            raise cache.SourceAccessError(
+                f"{context}: response host {response_host!r} is not "
+                f"{_SOURCE_HOST!r}"
+            )
+
+        status = response.status_code
+        if status == 200:
+            return response.content
+
+        if status not in _TRANSIENT_STATUSES:
+            raise cache.SourceAccessError(f"{context}: HTTP {status}")
+
+        retry_after = _parse_retry_after(
+            response.headers.get("Retry-After"), context=context
+        )
+        if retry_after is not None and retry_after > MAX_RETRY_AFTER_S:
+            raise cache.SourceAccessError(
+                f"{context}: Retry-After {retry_after} exceeds "
+                f"{int(MAX_RETRY_AFTER_S)}"
+            )
+
+        if attempt == _TOTAL_ATTEMPTS:
+            raise cache.SourceAccessError(
+                f"{context}: exhausted retries after {attempt} attempts "
+                f"(final HTTP {status})"
+            )
+
+        base_delay = RETRY_DELAYS_S[attempt - 1]
+        delay = max(retry_after, base_delay) if retry_after is not None else base_delay
+        sleeper(delay)
+
+    raise AssertionError("unreachable: _request_bytes retry loop exited without result")
+
+
+def _worklist_context(season: int, game_type: str) -> str:
+    return f"PBP worklist season={season} game_type={game_type!r}"
+
+
+def _game_context(season: int, game_type: str, game_id: str) -> str:
+    return (
+        f"PBP game season={season} game_type={game_type!r} "
+        f"game_id={game_id!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Capacity gate
+# ---------------------------------------------------------------------------
+
+
+def available_bytes(path: Path) -> int:
+    stats = os.statvfs(path)
+    return stats.f_bavail * stats.f_frsize
+
+
+def require_fetch_capacity(data_dir: Path, uncached_game_count: int) -> None:
+    required = (
+        uncached_game_count * BYTES_PER_UNCACHED_GAME + FETCH_STAGING_HEADROOM_BYTES
+    )
+    available = available_bytes(Path(data_dir))
+    if available < required:
+        raise PBPValidationError(
+            "insufficient fetch capacity: required "
+            f"{required} bytes, available {available} bytes"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Worklist-first orchestration and resumable game acquisition
+# ---------------------------------------------------------------------------
+
+
+def fetch_worklists(
+    data_dir: Path,
+    seasons: Iterable[int],
+    *,
+    session: requests.Session | None = None,
+    pacer: RequestPacer | None = None,
+) -> pd.DataFrame:
+    data_dir = Path(data_dir)
+    session = session if session is not None else requests.Session()
+    pacer = pacer if pacer is not None else RequestPacer()
+    ordered_seasons = sorted({int(season) for season in seasons})
+
+    preflight_done = False
+    for season in ordered_seasons:
+        expected_types = ["regular", "playoff"]
+        if season in PLAY_IN_SEASONS:
+            expected_types.append("play_in")
+        for game_type in expected_types:
+            destination = worklist_path(data_dir, season, game_type)
+            existing = _read_worklist_pair(
+                destination, season=season, game_type=game_type
+            )
+            if existing is not None:
+                continue
+
+            if not preflight_done:
+                stats_nba.preflight_dns()
+                preflight_done = True
+
+            finder = LeagueGameFinder(
+                player_or_team_abbreviation="T",
+                league_id_nullable="00",
+                season_nullable=season_label(season),
+                season_type_nullable=SEASON_TYPES[game_type],
+                timeout=90,
+                get_request=False,
+            )
+            payload = _request_bytes(
+                session=session,
+                pacer=pacer,
+                endpoint_name=finder.endpoint,
+                parameters=finder.parameters,
+                context=_worklist_context(season, game_type),
+            )
+            metadata = {
+                **_expected_worklist_identity(season, game_type),
+                "request_parameters": dict(finder.parameters),
+            }
+            publish_worklist_payload(destination, payload, metadata)
+
+    return load_worklist(data_dir, ordered_seasons, require_complete=True)
+
+
+def fetch_games(
+    data_dir: Path,
+    worklist: pd.DataFrame,
+    *,
+    session: requests.Session | None = None,
+    pacer: RequestPacer | None = None,
+) -> None:
+    data_dir = Path(data_dir)
+    session = session if session is not None else requests.Session()
+    pacer = pacer if pacer is not None else RequestPacer()
+
+    ordered = worklist.sort_values(
+        ["season", "game_date", "game_type", "game_id"], kind="stable"
+    )
+
+    preflight_done = False
+    for _, row in ordered.iterrows():
+        season = int(row["season"])
+        game_type = str(row["game_type"])
+        game_id = str(row["game_id"])
+        destination = game_path(data_dir, season, game_id)
+        existing = _read_game_pair(
+            destination, season=season, game_type=game_type, game_id=game_id
+        )
+        if existing is not None:
+            continue
+
+        if not preflight_done:
+            stats_nba.preflight_dns()
+            preflight_done = True
+
+        play = PlayByPlayV3(
+            game_id=game_id,
+            start_period=0,
+            end_period=0,
+            timeout=90,
+            get_request=False,
+        )
+        payload = _request_bytes(
+            session=session,
+            pacer=pacer,
+            endpoint_name=play.endpoint,
+            parameters=play.parameters,
+            context=_game_context(season, game_type, game_id),
+        )
+        metadata = _expected_game_identity(season, game_type, game_id)
+        publish_game_payload(destination, payload, metadata)
+        # Run the fixed parser immediately after each transport-valid body
+        # publishes: schema drift raises here, after the raw body is
+        # already cached as evidence, and stops the fetch.
+        pbp_build.parse_game_payload(payload, row.to_dict())
+
+
+def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
+    data_dir = Path(data_dir)
+    ordered_seasons = sorted({int(season) for season in seasons})
+    for season in ordered_seasons:
+        season_label(season)
+
+    # Validate every existing PBP cache entry without requiring
+    # completeness before any request is made.
+    validate_cache_inventory(
+        data_dir, required_seasons=ordered_seasons, require_complete=False
+    )
+
+    session = requests.Session()
+    pacer = RequestPacer()
+
+    worklist = fetch_worklists(
+        data_dir, ordered_seasons, session=session, pacer=pacer
+    )
+    cross_validate_worklist(worklist, data_dir, ordered_seasons)
+
+    inventory = validate_cache_tree(
+        data_dir / "raw/stats_nba/pbp",
+        required_seasons=ordered_seasons,
+        require_complete=False,
+    )
+    cached_game_ids = {path.stem for path in inventory.game_bodies}
+    missing = worklist.loc[~worklist["game_id"].isin(cached_game_ids)]
+    require_fetch_capacity(data_dir, len(missing))
+
+    fetch_games(data_dir, worklist, session=session, pacer=pacer)
+
+    validate_cache_inventory(
+        data_dir, required_seasons=ordered_seasons, require_complete=True
     )

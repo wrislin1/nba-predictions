@@ -6,9 +6,12 @@ from datetime import date
 import json
 import os
 from pathlib import Path
+from unittest.mock import Mock, call
+from urllib.parse import urlsplit
 
 import pandas as pd
 import pytest
+import requests
 
 from nba_data import cache, pbp, pbp_build
 
@@ -1245,3 +1248,726 @@ def test_validate_cache_tree_require_complete_true_requires_all_67_worklists(
     )
     assert expected_count == 67
     assert str(excinfo.value).count(".json") == 67
+
+
+# ---------------------------------------------------------------------------
+# Task 4: serialized retries, capacity gates, and resumable acquisition
+# ---------------------------------------------------------------------------
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 0.0
+        self.sleeps = []
+
+    def now(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.value += seconds
+
+
+class FakeResponse:
+    def __init__(self, status_code, content, headers=None, url=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+        self.url = url or "https://stats.nba.com/stats/x"
+
+
+class FakeSession:
+    """Queues responses/exceptions in order and records every call made."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+        self.request_log = []
+
+    def get(self, url, *, params=None, headers=None, timeout=None, allow_redirects=None):
+        self.calls += 1
+        self.request_log.append({
+            "url": url,
+            "params": params,
+            "headers": headers,
+            "timeout": timeout,
+            "allow_redirects": allow_redirects,
+        })
+        if not self._responses:
+            raise AssertionError("FakeSession received more calls than queued responses")
+        item = self._responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+def _no_wait_pacer():
+    return pbp.RequestPacer(now=lambda: 0.0, sleeper=lambda seconds: None)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: RequestPacer
+# ---------------------------------------------------------------------------
+
+
+def test_request_pacer_enforces_start_to_start_spacing():
+    clock = FakeClock()
+    pacer = pbp.RequestPacer(
+        minimum_interval_s=1.5,
+        now=clock.now,
+        sleeper=clock.sleep,
+    )
+    pacer.wait()
+    clock.value += 0.4
+    pacer.wait()
+    assert clock.sleeps == [1.1]
+    assert pacer.last_started == 1.5
+
+
+def test_request_pacer_does_not_sleep_when_interval_already_elapsed():
+    clock = FakeClock()
+    pacer = pbp.RequestPacer(now=clock.now, sleeper=clock.sleep)
+    pacer.wait()
+    clock.value += 5.0
+    pacer.wait()
+    assert clock.sleeps == []
+    assert pacer.last_started == 5.0
+
+
+@pytest.mark.parametrize("interval", [0.0, 1.0, 1.4999])
+def test_request_pacer_rejects_intervals_below_minimum(interval):
+    with pytest.raises(ValueError):
+        pbp.RequestPacer(minimum_interval_s=interval)
+
+
+def test_request_pacer_accepts_exact_minimum_interval():
+    pbp.RequestPacer(minimum_interval_s=pbp.MIN_REQUEST_INTERVAL_S)
+
+
+# ---------------------------------------------------------------------------
+# Step 2: retry classification
+# ---------------------------------------------------------------------------
+
+
+def test_transient_failures_use_all_bounded_delays():
+    session = FakeSession([
+        FakeResponse(500, b"", {}),
+        FakeResponse(502, b"", {}),
+        FakeResponse(503, b"", {}),
+        FakeResponse(504, b"", {}),
+        FakeResponse(200, b"ok", {}),
+    ])
+    sleeper = Mock()
+    payload = pbp._request_bytes(
+        session=session,
+        pacer=_no_wait_pacer(),
+        endpoint_name="leaguegamefinder",
+        parameters={"Season": "1996-97"},
+        context="test-context",
+        sleeper=sleeper,
+    )
+    assert payload == b"ok"
+    assert sleeper.call_args_list == [call(5.0), call(10.0), call(20.0), call(40.0)]
+    assert session.calls == 5
+
+
+def test_retry_after_replaces_smaller_backoff():
+    session = FakeSession([
+        FakeResponse(429, b"", {"Retry-After": "30"}),
+        FakeResponse(200, b"ok", {}),
+    ])
+    sleeper = Mock()
+    pbp._request_bytes(
+        session=session,
+        pacer=_no_wait_pacer(),
+        endpoint_name="playbyplayv3",
+        parameters={"GameID": "0029600001"},
+        context="test-context",
+        sleeper=sleeper,
+    )
+    assert sleeper.call_args_list == [call(30.0)]
+
+
+def test_retry_after_smaller_than_backoff_keeps_backoff():
+    session = FakeSession([
+        FakeResponse(500, b"", {"Retry-After": "1"}),
+        FakeResponse(200, b"ok", {}),
+    ])
+    sleeper = Mock()
+    pbp._request_bytes(
+        session=session,
+        pacer=_no_wait_pacer(),
+        endpoint_name="playbyplayv3",
+        parameters={"GameID": "0029600001"},
+        context="test-context",
+        sleeper=sleeper,
+    )
+    assert sleeper.call_args_list == [call(5.0)]
+
+
+def test_retry_after_above_ceiling_stops():
+    session = FakeSession([FakeResponse(429, b"", {"Retry-After": "121"})])
+    sleeper = Mock()
+    with pytest.raises(
+        cache.SourceAccessError, match="Retry-After 121 exceeds 120"
+    ):
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="playbyplayv3",
+            parameters={"GameID": "0029600001"},
+            context="test-context",
+            sleeper=sleeper,
+        )
+    sleeper.assert_not_called()
+    assert session.calls == 1
+
+
+def test_retry_after_invalid_value_stops():
+    session = FakeSession([FakeResponse(429, b"", {"Retry-After": "soon"})])
+    sleeper = Mock()
+    with pytest.raises(cache.SourceAccessError, match="invalid Retry-After"):
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="playbyplayv3",
+            parameters={"GameID": "0029600001"},
+            context="test-context",
+            sleeper=sleeper,
+        )
+    sleeper.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_non_retryable_4xx_stops_after_one_request(status):
+    session = FakeSession([FakeResponse(status, b"", {})])
+    sleeper = Mock()
+    with pytest.raises(cache.SourceAccessError, match=f"HTTP {status}"):
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="playbyplayv3",
+            parameters={"GameID": "0029600001"},
+            context="test-context",
+            sleeper=sleeper,
+        )
+    assert session.calls == 1
+    sleeper.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [requests.exceptions.ConnectionError("boom"), requests.exceptions.Timeout("boom")],
+    ids=["connection-error", "timeout"],
+)
+def test_connection_and_timeout_errors_are_transient(exc):
+    session = FakeSession([exc, FakeResponse(200, b"ok", {})])
+    sleeper = Mock()
+    payload = pbp._request_bytes(
+        session=session,
+        pacer=_no_wait_pacer(),
+        endpoint_name="playbyplayv3",
+        parameters={"GameID": "0029600001"},
+        context="test-context",
+        sleeper=sleeper,
+    )
+    assert payload == b"ok"
+    assert sleeper.call_args_list == [call(5.0)]
+
+
+def test_exhausted_retries_message_names_season_type_game_id_attempts_status():
+    session = FakeSession([FakeResponse(500, b"", {}) for _ in range(5)])
+    sleeper = Mock()
+    context = "PBP game season=1997 game_type='regular' game_id='0029600001'"
+    with pytest.raises(cache.SourceAccessError) as excinfo:
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="playbyplayv3",
+            parameters={"GameID": "0029600001"},
+            context=context,
+            sleeper=sleeper,
+        )
+    message = str(excinfo.value)
+    assert "1997" in message
+    assert "regular" in message
+    assert "0029600001" in message
+    assert "5" in message
+    assert "500" in message
+    assert session.calls == 5
+    assert sleeper.call_args_list == [call(5.0), call(10.0), call(20.0), call(40.0)]
+
+
+def test_exhausted_retries_message_names_exception_class():
+    session = FakeSession([requests.exceptions.ConnectionError("boom") for _ in range(5)])
+    sleeper = Mock()
+    context = "PBP worklist season=1997 game_type='regular'"
+    with pytest.raises(cache.SourceAccessError, match="ConnectionError"):
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="leaguegamefinder",
+            parameters={"Season": "1996-97"},
+            context=context,
+            sleeper=sleeper,
+        )
+    assert session.calls == 5
+
+
+def test_request_bytes_rejects_non_stats_nba_com_response_host():
+    session = FakeSession([
+        FakeResponse(200, b"ok", {}, url="https://stats-prod.nba.com/stats/playbyplayv3"),
+    ])
+    with pytest.raises(cache.SourceAccessError, match="stats.nba.com"):
+        pbp._request_bytes(
+            session=session,
+            pacer=_no_wait_pacer(),
+            endpoint_name="playbyplayv3",
+            parameters={"GameID": "0029600001"},
+            context="ctx",
+        )
+
+
+def test_request_bytes_disables_redirects_and_sorts_params():
+    session = FakeSession([FakeResponse(200, b"ok", {})])
+    pbp._request_bytes(
+        session=session,
+        pacer=_no_wait_pacer(),
+        endpoint_name="playbyplayv3",
+        parameters={"EndPeriod": 0, "GameID": "0029600001", "StartPeriod": 0},
+        context="ctx",
+    )
+    entry = session.request_log[0]
+    assert entry["allow_redirects"] is False
+    assert entry["params"] == [
+        ("EndPeriod", 0), ("GameID", "0029600001"), ("StartPeriod", 0),
+    ]
+    assert entry["url"] == "https://stats.nba.com/stats/playbyplayv3"
+
+
+# ---------------------------------------------------------------------------
+# Step 3: capacity gate
+# ---------------------------------------------------------------------------
+
+
+def test_available_bytes_reads_statvfs_once(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeStatvfsResult:
+        f_bavail = 100
+        f_frsize = 4096
+
+    def fake_statvfs(path):
+        calls.append(path)
+        return FakeStatvfsResult()
+
+    monkeypatch.setattr(pbp.os, "statvfs", fake_statvfs)
+    assert pbp.available_bytes(tmp_path) == 100 * 4096
+    assert calls == [tmp_path]
+
+
+def test_require_fetch_capacity_rejects_one_byte_short(tmp_path, monkeypatch):
+    required = 3 * pbp.BYTES_PER_UNCACHED_GAME + pbp.FETCH_STAGING_HEADROOM_BYTES
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: required - 1)
+    with pytest.raises(pbp.PBPValidationError) as excinfo:
+        pbp.require_fetch_capacity(tmp_path, 3)
+    message = str(excinfo.value)
+    assert str(required) in message
+    assert str(required - 1) in message
+
+
+def test_require_fetch_capacity_passes_at_exact_boundary(tmp_path, monkeypatch):
+    required = 3 * pbp.BYTES_PER_UNCACHED_GAME + pbp.FETCH_STAGING_HEADROOM_BYTES
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: required)
+    pbp.require_fetch_capacity(tmp_path, 3)
+
+
+# ---------------------------------------------------------------------------
+# Step 4: worklist-first and resume behaviors
+# ---------------------------------------------------------------------------
+
+
+def _valid_game_action(**overrides):
+    action = {
+        "actionNumber": 1,
+        "clock": "PT12M00.00S",
+        "period": 1,
+        "teamId": 0,
+        "teamTricode": "",
+        "personId": 0,
+        "playerName": "",
+        "playerNameI": "",
+        "xLegacy": 0,
+        "yLegacy": 0,
+        "shotDistance": 0,
+        "shotResult": "",
+        "isFieldGoal": 0,
+        "scoreHome": "0",
+        "scoreAway": "0",
+        "pointsTotal": 0,
+        "location": "",
+        "description": "",
+        "actionType": "period",
+        "subType": "",
+        "videoAvailable": 0,
+        "shotValue": 0,
+        "actionId": 1,
+    }
+    action.update(overrides)
+    return action
+
+
+def _valid_game_payload(game_id, home_pts, away_pts):
+    document = {
+        "game": {
+            "gameId": game_id,
+            "actions": [
+                _valid_game_action(),
+                _valid_game_action(
+                    actionNumber=2,
+                    actionId=2,
+                    scoreHome=str(home_pts),
+                    scoreAway=str(away_pts),
+                ),
+            ],
+        }
+    }
+    return json.dumps(document).encode("utf-8")
+
+
+def _two_game_worklist():
+    return pd.DataFrame(
+        [
+            {
+                "game_id": "0029600001", "season": 1997, "game_type": "regular",
+                "game_date": date(1996, 11, 1), "away_franchise_id": "CHI",
+                "home_franchise_id": "BOS", "away_pts": 107, "home_pts": 98,
+            },
+            {
+                "game_id": "0049600001", "season": 1997, "game_type": "playoff",
+                "game_date": date(1997, 4, 24), "away_franchise_id": "NOP",
+                "home_franchise_id": "NYK", "away_pts": 99, "home_pts": 109,
+            },
+        ],
+        columns=pbp.WORKLIST_COLUMNS,
+    )
+
+
+# --- fetch_worklists ---------------------------------------------------
+
+
+def test_fetch_worklists_sends_one_request_per_missing_contract(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([
+        FakeResponse(200, _payload(_document(rows=REGULAR_1997_ROWS)), {}),
+        FakeResponse(200, _payload(_document(rows=PLAYOFF_1997_ROWS)), {}),
+    ])
+    result = pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    assert session.calls == 2
+    assert sorted(result["game_type"].tolist()) == ["playoff", "regular"]
+
+    regular_meta_path = pbp.worklist_path(data_dir, 1997, "regular").with_name(
+        "regular.json.meta.json"
+    )
+    metadata = json.loads(regular_meta_path.read_text(encoding="utf-8"))
+    assert metadata["parameters"] == {"Season": "1996-97", "SeasonType": "Regular Season"}
+    assert metadata["request_parameters"]["PlayerOrTeam"] == "T"
+    assert metadata["request_parameters"]["LeagueID"] == "00"
+    assert metadata["request_parameters"]["Season"] == "1996-97"
+    assert metadata["request_parameters"]["SeasonType"] == "Regular Season"
+
+
+def test_fetch_worklists_skips_already_cached_contracts(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    pbp.publish_worklist_payload(
+        pbp.worklist_path(data_dir, 1997, "regular"),
+        _payload(_document(rows=REGULAR_1997_ROWS)),
+        expected_worklist_metadata(1997, "regular"),
+    )
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([FakeResponse(200, _payload(_document(rows=PLAYOFF_1997_ROWS)), {})])
+    result = pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    assert session.calls == 1
+    assert sorted(result["game_type"].tolist()) == ["playoff", "regular"]
+
+
+def test_fetch_worklists_preflight_called_once_before_first_missing_request(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+    calls = []
+    monkeypatch.setattr(
+        pbp.stats_nba, "preflight_dns",
+        lambda: calls.append("preflight") or ("1.2.3.4",),
+    )
+    session = FakeSession([
+        FakeResponse(200, _payload(_document(rows=REGULAR_1997_ROWS)), {}),
+        FakeResponse(200, _payload(_document(rows=PLAYOFF_1997_ROWS)), {}),
+    ])
+    pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    assert calls == ["preflight"]
+
+
+def test_fetch_worklists_preflight_failure_produces_zero_session_calls(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+
+    def fail_preflight():
+        raise cache.SourceAccessError("dns sinkholed")
+
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", fail_preflight)
+    session = FakeSession([])
+    with pytest.raises(cache.SourceAccessError, match="dns sinkholed"):
+        pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    assert session.calls == 0
+
+
+def test_fetch_worklists_malformed_200_body_fails_without_retry(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([FakeResponse(200, b"not json", {})])
+    with pytest.raises(json.JSONDecodeError):
+        pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    assert session.calls == 1
+
+
+def test_fetch_worklists_only_targets_stats_nba_com(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([
+        FakeResponse(200, _payload(_document(rows=REGULAR_1997_ROWS)), {}),
+        FakeResponse(200, _payload(_document(rows=PLAYOFF_1997_ROWS)), {}),
+    ])
+    pbp.fetch_worklists(data_dir, [1997], session=session, pacer=_no_wait_pacer())
+    for entry in session.request_log:
+        assert urlsplit(entry["url"]).hostname == "stats.nba.com"
+
+
+# --- fetch_games ---------------------------------------------------------
+
+
+def test_fetch_games_skips_complete_valid_pair(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist().iloc[[0]]
+    pbp.publish_game_payload(
+        pbp.game_path(data_dir, 1997, "0029600001"),
+        (FIXTURES / "early_score_sentinel.json").read_bytes(),
+        expected_game_metadata(1997, "regular", "0029600001"),
+    )
+    preflight_mock = Mock(return_value=("1.2.3.4",))
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", preflight_mock)
+    session = FakeSession([])
+    pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    assert session.calls == 0
+    preflight_mock.assert_not_called()
+
+
+def test_fetch_games_sends_two_serialized_requests_with_exact_sidecars(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([
+        FakeResponse(200, (FIXTURES / "early_score_sentinel.json").read_bytes(), {}),
+        FakeResponse(200, _valid_game_payload("0049600001", home_pts=109, away_pts=99), {}),
+    ])
+    pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    assert session.calls == 2
+    for game_id, season, game_type in [
+        ("0029600001", 1997, "regular"),
+        ("0049600001", 1997, "playoff"),
+    ]:
+        body_path = pbp.game_path(data_dir, season, game_id)
+        assert body_path.exists()
+        meta_path = body_path.with_name(body_path.name + ".meta.json")
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert metadata["game_type"] == game_type
+        assert metadata["parameters"] == {
+            "GameID": game_id, "StartPeriod": 0, "EndPeriod": 0,
+        }
+
+
+def test_fetch_games_preflight_called_once_before_first_missing_request(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    calls = []
+    monkeypatch.setattr(
+        pbp.stats_nba, "preflight_dns",
+        lambda: calls.append("preflight") or ("1.2.3.4",),
+    )
+    session = FakeSession([
+        FakeResponse(200, (FIXTURES / "early_score_sentinel.json").read_bytes(), {}),
+        FakeResponse(200, _valid_game_payload("0049600001", 109, 99), {}),
+    ])
+    pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    assert calls == ["preflight"]
+
+
+def test_fetch_games_preflight_failure_produces_zero_session_calls(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+
+    def fail_preflight():
+        raise cache.SourceAccessError("dns sinkholed")
+
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", fail_preflight)
+    session = FakeSession([])
+    with pytest.raises(cache.SourceAccessError, match="dns sinkholed"):
+        pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    assert session.calls == 0
+
+
+def test_fetch_games_rejects_non_stats_nba_com_response_host(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([
+        FakeResponse(200, b"{}", {}, url="https://stats-prod.nba.com/stats/playbyplayv3"),
+    ])
+    with pytest.raises(cache.SourceAccessError, match="stats.nba.com"):
+        pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+
+
+def test_fetch_games_only_targets_stats_nba_com(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([
+        FakeResponse(200, (FIXTURES / "early_score_sentinel.json").read_bytes(), {}),
+        FakeResponse(200, _valid_game_payload("0049600001", 109, 99), {}),
+    ])
+    pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    for entry in session.request_log:
+        assert urlsplit(entry["url"]).hostname == "stats.nba.com"
+
+
+def test_fetch_games_schema_drift_response_cached_then_stops(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    drift_payload = json.dumps({
+        "game": {"gameId": "0029600001", "actions": [{"newField": 1}]},
+    }).encode("utf-8")
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    session = FakeSession([FakeResponse(200, drift_payload, {})])
+    with pytest.raises(pbp_build.PBPBuildError, match="V3 action schema drift"):
+        pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+    assert session.calls == 1
+    body_path = pbp.game_path(data_dir, 1997, "0029600001")
+    assert body_path.read_bytes() == drift_payload
+    assert not pbp.game_path(data_dir, 1997, "0049600001").exists()
+
+
+def test_fetch_games_resume_requests_only_remaining_game(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+
+    session_one = FakeSession([
+        FakeResponse(200, (FIXTURES / "early_score_sentinel.json").read_bytes(), {}),
+        FakeResponse(404, b"", {}),
+    ])
+    with pytest.raises(cache.SourceAccessError, match="HTTP 404"):
+        pbp.fetch_games(data_dir, worklist, session=session_one, pacer=_no_wait_pacer())
+    assert session_one.calls == 2
+    assert pbp.game_path(data_dir, 1997, "0029600001").exists()
+    assert not pbp.game_path(data_dir, 1997, "0049600001").exists()
+
+    session_two = FakeSession([
+        FakeResponse(200, _valid_game_payload("0049600001", 109, 99), {}),
+    ])
+    pbp.fetch_games(data_dir, worklist, session=session_two, pacer=_no_wait_pacer())
+    assert session_two.calls == 1
+    assert pbp.game_path(data_dir, 1997, "0049600001").exists()
+
+
+# --- fetch (full orchestration) ------------------------------------------
+
+
+def _seed_fetch_scenario(tmp_path):
+    """Seed publications plus *properly cache-published* worklists.
+
+    ``seed_cross_source_publications`` writes worklist bodies directly with
+    ``Path.write_bytes`` (sufficient for the offline ``load_worklist`` /
+    ``cross_validate_worklist`` tests above), which leaves no cache sidecar.
+    ``fetch()`` starts by validating the existing cache tree, which requires
+    a body/sidecar pair (or neither) for every entry it looks at -- so
+    these ``fetch()``-level tests need the worklist bodies published through
+    the real cache contract instead.
+    """
+    data_dir, worklist = seed_cross_source_publications(tmp_path)
+    for season, game_type in [
+        (1997, "regular"), (1997, "playoff"),
+        (2020, "regular"), (2020, "playoff"), (2020, "play_in"),
+    ]:
+        path = pbp.worklist_path(data_dir, season, game_type)
+        body = path.read_bytes()
+        pbp.publish_worklist_payload(
+            path, body, expected_worklist_metadata(season, game_type)
+        )
+    return data_dir, worklist
+
+
+def test_fetch_cross_validates_worklist_before_fetch_games_runs(tmp_path, monkeypatch):
+    data_dir, _ = _seed_fetch_scenario(tmp_path)
+    calls = []
+    real_cross_validate = pbp.cross_validate_worklist
+
+    def spy_cross_validate(*args, **kwargs):
+        calls.append("cross_validate")
+        return real_cross_validate(*args, **kwargs)
+
+    def fake_fetch_games(data_dir_arg, worklist_arg, **kwargs):
+        calls.append("fetch_games")
+        assert not worklist_arg.empty
+
+    monkeypatch.setattr(pbp, "cross_validate_worklist", spy_cross_validate)
+    monkeypatch.setattr(pbp, "fetch_games", fake_fetch_games)
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: 10**15)
+    with pytest.raises(pbp.PBPValidationError, match="missing required game file"):
+        pbp.fetch(data_dir, [1997, 2020])
+    assert calls == ["cross_validate", "fetch_games"]
+
+
+def test_fetch_worklist_mismatch_produces_zero_playbyplay_requests(tmp_path, monkeypatch):
+    data_dir, _ = _seed_fetch_scenario(tmp_path)
+    mutate_publication(data_dir, "regular", "home_pts", 97)
+    fetch_games_mock = Mock()
+    monkeypatch.setattr(pbp, "fetch_games", fetch_games_mock)
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: 10**15)
+    with pytest.raises(pbp.PBPValidationError, match="regular worklist mismatch"):
+        pbp.fetch(data_dir, [1997, 2020])
+    fetch_games_mock.assert_not_called()
+
+
+def test_fetch_capacity_failure_produces_zero_playbyplay_requests(tmp_path, monkeypatch):
+    data_dir, _ = _seed_fetch_scenario(tmp_path)
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: 0)
+    fetch_games_mock = Mock()
+    monkeypatch.setattr(pbp, "fetch_games", fetch_games_mock)
+    with pytest.raises(pbp.PBPValidationError, match="insufficient fetch capacity"):
+        pbp.fetch(data_dir, [1997, 2020])
+    fetch_games_mock.assert_not_called()
+
+
+def test_fetch_complete_valid_cache_produces_zero_requests(tmp_path, monkeypatch):
+    data_dir, worklist = _seed_fetch_scenario(tmp_path)
+    for _, row in worklist.iterrows():
+        payload = _valid_game_payload(row["game_id"], row["home_pts"], row["away_pts"])
+        pbp.publish_game_payload(
+            pbp.game_path(data_dir, row["season"], row["game_id"]),
+            payload,
+            expected_game_metadata(row["season"], row["game_type"], row["game_id"]),
+        )
+    session = FakeSession([])
+    monkeypatch.setattr(pbp.requests, "Session", lambda: session)
+    preflight_mock = Mock(return_value=("1.2.3.4",))
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", preflight_mock)
+    monkeypatch.setattr(pbp, "available_bytes", lambda path: 10**15)
+    pbp.fetch(data_dir, [1997, 2020])
+    assert session.calls == 0
+    preflight_mock.assert_not_called()
