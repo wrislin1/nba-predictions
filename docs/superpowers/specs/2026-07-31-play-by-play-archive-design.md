@@ -151,11 +151,12 @@ data/raw/stats_nba/pbp/worklists/<season>/<game_type>.json
 data/raw/stats_nba/pbp/worklists/<season>/<game_type>.json.meta.json
 ```
 
-When an existing verified
-`data/raw/stats_nba/leaguegamefinder_<season>.json` has exactly the required
-regular-season parameters, the fetcher seeds a provenance-preserving copy
-instead of making the same request again. Otherwise it fetches the dedicated
-worklist normally.
+All 67 responses are fetched into the dedicated PBP worklist tree. The
+existing `data/raw/stats_nba/leaguegamefinder_<season>.json` sidecars are not
+seed sources because they predate exact request-parameter metadata. They
+remain untouched. Seven additional 2020–2026 regular-season requests are
+negligible compared with the full archive and give every PBP worklist the same
+complete provenance contract.
 
 Every LeagueGameFinder game must have exactly two team rows. The normalizer
 produces one deterministic row with:
