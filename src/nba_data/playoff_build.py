@@ -118,6 +118,12 @@ _VOIDED_IDENTITY = {
     "game_date": date(1952, 11, 28),
     "game_type": "voided",
 }
+_SOURCE_INTEGER_COLUMNS = [
+    "season",
+    "away_pts",
+    "home_pts",
+    "overtime_periods",
+]
 
 
 class PlayoffValidationError(ValueError):
@@ -351,9 +357,42 @@ def apply_site_rules(
     return output, matches
 
 
+def _require_source_integers(
+    frame: pd.DataFrame, columns: list[str]
+) -> None:
+    invalid: dict[str, list] = {}
+    for column in columns:
+        values = frame[column]
+        boolean = values.map(
+            lambda value: (
+                False if pd.isna(value)
+                else pd.api.types.is_bool(value)
+            )
+        )
+        try:
+            numeric = pd.to_numeric(values, errors="raise")
+            malformed = (
+                boolean
+                | numeric.isna()
+                | numeric.mod(1).ne(0)
+            )
+        except (TypeError, ValueError):
+            malformed = pd.Series(True, index=values.index)
+        if bool(malformed.any()):
+            invalid[column] = values.loc[malformed].head(3).tolist()
+    if invalid:
+        raise PlayoffValidationError(
+            f"source integer values are malformed: {invalid}"
+        )
+
+
 def _enforce_schema(frame: pd.DataFrame) -> pd.DataFrame:
     """Publish the exact ordered and typed playoff-game contract."""
     output = frame.loc[:, PLAYOFF_COLUMNS].copy()
+    _require_source_integers(
+        output,
+        [*_SOURCE_INTEGER_COLUMNS, "home_margin"],
+    )
     output["game_date"] = pd.to_datetime(
         output["game_date"], errors="raise"
     ).dt.date
@@ -818,6 +857,7 @@ def assemble(data_dir: Path) -> tuple[pd.DataFrame, dict, dict]:
         for season in range(1947, 2027)
     ]
     source = pd.concat(frames, ignore_index=True)
+    _require_source_integers(source, _SOURCE_INTEGER_COLUMNS)
     source["away_franchise_id"] = [
         franchises.resolve(str(name), int(season))
         for name, season in zip(
