@@ -83,8 +83,9 @@
 
 ### Modify
 
-`src/nba_data/publication.py:1-137`
-    Retain `publish_pair`; add safe transactional publication of one directory tree.
+`src/nba_data/publication.py`
+    Retain the integrated `publish_pair`/`PairPublicationError` behavior
+    unchanged; add safe transactional publication of one directory tree.
 
 `tests/test_publication.py`
     Add tree replacement, rollback, non-regular entry, and retained-recovery coverage.
@@ -244,6 +245,8 @@ Public functions have these exact signatures:
 - `normalize_worklist_payload(payload: bytes, *, season: int, game_type: str) -> pd.DataFrame`
 - `load_worklist(data_dir: Path, seasons: Iterable[int], *, require_complete: bool) -> pd.DataFrame`
 - `cross_validate_worklist(worklist: pd.DataFrame, data_dir: Path, seasons: Iterable[int]) -> None`
+- `publish_worklist_payload(destination: Path, payload: bytes, metadata: Mapping[str, object]) -> Path`
+- `publish_game_payload(destination: Path, payload: bytes, metadata: Mapping[str, object]) -> Path`
 - `validate_cache_tree(raw_root: Path, *, required_seasons: Iterable[int], require_complete: bool) -> CacheInventory`
 - `validate_cache_inventory(data_dir: Path, *, required_seasons: Iterable[int], require_complete: bool) -> CacheInventory`
 - `fetch_worklists(data_dir: Path, seasons: Iterable[int], *, session: requests.Session | None = None, pacer: RequestPacer | None = None) -> pd.DataFrame`
@@ -867,12 +870,17 @@ one `LeagueGameFinderResults` result set and require
 Normalize with these rules:
 
 ```python
-ending_season = (pd.to_numeric(raw["SEASON_ID"], errors="raise") % 20_000) + 1
+ending_season = (pd.to_numeric(raw["SEASON_ID"], errors="raise") % 10_000) + 1
 game_id = raw["GAME_ID"].astype(str).str.zfill(10)
 is_home = raw["MATCHUP"].str.contains(r"\svs\.\s", regex=True)
 is_away = raw["MATCHUP"].str.contains(r"\s@\s", regex=True)
 points = pd.to_numeric(raw["PTS"], errors="raise")
 ```
+
+`SEASON_ID` is one season-type digit (`2` regular, `4` playoffs, `5`
+play-in) followed by the four-digit starting year, so `% 10_000` recovers the
+starting year for all three request types; require the leading digit to agree
+with the requested game type.
 
 Reject booleans and fractional/negative points before converting to `int64`.
 Resolve franchises from `TEAM_NAME` and ending season. Pair exactly one home
@@ -995,20 +1003,35 @@ git commit -m "feat: build exact play-by-play worklists"
 - Consumes: `cache.read_valid`, `cache.require_valid`,
   `cache.publish_bytes`, worklist path contracts, and normalized worklists.
 - Produces: exact metadata readers, transport validators,
-  `CacheInventory`, `load_worklist`, `validate_cache_tree`, and
-  `validate_cache_inventory`.
+  `publish_worklist_payload`, `publish_game_payload`, `CacheInventory`,
+  `load_worklist`, `validate_cache_tree`, and `validate_cache_inventory`
+  with the exact Shared Contracts signatures.
 
 - [ ] **Step 1: Write failing exact-metadata tests**
 
-Create a helper:
+Create a helper the later tests reuse:
 
 ```python
-def publish_pair(path, payload, metadata, validator):
-    cache.publish_bytes(path, payload, metadata, validator)
-    return path
+def expected_game_metadata(season, game_type, game_id):
+    return {
+        "provider": "stats_nba",
+        "resource": "play_by_play",
+        "endpoint": "PlayByPlayV3",
+        "parameters": {
+            "GameID": game_id,
+            "StartPeriod": 0,
+            "EndPeriod": 0,
+        },
+        "season": season,
+        "season_label": pbp.season_label(season),
+        "game_type": game_type,
+        "game_id": game_id,
+    }
 ```
 
-Test worklist metadata requires exact values and exact JSON-compatible types:
+Publish test pairs only through `pbp.publish_worklist_payload` and
+`pbp.publish_game_payload`. Test worklist metadata requires exact values and
+exact JSON-compatible types:
 
 ```python
 {
@@ -1095,10 +1118,10 @@ wrong game under a season directory
 missing required pair when require_complete=True
 ```
 
-Assert `validate_cache_tree(raw_root, require_complete=False)` accepts a valid
-subset and rejects every unrelated or unsafe entry. Assert
-`require_complete=True` requires all 67 worklists and every game named by the
-full normalized worklist. Run the same valid case through
+Assert `validate_cache_tree(raw_root, required_seasons=pbp.SEASONS,
+require_complete=False)` accepts a valid subset and rejects every unrelated
+or unsafe entry. Assert `require_complete=True` requires all 67 worklists and
+every game named by the full normalized worklist. Run the same valid case through
 `validate_cache_inventory` with `data_dir`, the same season arguments, and
 the same completeness flag; require an equal result.
 
@@ -1144,6 +1167,13 @@ def validate_game_transport(path: Path, *, game_id: str) -> None:
     ):
         raise PBPValidationError(f"invalid action envelope for {path}")
 ```
+
+Implement `publish_worklist_payload` and `publish_game_payload` as thin
+wrappers over `cache.publish_bytes(destination, payload, metadata,
+validator)`. `cache.publish_bytes` calls `validator(part_path)` with one
+positional argument, so each wrapper binds its identity fields from
+`metadata` into a closure around the matching transport validator before
+delegating. All fetch-time publication goes through these two wrappers.
 
 Read sidecars only after checksum/transport validation. Compare the exact
 identity subset and require `type(observed[key]) is type(expected[key])`.
@@ -1275,6 +1305,9 @@ def test_non_retryable_4xx_stops_after_one_request(status):
 The last parameterized test asserts one session call and no retry sleeps.
 Test 500, 502, 503, 504, 429, connection errors, and timeouts as transient.
 Test a 200 malformed body fails in `cache.publish_bytes` without a retry.
+Assert the terminal exhausted-retry failure message names the season, game
+type, game ID (for game requests), attempt count, and final status or
+exception class.
 
 - [ ] **Step 3: Write failing capacity tests**
 
@@ -1313,7 +1346,8 @@ Test:
 8. rerunning after one completed game requests only the remaining game.
 
 Monkeypatch `stats_nba.preflight_dns` and assert it is called once before the
-first missing request in each batch.
+first missing request in each batch, and that a preflight failure produces
+zero session calls.
 Assert every fake-session URL parses to hostname `stats.nba.com` and no URL,
 redirect target, or preflight references `stats-prod.nba.com`.
 
@@ -1364,7 +1398,9 @@ hostname is not exactly `stats.nba.com`.
 
 Before every attempt, call the shared `RequestPacer.wait()`. Classify status
 before reading the body. Parse `Retry-After` only as a nonnegative decimal
-integer; an invalid value stops with `SourceAccessError`.
+integer; an invalid value stops with `SourceAccessError`. Every terminal
+`SourceAccessError` names the season, game type, game ID (for game
+requests), attempt count, and the final HTTP status or exception class.
 
 - [ ] **Step 7: Implement worklist-first orchestration**
 
@@ -1443,6 +1479,12 @@ def test_publish_tree_replaces_existing_tree_and_removes_rollback(tmp_path):
     assert (output / "_manifest.json").read_text() == "new manifest"
     assert not any(tmp_path.glob(".pbp-publication.rollback-*"))
 ```
+
+`seed_tree_publication` creates the stage at `tmp_path / "stage"` and the
+output at `tmp_path / "pbp-publication"`, so the rollback glob above matches
+the implementation's `.{output_dir.name}.rollback-<hex>` naming. When
+`with_existing=True`, seed an old output tree whose `_manifest.json` reads
+`old manifest`.
 
 Assert the operation uses renames within one parent filesystem, not
 file-by-file replacement.
@@ -1850,7 +1892,7 @@ def test_fetch_pbp_defaults_to_all_seasons(monkeypatch, tmp_path):
     assert called == [(tmp_path, cli.pbp.SEASONS)]
 
 
-def test_fetch_pbp_accepts_repeated_seasons(monkeypatch, tmp_path):
+def test_fetch_pbp_accepts_multiple_seasons(monkeypatch, tmp_path):
     cli = load_cli()
     called = []
     monkeypatch.setattr(cli.pbp, "fetch", lambda data, seasons: called.append(
@@ -2042,6 +2084,8 @@ first destination rename succeeds and second fails
 rollback after second-destination failure
 rollback failure retains named recovery paths
 offline rebuild from restored raw bytes is byte-identical to restored publication
+rebuild-compare rejects installed package or Python versions unequal to the manifest
+post-publication revalidation covers both restored destinations
 audit command rejects either missing execution-evidence flag
 audit command rejects source-spike or cross-source mismatches
 ```
@@ -2050,7 +2094,8 @@ For the success case:
 
 1. archive a fixture source;
 2. restore to two absent temporary destinations;
-3. run `pbp.validate_cache_tree(restored_raw, require_complete=True)`;
+3. run `pbp.validate_cache_tree(restored_raw, required_seasons=pbp.SEASONS,
+   require_complete=True)`;
 4. run `pbp_build.validate_publication(restored_raw, restored_publication)`;
 5. run `pbp_snapshot.rebuild_compare` into a third empty stage; and
 6. compare every publication file byte-for-byte.
@@ -2082,7 +2127,10 @@ delegate semantic validation to:
 Implement all three `pbp_snapshot` subcommands as a dedicated offline module.
 `validate-layout` calls `pbp.validate_cache_tree` for all 30 seasons and
 `pbp_build.validate_publication`, then optionally compares the manifest digest
-with the exact lowercase trusted argument. `rebuild-compare` calls
+with the exact lowercase trusted argument. `rebuild-compare` first requires
+the installed Python and package versions to equal the publication
+manifest's `versions` object — the pinned `requirements.txt` environment —
+and stops on any mismatch before comparing bytes; it then calls
 `pbp_build.build_tree(raw_root, temporary_stage, seasons=pbp.SEASONS)`,
 validates it, and requires an exact relative-path and byte comparison with the
 given publication. `write-audit` verifies the snapshot checksum inventory and
@@ -2136,8 +2184,11 @@ In `scripts/restore_pbp_snapshot.sh`:
 9. copy into two unique sibling staging directories;
 10. validate the copies;
 11. rebuild from staged raw into a third sibling stage and require exact
-    byte equality with staged publication; and
-12. publish the two destinations with a rollback state machine.
+    byte equality with staged publication;
+12. publish the two destinations with a rollback state machine; and
+13. revalidate both published destinations offline — complete cache-tree
+    validation of the restored raw root and `validate_publication` of the
+    restored publication — and fail on any mismatch.
 
 If the second rename fails, rename the first destination back to its staging
 name so neither final destination remains. If rollback fails, stop and print
