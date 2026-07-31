@@ -260,13 +260,25 @@ def run_archive(
     overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     assert ARCHIVE_SCRIPT.is_file()
-    return subprocess.run(
+    historical_before = (
+        tree_sha256(fixture.historical_cache)
+        if fixture.historical_cache.is_dir()
+        else None
+    )
+    result = subprocess.run(
         ["bash", str(ARCHIVE_SCRIPT)],
         cwd=fixture.repo,
         env=playoff_environment(fixture, overrides),
         capture_output=True,
         text=True,
     )
+    historical_after = (
+        tree_sha256(fixture.historical_cache)
+        if fixture.historical_cache.is_dir()
+        else None
+    )
+    assert historical_after == historical_before
+    return result
 
 
 def run_restore(
@@ -274,13 +286,25 @@ def run_restore(
     overrides: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     assert RESTORE_SCRIPT.is_file()
-    return subprocess.run(
+    historical_before = (
+        tree_sha256(fixture.historical_cache)
+        if fixture.historical_cache.is_dir()
+        else None
+    )
+    result = subprocess.run(
         ["bash", str(RESTORE_SCRIPT)],
         cwd=fixture.repo,
         env=playoff_environment(fixture, overrides),
         capture_output=True,
         text=True,
     )
+    historical_after = (
+        tree_sha256(fixture.historical_cache)
+        if fixture.historical_cache.is_dir()
+        else None
+    )
+    assert historical_after == historical_before
+    return result
 
 
 def snapshot_path(fixture: PlayoffSnapshotFixture) -> Path:
@@ -364,6 +388,65 @@ def install_rsync_wrapper(
     return fake_bin, fake_rsync
 
 
+def install_accepted_hash_mutator(
+    tmp_path: Path,
+    *,
+    target: Path,
+    trigger_count: int,
+) -> tuple[Path, Path]:
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    backup = tmp_path / "accepted-hash-backup"
+    shutil.copy2(target, backup)
+    fake_sha256sum = fake_bin / "sha256sum"
+    fake_sha256sum.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+status=$?
+if test "$#" -eq 1 && test "$1" = "$MUTATION_TARGET"; then
+  count=0
+  if test -e "$MUTATION_COUNT_FILE"; then
+    read -r count < "$MUTATION_COUNT_FILE"
+  fi
+  count=$((count + 1))
+  printf '%s\\n' "$count" > "$MUTATION_COUNT_FILE"
+  if test "$count" -eq "$MUTATION_TRIGGER_COUNT"; then
+    printf 'boundary mutation' >> "$MUTATION_TARGET"
+    cp -p -- "$MUTATION_BACKUP" "$MUTATION_TARGET"
+    : > "$MUTATION_MARKER"
+  fi
+fi
+exit "$status"
+""",
+        encoding="utf-8",
+    )
+    fake_sha256sum.chmod(0o755)
+    return fake_bin, backup
+
+
+def accepted_hash_environment(
+    tmp_path: Path,
+    *,
+    target: Path,
+    trigger_count: int,
+) -> dict[str, str]:
+    fake_bin, backup = install_accepted_hash_mutator(
+        tmp_path,
+        target=target,
+        trigger_count=trigger_count,
+    )
+    return {
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "REAL_SHA256SUM": shutil.which("sha256sum") or "sha256sum",
+        "MUTATION_BACKUP": str(backup),
+        "MUTATION_COUNT_FILE": str(tmp_path / "mutation-count"),
+        "MUTATION_MARKER": str(tmp_path / "mutation-marker"),
+        "MUTATION_TARGET": str(target),
+        "MUTATION_TRIGGER_COUNT": str(trigger_count),
+    }
+
+
 def test_archive_and_restore_are_exact_inverses(
     playoff_snapshot_fixture: PlayoffSnapshotFixture,
 ) -> None:
@@ -396,6 +479,29 @@ def test_archive_accepts_an_existing_exact_immutable_snapshot(
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
     assert str(snapshot_path(fixture)) in second.stdout
+
+
+def test_archive_existing_snapshot_equivalence_compares_unpinned_metadata(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if retry equivalence compared only manifest-pinned bytes."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    snapshot_before = tree_sha256(snapshot_path(fixture))
+    mutate_sidecar(
+        fixture,
+        "NBA_1984_games.html",
+        "fetched_at",
+        "2099-01-01T00:00:00+00:00",
+    )
+
+    retried = run_archive(fixture)
+
+    assert retried.returncode != 0
+    assert "existing playoff snapshot differs from source" in (
+        retried.stderr
+    )
+    assert tree_sha256(snapshot_path(fixture)) == snapshot_before
 
 
 def test_archive_rejects_symlinked_source(
@@ -441,6 +547,158 @@ def test_restore_rejects_symlinked_destination(
 
     assert restored.returncode != 0
     assert fixture.destination.is_symlink()
+
+
+@pytest.mark.parametrize(
+    ("protected_name", "through_symlink"),
+    [
+        ("source", False),
+        ("source", True),
+        ("historical", False),
+        ("historical", True),
+        ("snapshot", False),
+        ("snapshot", True),
+    ],
+)
+def test_restore_rejects_destination_below_protected_tree_before_staging(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    protected_name: str,
+    through_symlink: bool,
+) -> None:
+    """Would fail if restore staged inside any protected input tree."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    protected = {
+        "source": fixture.playoff_cache,
+        "historical": fixture.historical_cache,
+        "snapshot": snapshot_path(fixture),
+    }[protected_name]
+    protected_before = tree_sha256(protected)
+    destination_parent = protected
+    if through_symlink:
+        destination_parent = fixture.repo / f"{protected_name}-alias"
+        destination_parent.symlink_to(
+            protected,
+            target_is_directory=True,
+        )
+    destination = destination_parent / "restored-playoff"
+    fake_bin = fixture.repo.parent / "fake-bin"
+    fake_bin.mkdir()
+    fake_mktemp = fake_bin / "mktemp"
+    fake_mktemp.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  if [[ "$argument" == *".playoff-restore."* ]]; then
+    : > "$RESTORE_STAGE_MARKER"
+  fi
+done
+exec "$REAL_MKTEMP" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_mktemp.chmod(0o755)
+    stage_marker = fixture.repo.parent / "restore-stage-attempted"
+
+    restored = run_restore(
+        fixture,
+        {
+            "NBA_PLAYOFF_RAW_DESTINATION": str(destination),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_MKTEMP": shutil.which("mktemp") or "mktemp",
+            "RESTORE_STAGE_MARKER": str(stage_marker),
+        },
+    )
+
+    assert restored.returncode != 0
+    assert "protected playoff recovery tree" in restored.stderr
+    assert not stage_marker.exists()
+    assert not destination.exists()
+    assert tree_sha256(protected) == protected_before
+
+
+@pytest.mark.parametrize(
+    ("protected_name", "through_symlink"),
+    [
+        ("source", False),
+        ("source", True),
+        ("historical", False),
+        ("historical", True),
+        ("snapshot", False),
+        ("snapshot", True),
+    ],
+)
+def test_restore_rejects_destination_equal_to_protected_tree_without_writes(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    protected_name: str,
+    through_symlink: bool,
+) -> None:
+    """Would fail if an equal protected path were touched before rejection."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    protected = {
+        "source": fixture.playoff_cache,
+        "historical": fixture.historical_cache,
+        "snapshot": snapshot_path(fixture),
+    }[protected_name]
+    protected_before = tree_sha256(protected)
+    destination = protected
+    if through_symlink:
+        destination = fixture.repo / f"{protected_name}-equal-alias"
+        destination.symlink_to(
+            protected,
+            target_is_directory=True,
+        )
+    fake_bin = fixture.repo.parent / "fake-bin"
+    fake_bin.mkdir()
+    fake_mktemp = fake_bin / "mktemp"
+    fake_mktemp.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  if [[ "$argument" == *".playoff-restore."* ]]; then
+    : > "$RESTORE_STAGE_MARKER"
+  fi
+done
+exec "$REAL_MKTEMP" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_mktemp.chmod(0o755)
+    stage_marker = fixture.repo.parent / "restore-stage-attempted"
+
+    restored = run_restore(
+        fixture,
+        {
+            "NBA_PLAYOFF_RAW_DESTINATION": str(destination),
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "REAL_MKTEMP": shutil.which("mktemp") or "mktemp",
+            "RESTORE_STAGE_MARKER": str(stage_marker),
+        },
+    )
+
+    assert restored.returncode != 0
+    assert not stage_marker.exists()
+    assert tree_sha256(protected) == protected_before
+
+
+def test_restore_requires_existing_parent_without_creating_residue(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if restore used mkdir -p before validating its target."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    missing_parent = fixture.repo / "absent/nested"
+    destination = missing_parent / "playoff_bref"
+
+    restored = run_restore(
+        fixture,
+        {"NBA_PLAYOFF_RAW_DESTINATION": str(destination)},
+    )
+
+    assert restored.returncode != 0
+    assert "restore parent must already exist" in restored.stderr
+    assert not (fixture.repo / "absent").exists()
 
 
 def test_archive_rejects_special_file(
@@ -601,6 +859,62 @@ def test_archive_rejects_sidecar_url_mismatch(
     assert_archive_rejected(fixture)
 
 
+def test_archive_rejects_sidecar_sha256_mismatch(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    fixture = playoff_snapshot_fixture
+    mutate_sidecar(
+        fixture,
+        "NBA_1984_games.html",
+        "sha256",
+        "0" * 64,
+    )
+    rejected = assert_archive_rejected(fixture)
+    assert "sidecar NBA_1984_games.html" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seeded_from", "raw/bref/NBA_2020_games-july.html"),
+        ("seed_operation", "unverified_copy"),
+    ],
+)
+def test_archive_rejects_seeded_sidecar_provenance_mismatch(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    field: str,
+    value: str,
+) -> None:
+    fixture = playoff_snapshot_fixture
+    mutate_sidecar(
+        fixture,
+        "NBA_2020_games-august.html",
+        field,
+        value,
+    )
+    rejected = assert_archive_rejected(fixture)
+    assert "sidecar NBA_2020_games-august.html" in rejected.stderr
+
+
+def test_archive_rejects_multiple_json_documents_in_sidecar(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if jq accepted only the last streamed JSON document."""
+    fixture = playoff_snapshot_fixture
+    sidecar = (
+        fixture.playoff_cache / "NBA_1984_games.html.meta.json"
+    )
+    valid_document = sidecar.read_text(encoding="utf-8")
+    sidecar.write_text(
+        "[]\n" + valid_document,
+        encoding="utf-8",
+    )
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert "sidecar NBA_1984_games.html" in rejected.stderr
+
+
 def test_archive_rejects_duplicate_resource_identity(
     playoff_snapshot_fixture: PlayoffSnapshotFixture,
 ) -> None:
@@ -615,7 +929,11 @@ def test_archive_rejects_duplicate_resource_identity(
     pages[-1]["month"] = pages[0]["month"]
     write_json(fixture.playoff_manifest, manifest)
 
-    assert_archive_rejected(fixture)
+    rejected = assert_archive_rejected(fixture)
+    assert (
+        "playoff resource identities must be unique"
+        in rejected.stderr
+    )
 
 
 def test_archive_rejects_duplicate_url(
@@ -630,7 +948,101 @@ def test_archive_rejects_duplicate_url(
     pages[-1]["url"] = pages[0]["url"]
     write_json(fixture.playoff_manifest, manifest)
 
-    assert_archive_rejected(fixture)
+    rejected = assert_archive_rejected(fixture)
+    assert "playoff page URLs must be unique" in rejected.stderr
+
+
+def test_archive_rejects_non_exact_dedicated_cardinality(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if the exact 43-record gate were unreachable."""
+    fixture = playoff_snapshot_fixture
+    manifest = read_json(fixture.playoff_manifest)
+    pages = manifest["sources"]["basketball_reference"][
+        "playoff_pages"
+    ]
+    dedicated = next(
+        page
+        for page in pages
+        if page["resource"] == "playoff_schedule"
+    )
+    dedicated["resource"] = "play_in_schedule_month"
+    write_json(fixture.playoff_manifest, manifest)
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert "playoff pages must contain 43 dedicated records" in (
+        rejected.stderr
+    )
+
+
+def test_archive_rejects_non_exact_seeded_cardinality(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if the exact seven-record gate were unreachable."""
+    fixture = playoff_snapshot_fixture
+    manifest = read_json(fixture.playoff_manifest)
+    pages = manifest["sources"]["basketball_reference"][
+        "playoff_pages"
+    ]
+    seeded = next(
+        page
+        for page in pages
+        if page["resource"] == "play_in_schedule_month"
+    )
+    seeded["resource"] = "other_schedule"
+    write_json(fixture.playoff_manifest, manifest)
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert "playoff pages must contain seven seeded records" in (
+        rejected.stderr
+    )
+
+
+def test_archive_rejects_count_preserving_out_of_range_seed_identity(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if null play_in_month admitted an eighth identity."""
+    fixture = playoff_snapshot_fixture
+    old_name = "NBA_2026_games-april.html"
+    new_name = "NBA_2027_games.html"
+    old_body = fixture.playoff_cache / old_name
+    new_body = fixture.playoff_cache / new_name
+    old_sidecar = old_body.with_name(f"{old_name}.meta.json")
+    new_sidecar = new_body.with_name(f"{new_name}.meta.json")
+    old_body.rename(new_body)
+    old_sidecar.rename(new_sidecar)
+    metadata = read_json(new_sidecar)
+    metadata.update({
+        "season": 2027,
+        "month": None,
+        "url": (
+            "https://www.basketball-reference.com/leagues/"
+            f"{new_name}"
+        ),
+        "seeded_from": "raw/bref/NBA_2027_games-.html",
+    })
+    write_json(new_sidecar, metadata)
+    manifest = read_json(fixture.playoff_manifest)
+    pages = manifest["sources"]["basketball_reference"][
+        "playoff_pages"
+    ]
+    record = next(
+        page for page in pages if page["path"].endswith(f"/{old_name}")
+    )
+    record.update({
+        "season": 2027,
+        "month": None,
+        "url": metadata["url"],
+        "path": f"raw/playoff_bref/{new_name}",
+        "seeded_from": metadata["seeded_from"],
+    })
+    write_json(fixture.playoff_manifest, manifest)
+
+    rejected = assert_archive_rejected(fixture)
+
+    assert "playoff page identity is invalid" in rejected.stderr
 
 
 def test_archive_rejects_missing_dedicated_page(
@@ -698,7 +1110,115 @@ def test_archive_rejects_seeded_source_sha256_mismatch(
         "source_sha256",
         "0" * 64,
     )
-    assert_archive_rejected(fixture)
+    rejected = assert_archive_rejected(fixture)
+    assert "sidecar NBA_2020_games-august.html" in rejected.stderr
+
+
+def test_archive_rejects_source_mutated_after_final_accepted_hash(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if a byte-restored accepted-hash race could publish."""
+    fixture = playoff_snapshot_fixture
+    source_body = (
+        fixture.playoff_cache / "NBA_1984_games.html"
+    )
+    source_before = tree_sha256(fixture.playoff_cache)
+    mutation_root = fixture.repo.parent / "source-hash-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=source_body,
+        trigger_count=3,
+    )
+
+    archived = run_archive(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert archived.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        archived.stderr
+    )
+    assert not snapshot_path(fixture).exists()
+    assert tree_sha256(fixture.playoff_cache) == source_before
+
+
+def test_existing_snapshot_rejects_source_mutated_after_accepted_hash(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if immutable retry accepted a byte-restored source race."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    snapshot_before = tree_sha256(snapshot_path(fixture))
+    source_before = tree_sha256(fixture.playoff_cache)
+    mutation_root = fixture.repo.parent / "existing-source-hash-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=(
+            fixture.playoff_cache / "NBA_1984_games.html"
+        ),
+        trigger_count=2,
+    )
+
+    retried = run_archive(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert retried.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        retried.stderr
+    )
+    assert tree_sha256(fixture.playoff_cache) == source_before
+    assert tree_sha256(snapshot_path(fixture)) == snapshot_before
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "trigger_count"),
+    [
+        ("historical_manifest", 3),
+        ("historical_cache", 2),
+    ],
+)
+def test_existing_snapshot_rechecks_historical_boundary_state(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+    target_kind: str,
+    trigger_count: int,
+) -> None:
+    """Would fail if immutable retry skipped final dependency stability."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    snapshot_before = tree_sha256(snapshot_path(fixture))
+    historical_before = tree_sha256(fixture.historical_cache)
+    historical_manifest_before = (
+        fixture.historical_manifest.read_bytes()
+    )
+    target = (
+        fixture.historical_manifest
+        if target_kind == "historical_manifest"
+        else fixture.historical_cache / "BAA_1947_games.html"
+    )
+    mutation_root = (
+        fixture.repo.parent / f"existing-{target_kind}-race"
+    )
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=target,
+        trigger_count=trigger_count,
+    )
+
+    retried = run_archive(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert retried.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        retried.stderr
+    )
+    assert tree_sha256(snapshot_path(fixture)) == snapshot_before
+    assert tree_sha256(fixture.historical_cache) == historical_before
+    assert (
+        fixture.historical_manifest.read_bytes()
+        == historical_manifest_before
+    )
 
 
 def test_archive_rejects_playoff_manifest_changed_before_copy(
@@ -856,6 +1376,36 @@ fi
     assert not fixture.destination.exists()
 
 
+def test_restore_rejects_snapshot_mutated_after_final_accepted_hash(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if a byte-restored snapshot race could publish."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    make_restore_destination_absent(fixture)
+    snapshot = snapshot_path(fixture)
+    snapshot_before = tree_sha256(snapshot)
+    mutation_root = fixture.repo.parent / "snapshot-hash-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=(
+            snapshot / "playoff_bref/NBA_1984_games.html"
+        ),
+        trigger_count=3,
+    )
+
+    restored = run_restore(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert restored.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        restored.stderr
+    )
+    assert not fixture.destination.exists()
+    assert tree_sha256(snapshot) == snapshot_before
+
+
 def test_restore_rejects_snapshot_manifest_mismatch(
     playoff_snapshot_fixture: PlayoffSnapshotFixture,
 ) -> None:
@@ -973,6 +1523,114 @@ def test_archive_rejects_historical_cache_manifest_inconsistency(
     ).write_bytes(b"tampered historical")
 
     assert_archive_rejected(fixture)
+
+
+def test_archive_rejects_historical_manifest_boundary_mutation(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if a byte-restored historical manifest race published."""
+    fixture = playoff_snapshot_fixture
+    historical_before = fixture.historical_manifest.read_bytes()
+    mutation_root = fixture.repo.parent / "archive-historical-manifest-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=fixture.historical_manifest,
+        trigger_count=4,
+    )
+
+    archived = run_archive(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert archived.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        archived.stderr
+    )
+    assert not snapshot_path(fixture).exists()
+    assert fixture.historical_manifest.read_bytes() == historical_before
+
+
+def test_archive_rejects_historical_cache_boundary_mutation(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if a byte-restored historical body race published."""
+    fixture = playoff_snapshot_fixture
+    historical_before = tree_sha256(fixture.historical_cache)
+    mutation_root = fixture.repo.parent / "archive-historical-cache-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=(
+            fixture.historical_cache / "BAA_1947_games.html"
+        ),
+        trigger_count=3,
+    )
+
+    archived = run_archive(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert archived.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        archived.stderr
+    )
+    assert not snapshot_path(fixture).exists()
+    assert tree_sha256(fixture.historical_cache) == historical_before
+
+
+def test_restore_rejects_historical_manifest_boundary_mutation(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if restore accepted a byte-restored dependency race."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    make_restore_destination_absent(fixture)
+    historical_before = fixture.historical_manifest.read_bytes()
+    mutation_root = fixture.repo.parent / "restore-historical-manifest-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=fixture.historical_manifest,
+        trigger_count=3,
+    )
+
+    restored = run_restore(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert restored.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        restored.stderr
+    )
+    assert not fixture.destination.exists()
+    assert fixture.historical_manifest.read_bytes() == historical_before
+
+
+def test_restore_rejects_historical_cache_boundary_mutation(
+    playoff_snapshot_fixture: PlayoffSnapshotFixture,
+) -> None:
+    """Would fail if restore accepted a byte-restored historical body race."""
+    fixture = playoff_snapshot_fixture
+    assert run_archive(fixture).returncode == 0
+    make_restore_destination_absent(fixture)
+    historical_before = tree_sha256(fixture.historical_cache)
+    mutation_root = fixture.repo.parent / "restore-historical-cache-race"
+    mutation_root.mkdir()
+    environment = accepted_hash_environment(
+        mutation_root,
+        target=(
+            fixture.historical_cache / "BAA_1947_games.html"
+        ),
+        trigger_count=2,
+    )
+
+    restored = run_restore(fixture, environment)
+
+    assert (mutation_root / "mutation-marker").exists()
+    assert restored.returncode != 0
+    assert "playoff recovery input changed during operation" in (
+        restored.stderr
+    )
+    assert not fixture.destination.exists()
+    assert tree_sha256(fixture.historical_cache) == historical_before
 
 
 def test_restore_refuses_existing_destination(

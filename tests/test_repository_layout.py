@@ -368,13 +368,18 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
     default_archive_root = (
         "/mnt/nas/llm/documents/nba-predictions-archive"
     )
+    expected_assignment = (
+        'archive_root="${NBA_PLAYOFF_RAW_ARCHIVE_ROOT:-'
+        f'{default_archive_root}}}"'
+    )
     for relative in (
         "scripts/archive_playoff_raw_snapshot.sh",
         "scripts/restore_playoff_raw.sh",
     ):
-        assert default_archive_root in (
-            ROOT / relative
-        ).read_text(encoding="utf-8")
+        lines = (ROOT / relative).read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert lines.count(expected_assignment) == 1
 
 
 def test_historical_documentation_matches_the_delivered_contract() -> None:

@@ -20,6 +20,9 @@ test "$#" -eq 0 || {
 staging=
 trusted_manifest=
 trusted_historical_manifest=
+protected_state=
+snapshot_state=
+payload_state=
 cleanup() {
   if test -n "${staging:-}" && test -d "$staging"; then
     rm -rf -- "$staging"
@@ -32,6 +35,13 @@ cleanup() {
   then
     rm -f -- "$trusted_historical_manifest"
   fi
+  for state_file in \
+    "${protected_state:-}" "${snapshot_state:-}" "${payload_state:-}"
+  do
+    if test -n "$state_file" && test -e "$state_file"; then
+      rm -f -- "$state_file"
+    fi
+  done
 }
 trap cleanup EXIT
 
@@ -74,19 +84,37 @@ validate_manifest_pin \
 
 snapshot="$archive_root/playoff-raw-2026-${manifest_sha:0:12}"
 
+protected_state="$(
+  mktemp "${TMPDIR:-/tmp}/.playoff-archive-protected-state.XXXXXX"
+)"
+capture_recovery_state \
+  "$protected_state" \
+  "$manifest" "$historical_manifest" "$source" "$historical_cache"
 validate_cache_manifest "$source" "$trusted_manifest"
 validate_historical_dependency \
   "$manifest" "$trusted_manifest" "$manifest_sha" \
   "$historical_manifest" "$trusted_historical_manifest" \
   "$historical_manifest_sha" "$historical_cache" \
   "$historical_validator"
+assert_recovery_state_unchanged \
+  "$protected_state" "archive source or historical dependency" \
+  "$manifest" "$historical_manifest" "$source" "$historical_cache"
 
 if test -e "$snapshot" || test -L "$snapshot"; then
+  snapshot_state="$(
+    mktemp "${TMPDIR:-/tmp}/.playoff-archive-snapshot-state.XXXXXX"
+  )"
+  capture_recovery_state "$snapshot_state" "$snapshot"
   validate_snapshot_payload "$snapshot" "$trusted_manifest"
   changes="$(
     rsync -a --checksum --dry-run --itemize-changes --delete \
       "$source/" "$snapshot/playoff_bref/"
   )"
+  test -z "$changes" || {
+    printf 'existing playoff snapshot differs from source:\n%s\n' \
+      "$changes" >&2
+    exit 1
+  }
   validate_cache_manifest "$source" "$trusted_manifest"
   validate_snapshot_payload "$snapshot" "$trusted_manifest"
   validate_historical_dependency \
@@ -94,14 +122,18 @@ if test -e "$snapshot" || test -L "$snapshot"; then
     "$historical_manifest" "$trusted_historical_manifest" \
     "$historical_manifest_sha" "$historical_cache" \
     "$historical_validator"
-  test -z "$changes" || {
-    printf 'existing playoff snapshot differs from source:\n%s\n' \
-      "$changes" >&2
-    exit 1
-  }
-  rm -f -- "$trusted_manifest" "$trusted_historical_manifest"
+  assert_recovery_state_unchanged \
+    "$protected_state" "archive source or historical dependency" \
+    "$manifest" "$historical_manifest" "$source" "$historical_cache"
+  assert_recovery_state_unchanged \
+    "$snapshot_state" "existing playoff snapshot" "$snapshot"
+  rm -f -- \
+    "$trusted_manifest" "$trusted_historical_manifest" \
+    "$protected_state" "$snapshot_state"
   trusted_manifest=
   trusted_historical_manifest=
+  protected_state=
+  snapshot_state=
   trap - EXIT
   printf 'verified playoff raw snapshot: %s\n' "$snapshot"
   exit
@@ -114,6 +146,10 @@ cp -- "$trusted_manifest" "$staging/playoff_games_manifest.json"
 chmod 644 "$staging/playoff_games_manifest.json"
 rsync -a --checksum "$source/" "$staging/playoff_bref/"
 write_playoff_checksum_inventory "$staging" > "$staging/SHA256SUMS"
+payload_state="$(
+  mktemp "${TMPDIR:-/tmp}/.playoff-archive-payload-state.XXXXXX"
+)"
+capture_recovery_state "$payload_state" "$staging"
 
 validate_cache_manifest "$source" "$trusted_manifest"
 validate_snapshot_payload "$staging" "$trusted_manifest"
@@ -130,6 +166,11 @@ test -z "$changes" || {
   printf 'playoff archive differs from source:\n%s\n' "$changes" >&2
   exit 1
 }
+test ! -e "$snapshot" && test ! -L "$snapshot" || {
+  printf 'refusing to overwrite existing playoff snapshot: %s\n' \
+    "$snapshot" >&2
+  exit 1
+}
 validate_cache_manifest "$source" "$trusted_manifest"
 validate_snapshot_payload "$staging" "$trusted_manifest"
 validate_historical_dependency \
@@ -137,11 +178,11 @@ validate_historical_dependency \
   "$historical_manifest" "$trusted_historical_manifest" \
   "$historical_manifest_sha" "$historical_cache" \
   "$historical_validator"
-test ! -e "$snapshot" && test ! -L "$snapshot" || {
-  printf 'refusing to overwrite existing playoff snapshot: %s\n' \
-    "$snapshot" >&2
-  exit 1
-}
+assert_recovery_state_unchanged \
+  "$protected_state" "archive source or historical dependency" \
+  "$manifest" "$historical_manifest" "$source" "$historical_cache"
+assert_recovery_state_unchanged \
+  "$payload_state" "staged playoff snapshot" "$staging"
 
 mv -T -n "$staging" "$snapshot"
 test ! -d "$staging" || {
@@ -150,9 +191,12 @@ test ! -d "$staging" || {
   exit 1
 }
 staging=
-validate_snapshot_payload "$snapshot" "$trusted_manifest"
-rm -f -- "$trusted_manifest" "$trusted_historical_manifest"
+rm -f -- \
+  "$trusted_manifest" "$trusted_historical_manifest" \
+  "$protected_state" "$payload_state"
 trusted_manifest=
 trusted_historical_manifest=
+protected_state=
+payload_state=
 trap - EXIT
 printf 'verified playoff raw snapshot: %s\n' "$snapshot"

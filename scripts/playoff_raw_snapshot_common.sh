@@ -1,5 +1,119 @@
 # Shared validation contract for playoff raw-cache archive and restore.
 
+capture_recovery_state() {
+  local output="$1"
+  local path
+  local canonical
+  shift
+
+  : > "$output"
+  for path in "$@"; do
+    if test -L "$path" ||
+      { test ! -f "$path" && test ! -d "$path"; }
+    then
+      printf 'cannot capture unsafe playoff recovery input: %s\n' \
+        "$path" >&2
+      return 1
+    fi
+    canonical="$(
+      cd "$(dirname -- "$path")" &&
+        printf '%s/%s\n' "$(pwd -P)" "$(basename -- "$path")"
+    )"
+    {
+      printf 'path\0%s\0' "$canonical"
+      find -P "$path" -mindepth 0 \
+        -printf '%D:%i:%y:%m:%s:%T@:%C@:%P\0' |
+        LC_ALL=C sort -z
+    } >> "$output"
+  done
+}
+
+assert_recovery_state_unchanged() {
+  local expected="$1"
+  local label="$2"
+  local observed
+  shift 2
+
+  observed="$(
+    mktemp "${TMPDIR:-/tmp}/.playoff-recovery-state.XXXXXX"
+  )"
+  if ! capture_recovery_state "$observed" "$@"; then
+    rm -f -- "$observed"
+    return 1
+  fi
+  if ! cmp -s -- "$expected" "$observed"; then
+    printf 'playoff recovery input changed during operation: %s\n' \
+      "$label" >&2
+    rm -f -- "$observed"
+    return 1
+  fi
+  rm -f -- "$observed"
+}
+
+prepare_restore_destination() {
+  local requested_destination="$1"
+  local live_source="$2"
+  local historical_source="$3"
+  local selected_snapshot="$4"
+  local requested_parent
+  local canonical_parent
+  local candidate
+  local protected
+  local canonical_protected
+
+  test ! -e "$requested_destination" &&
+    test ! -L "$requested_destination" || {
+      printf 'refusing to replace playoff raw directory: %s\n' \
+        "$requested_destination" >&2
+      return 1
+    }
+  requested_parent="$(dirname -- "$requested_destination")"
+  test -d "$requested_parent" || {
+    printf 'playoff restore parent must already exist: %s\n' \
+      "$requested_parent" >&2
+    return 1
+  }
+  canonical_parent="$(cd "$requested_parent" && pwd -P)" || {
+    printf 'invalid playoff restore parent: %s\n' \
+      "$requested_parent" >&2
+    return 1
+  }
+  candidate="$canonical_parent/$(basename -- "$requested_destination")"
+
+  for protected in \
+    "$live_source" "$historical_source" "$selected_snapshot"
+  do
+    if test -e "$protected" || test -L "$protected"; then
+      test ! -L "$protected" && test -d "$protected" || {
+        printf 'invalid protected playoff recovery tree: %s\n' \
+          "$protected" >&2
+        return 1
+      }
+      canonical_protected="$(cd "$protected" && pwd -P)"
+      case "$candidate" in
+        "$canonical_protected"|"$canonical_protected"/*)
+          printf 'restore destination is within protected playoff recovery tree: %s\n' \
+            "$canonical_protected" >&2
+          return 1
+          ;;
+      esac
+    fi
+  done
+
+  test ! -L "$requested_parent" || {
+    printf 'invalid playoff restore parent: %s\n' \
+      "$requested_parent" >&2
+    return 1
+  }
+  test ! -e "$candidate" && test ! -L "$candidate" || {
+    printf 'refusing to replace playoff raw directory: %s\n' \
+      "$candidate" >&2
+    return 1
+  }
+  destination_parent="$canonical_parent"
+  destination="$candidate"
+}
+
 validate_playoff_cache() {
   local cache="$1"
   local invalid
@@ -115,6 +229,23 @@ validate_cache_manifest() {
           and ((.sha256 | type) == "string")
         ) | not) then
           error("playoff page has invalid field types")
+        elif (
+          ($pages | map(.path) | unique | length) != ($pages | length)
+        ) then
+          error("playoff page paths must be unique")
+        elif (
+          ($pages | map(.url) | unique | length) != ($pages | length)
+        ) then
+          error("playoff page URLs must be unique")
+        elif (
+          (
+            $pages
+            | map([.resource, .season, .month] | @json)
+            | unique
+            | length
+          ) != ($pages | length)
+        ) then
+          error("playoff resource identities must be unique")
         elif (all($pages[];
           (.provider == "basketball_reference")
           and (.league == "NBA")
@@ -137,6 +268,7 @@ validate_cache_manifest() {
             or
             (
               (.resource == "play_in_schedule_month")
+              and (play_in_month != null)
               and (.month == play_in_month)
               and (
                 .url
@@ -161,23 +293,6 @@ validate_cache_manifest() {
           )
         ) | not) then
           error("playoff page identity is invalid")
-        elif (
-          ($pages | map(.path) | unique | length) != ($pages | length)
-        ) then
-          error("playoff page paths must be unique")
-        elif (
-          ($pages | map(.url) | unique | length) != ($pages | length)
-        ) then
-          error("playoff page URLs must be unique")
-        elif (
-          (
-            $pages
-            | map([.resource, .season, .month] | @json)
-            | unique
-            | length
-          ) != ($pages | length)
-        ) then
-          error("playoff resource identities must be unique")
         else
           $pages[]
           | [
@@ -218,7 +333,7 @@ validate_cache_manifest() {
         "$filename" >&2
       return 1
     }
-    if ! jq -e \
+    if ! jq -se \
       --arg provider "$provider" \
       --arg resource "$resource" \
       --arg league "$league" \
@@ -230,29 +345,33 @@ validate_cache_manifest() {
       --arg seed_operation "$seed_operation" \
       --arg source_sha "$source_sha" \
       '
-        (type == "object")
-        and (.provider == $provider)
-        and (.resource == $resource)
-        and (.league == $league)
-        and (.season == $season)
+        (length == 1)
         and (
-          if $month == "__index__" then
-            (.month == null)
-          else
-            (.month == $month)
-          end
-        )
-        and (.url == $url)
-        and (.sha256 == $sha256)
-        and (
-          if $resource == "play_in_schedule_month" then
-            (.seeded_from == $seeded_from)
-            and (.seed_operation == $seed_operation)
-            and (.source_sha256 == $source_sha)
-            and (.source_sha256 == .sha256)
-          else
-            true
-          end
+          .[0]
+          | (type == "object")
+          and (.provider == $provider)
+          and (.resource == $resource)
+          and (.league == $league)
+          and (.season == $season)
+          and (
+            if $month == "__index__" then
+              (.month == null)
+            else
+              (.month == $month)
+            end
+          )
+          and (.url == $url)
+          and (.sha256 == $sha256)
+          and (
+            if $resource == "play_in_schedule_month" then
+              (.seeded_from == $seeded_from)
+              and (.seed_operation == $seed_operation)
+              and (.source_sha256 == $source_sha)
+              and (.source_sha256 == .sha256)
+            else
+              true
+            end
+          )
         )
       ' "$sidecar" >/dev/null
     then
