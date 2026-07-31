@@ -2,9 +2,10 @@
 
 ## Status — 2026-07-30
 
-**Complete.** Tasks 1–12 are implemented on `playoff-game-results`; default,
-integration, deterministic-publication, non-interference, and independent
-recovery gates pass. The branch remains unmerged and unpushed for user review.
+**Complete and landed (2026-07-31).** Tasks 1–12 were implemented and
+hardened on `playoff-game-results`, then merged into `master` by `14db75a`.
+Default, integration, deterministic-publication, non-interference, and
+independent recovery gates pass. Final reviewed feature head: `16b4693`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
