@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import date
 import hashlib
 from io import BytesIO
@@ -11,9 +13,8 @@ from pathlib import Path
 import shutil
 import stat
 import tempfile
-from types import MappingProxyType
 import warnings
-from typing import Any, Mapping, NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -411,12 +412,58 @@ def _require_pinned_directory(
             os.close(directory_fd)
 
 
+class _FrozenStringMap(NamedTuple):
+    """A deterministic mapping value with no mutable backing index."""
+
+    keys: tuple[str, ...]
+    values: tuple[Any, ...]
+
+
+def _freeze_mapping(
+    items: Iterable[tuple[Any, Any]],
+) -> _FrozenStringMap:
+    pairs = tuple(sorted(
+        (
+            (
+                str(key),
+                _freeze_value(value),
+            )
+            for key, value in items
+        ),
+        key=lambda pair: pair[0],
+    ))
+    keys = tuple(key for key, _ in pairs)
+    if any(
+        left == right
+        for left, right in zip(keys, keys[1:], strict=False)
+    ):
+        raise ValueError("frozen mapping contains duplicate keys")
+    return _FrozenStringMap(
+        keys=keys,
+        values=tuple(value for _, value in pairs),
+    )
+
+
+def _frozen_lookup(mapping: _FrozenStringMap, key: str) -> Any:
+    index = bisect_left(mapping.keys, key)
+    if index == len(mapping.keys) or mapping.keys[index] != key:
+        raise KeyError(key)
+    return mapping.values[index]
+
+
+def _frozen_keys(mapping: _FrozenStringMap) -> Iterator[str]:
+    return iter(mapping.keys)
+
+
+def _frozen_items(
+    mapping: _FrozenStringMap,
+) -> Iterator[tuple[str, Any]]:
+    return zip(mapping.keys, mapping.values, strict=True)
+
+
 def _freeze_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return MappingProxyType({
-            str(key): _freeze_value(item)
-            for key, item in value.items()
-        })
+        return _freeze_mapping(value.items())
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_value(item) for item in value)
     if isinstance(value, (set, frozenset)):
@@ -425,6 +472,11 @@ def _freeze_value(value: Any) -> Any:
 
 
 def _thaw_value(value: Any) -> Any:
+    if isinstance(value, _FrozenStringMap):
+        return {
+            key: _thaw_value(item)
+            for key, item in _frozen_items(value)
+        }
     if isinstance(value, Mapping):
         return {
             str(key): _thaw_value(item)
@@ -440,21 +492,30 @@ def _thaw_value(value: Any) -> Any:
 class CapturedPlayoffInputs(NamedTuple):
     """One immutable, path-independent playoff build input generation."""
 
-    payloads: Mapping[str, bytes]
+    payloads: _FrozenStringMap
     attestations: tuple[_InputFileAttestation, ...]
     directories: tuple[_InputDirectoryAttestation, ...]
     franchise_resolver: franchises.FranchiseResolver
-    hoopr_snapshot: Mapping[str, Any]
-    versions: Mapping[str, Any]
+    hoopr_snapshot: _FrozenStringMap
+    versions: _FrozenStringMap
     policy: PlayoffBuildPolicy
 
     def payload(self, relative_path: str) -> bytes:
         try:
-            return self.payloads[relative_path]
+            return _frozen_lookup(self.payloads, relative_path)
         except KeyError as exc:
             raise PlayoffValidationError(
                 f"captured playoff input is missing: {relative_path}"
             ) from exc
+
+    def payload_paths(self) -> Iterator[str]:
+        return _frozen_keys(self.payloads)
+
+    def payload_items(self) -> Iterator[tuple[str, bytes]]:
+        return _frozen_items(self.payloads)
+
+    def hoopr_value(self, key: str) -> Any:
+        return _frozen_lookup(self.hoopr_snapshot, key)
 
     def resolve_franchise(self, name: str, season: int) -> str:
         return self.franchise_resolver.resolve(name, season)
@@ -678,32 +739,42 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
                 data_dir / relative, relative
             ))
 
-    payloads = MappingProxyType({
-        record.relative_path: record.payload for record in files
-    })
-    if len(payloads) != len(files):
+    try:
+        payloads = _freeze_mapping(
+            (record.relative_path, record.payload)
+            for record in files
+        )
+    except ValueError as exc:
         raise PlayoffValidationError(
             "playoff input capture contains duplicate paths"
-        )
+        ) from exc
     if (
-        payloads["reference/franchises.csv"]
-        != payloads["runtime_reference/franchises.csv"]
+        _frozen_lookup(payloads, "reference/franchises.csv")
+        != _frozen_lookup(
+            payloads, "runtime_reference/franchises.csv"
+        )
     ):
         raise PlayoffValidationError(
             "franchise reference differs from the packaged runtime reference"
         )
     if (
-        payloads["reference/hoopr_snapshot.json"]
-        != payloads["runtime_reference/hoopr_snapshot.json"]
+        _frozen_lookup(payloads, "reference/hoopr_snapshot.json")
+        != _frozen_lookup(
+            payloads, "runtime_reference/hoopr_snapshot.json"
+        )
     ):
         raise PlayoffValidationError(
             "hoopR snapshot reference differs from the packaged runtime reference"
         )
     resolver = franchises.FranchiseResolver.from_payload(
-        payloads["runtime_reference/franchises.csv"]
+        _frozen_lookup(
+            payloads, "runtime_reference/franchises.csv"
+        )
     )
     parsed_franchises = franchises.load_reference_payload(
-        payloads["runtime_reference/franchises.csv"]
+        _frozen_lookup(
+            payloads, "runtime_reference/franchises.csv"
+        )
     )
     runtime_franchises = franchises.load_reference().copy(deep=True)
     if not parsed_franchises.equals(runtime_franchises):
@@ -712,9 +783,9 @@ def _capture_input_snapshot(data_dir: Path) -> CapturedPlayoffInputs:
         )
     try:
         parsed_snapshot = json.loads(
-            payloads["runtime_reference/hoopr_snapshot.json"].decode(
-                "utf-8"
-            )
+            _frozen_lookup(
+                payloads, "runtime_reference/hoopr_snapshot.json"
+            ).decode("utf-8")
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PlayoffValidationError(
@@ -1535,7 +1606,7 @@ def _captured_historical_payloads(
             ),
         )
         month_payloads[page.filename] = payload
-    return index_payload, MappingProxyType(month_payloads)
+    return index_payload, month_payloads
 
 
 def _captured_playoff_season(
@@ -1605,7 +1676,7 @@ def _captured_hoopr_payload(
     expected = {
         "provider": "hoopr",
         "season": season,
-        "upstream_commit": inputs.hoopr_snapshot["commit"],
+        "upstream_commit": inputs.hoopr_value("commit"),
     }
     observed = {key: metadata.get(key) for key in expected}
     if observed != expected or any(
@@ -1731,7 +1802,7 @@ def _raw_provenance_from_inputs(
             )
         historical_sources = (
             historical_build._raw_provenance_from_payloads(
-                inputs.payloads,
+                inputs.payload_items(),
                 policy=policy.historical_provenance,
                 historical_policy=policy.historical_bref,
                 schedule_policy=policy.bref_schedule,
@@ -1769,7 +1840,7 @@ def _raw_provenance_from_inputs(
     prefix = "raw/playoff_bref/"
     observed_entries = {
         name.removeprefix(prefix)
-        for name in inputs.payloads
+        for name in inputs.payload_paths()
         if name.startswith(prefix)
     }
     expected_entries = {
@@ -1897,8 +1968,8 @@ def _raw_provenance_from_inputs(
                 f"playoff page provenance is invalid for {name}: {exc}"
             ) from exc
 
-    commit = inputs.hoopr_snapshot["commit"]
-    repository = inputs.hoopr_snapshot["repository"]
+    commit = inputs.hoopr_value("commit")
+    repository = inputs.hoopr_value("repository")
     hoopr_schedules = []
     for season in policy.hoopr.snapshot_seasons:
         payload = _captured_hoopr_payload(inputs, season)

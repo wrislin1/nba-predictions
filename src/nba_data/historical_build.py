@@ -1,5 +1,6 @@
 """Validation helpers for the historical publication pipeline."""
 
+from collections.abc import Iterable, Mapping
 from datetime import date
 import hashlib
 import json
@@ -7,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Mapping, NamedTuple
+from typing import NamedTuple
 import warnings
 
 import pandas as pd
@@ -483,7 +484,7 @@ def _cache_error(exc: Exception) -> HistoricalValidationError:
 
 
 def _raw_provenance_from_payloads(
-    payloads: Mapping[str, bytes],
+    payloads: Mapping[str, bytes] | Iterable[tuple[str, bytes]],
     *,
     policy: HistoricalProvenancePolicy | None = None,
     historical_policy: historical_bref.HistoricalBrefPolicy | None = None,
@@ -504,9 +505,14 @@ def _raw_provenance_from_payloads(
         policy.cache_name_pattern, policy.cache_name_flags
     )
     prefix = "raw/historical_bref/"
+    payload_items = (
+        payloads.items()
+        if isinstance(payloads, Mapping)
+        else payloads
+    )
     entries = {
         name.removeprefix(prefix): payload
-        for name, payload in payloads.items()
+        for name, payload in payload_items
         if name.startswith(prefix)
     }
     if not entries:

@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from datetime import date
+import gc
 import hashlib
 from io import BytesIO
 import json
@@ -952,7 +953,7 @@ def _captured_assembly_inputs(
             (repo_data_dir / "reference" / name).read_bytes()
         )
     franchise_payload = franchises.REFERENCE.read_bytes()
-    payloads = MappingProxyType({
+    payloads = playoff_build._freeze_value({
         "reference/playoff_season_counts.csv": (
             reference_dir / "playoff_season_counts.csv"
         ).read_bytes(),
@@ -973,10 +974,10 @@ def _captured_assembly_inputs(
         franchise_resolver=franchises.FranchiseResolver.from_payload(
             franchise_payload
         ),
-        hoopr_snapshot=MappingProxyType({
+        hoopr_snapshot=playoff_build._freeze_value({
             "commit": hoopr.SNAPSHOT["commit"],
         }),
-        versions=MappingProxyType({}),
+        versions=playoff_build._freeze_value({}),
         policy=playoff_build.capture_policy(),
     )
 
@@ -2182,7 +2183,7 @@ def test_captured_inputs_are_immune_to_transient_files_and_globals(
         assert captured.resolve_franchise(
             "Rochester Royals", 1949
         ) == "SAC"
-        assert captured.hoopr_snapshot["commit"] == expected_commit
+        assert captured.hoopr_value("commit") == expected_commit
         with pytest.raises(TypeError):
             captured.payloads["parquet/games.parquet"] = b"mutant"
 
@@ -2309,6 +2310,111 @@ def test_captured_policy_covers_material_maps_sets_and_schemas(
         captured.policy.playoff_bref = captured.policy.playoff_bref
 
 
+@pytest.mark.integration
+def test_gc_referents_cannot_change_same_capture_outputs(
+    repo_data_dir,
+):
+    captured = playoff_build._capture_input_snapshot(repo_data_dir)
+    expected_games = pd.read_parquet(
+        repo_data_dir / "parquet/playoff_games.parquet"
+    )
+    expected_manifest = json.loads(
+        (
+            repo_data_dir
+            / "parquet/playoff_games_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    relative_path = "reference/playoff_site_rules.csv"
+    original = captured.payload(relative_path)
+    mutant = original.replace(
+        b"All remaining 2019-20 games",
+        b"All remaining 2019-20 tests",
+    )
+    assert mutant != original
+    backing = next(
+        (
+            item
+            for item in gc.get_referents(captured.payloads)
+            if type(item) is dict
+        ),
+        None,
+    )
+
+    try:
+        if backing is not None:
+            backing[relative_path] = mutant
+        observed_payload = captured.payload(relative_path)
+        actual_games, actual_report, _ = (
+            playoff_build.assemble_from_inputs(captured)
+        )
+        actual_sources = playoff_build._raw_provenance_from_inputs(
+            captured
+        )
+        actual_references = (
+            playoff_build._reference_provenance_from_inputs(captured)
+        )
+    finally:
+        if backing is not None:
+            backing[relative_path] = original
+
+    assert observed_payload == original
+    pd.testing.assert_frame_equal(actual_games, expected_games)
+    assert actual_report == expected_manifest["validation"]
+    assert actual_sources == expected_manifest["sources"]
+    assert actual_references == expected_manifest["references"]
+
+
+def _capture_graph_mutable_paths(value, path="captured", seen=None):
+    if seen is None:
+        seen = set()
+    if id(value) in seen:
+        return []
+    seen.add(id(value))
+    forbidden = (
+        Mapping,
+        list,
+        dict,
+        set,
+        MappingProxyType,
+        Path,
+        pd.DataFrame,
+        re.Pattern,
+    )
+    violations = []
+    if isinstance(value, forbidden):
+        violations.append(f"{path}: {type(value).__name__}")
+    for referent in gc.get_referents(value):
+        if isinstance(referent, forbidden):
+            violations.append(
+                f"{path} referent: {type(referent).__name__}"
+            )
+    if is_dataclass(value):
+        names = tuple(item.name for item in fields(value))
+    elif isinstance(value, tuple) and hasattr(type(value), "_fields"):
+        names = tuple(type(value)._fields)
+    else:
+        names = ()
+    if names:
+        for name in names:
+            violations.extend(_capture_graph_mutable_paths(
+                getattr(value, name), f"{path}.{name}", seen
+            ))
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            violations.extend(_capture_graph_mutable_paths(
+                key, f"{path}[key]", seen
+            ))
+            violations.extend(_capture_graph_mutable_paths(
+                item, f"{path}[{key!r}]", seen
+            ))
+    elif isinstance(value, (tuple, frozenset)):
+        for index, item in enumerate(value):
+            violations.extend(_capture_graph_mutable_paths(
+                item, f"{path}[{index}]", seen
+            ))
+    return violations
+
+
 def _assert_capture_graph_is_reflectively_immutable(value, seen=None):
     if seen is None:
         seen = set()
@@ -2332,11 +2438,10 @@ def _assert_capture_graph_is_reflectively_immutable(value, seen=None):
             )
         return
     if isinstance(value, Mapping):
-        assert type(value) is MappingProxyType
-        for key, item in value.items():
-            _assert_capture_graph_is_reflectively_immutable(key, seen)
-            _assert_capture_graph_is_reflectively_immutable(item, seen)
-        return
+        pytest.fail(
+            "captured graph contains a dict-backed mapping: "
+            f"{type(value).__name__}"
+        )
     if isinstance(value, (tuple, frozenset)):
         for item in value:
             _assert_capture_graph_is_reflectively_immutable(item, seen)
@@ -2355,6 +2460,17 @@ def test_captured_input_graph_is_reflectively_immutable(
     )
 
     _assert_capture_graph_is_reflectively_immutable(captured)
+
+
+def test_captured_input_graph_has_no_mutable_gc_referents(
+    verified_provenance_data,
+):
+    captured = playoff_build._capture_input_snapshot(
+        verified_provenance_data
+    )
+
+    violations = _capture_graph_mutable_paths(captured)
+    assert violations == [], "\n".join(violations)
 
 
 def test_captured_policy_rejects_reflective_field_replacement(
