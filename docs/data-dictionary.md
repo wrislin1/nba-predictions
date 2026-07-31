@@ -1,18 +1,22 @@
 # Game-data dictionary
 
-This is the contract for the two committed regular-season result
-publications. `historical_games.parquet` contains 19,405 BAA/NBA games for
-ending seasons 1947–1983. The modern publication begins at ending season 1984
-and runs through 2026 with 49,117 `games` rows and 98,234 `team_games` rows.
-A season number is always its ending year, so the handoff has no overlap or
-gap.
+This is the contract for the two committed regular-season result publications
+and the separate postseason-results publication.
+`historical_games.parquet` contains 19,405 BAA/NBA games for ending seasons
+1947–1983. The modern publication begins at ending season 1984 and runs
+through 2026 with 49,117 `games` rows and 98,234 `team_games` rows.
+`playoff_games.parquet` contains 4,652 BAA/NBA postseason rows for ending
+seasons 1947–2026 and is not an input to either regular publication, the
+models, or the analysis outputs. A season number is always its ending year, so
+the regular handoff has no overlap or gap and `1947` means 1946–47.
 
 The committed [historical manifest](../data/parquet/historical_games_manifest.json)
-and [modern build manifest](../data/parquet/build_manifest.json) record the
+[modern build manifest](../data/parquet/build_manifest.json), and
+[playoff manifest](../data/parquet/playoff_games_manifest.json) record the
 exact row counts, table hashes, verified relative source paths and SHA-256
 values, validation results, reference hashes, and dependency versions. The
-historical table metadata also records the exact ordered 18-column Arrow
-schema shown below. Each manifest is authoritative for its publication if
+historical and playoff table metadata also record their exact ordered Arrow
+schemas shown below. Each manifest is authoritative for its publication if
 this page and an artifact ever differ.
 
 Historical collection and classification decisions are in the approved
@@ -34,6 +38,14 @@ Modern decisions remain documented in the
 the [Slice 2A plan](superpowers/plans/2026-07-29-slice2a-game-data-pipeline.md),
 and the corrected
 [modern source audit](audits/2026-07-29-slice2-source-spike.md).
+
+Playoff collection and classification decisions are in the approved
+[playoff-results design](superpowers/specs/2026-07-30-playoff-game-results-design.md)
+and the verified
+[playoff source spike](audits/2026-07-30-playoff-bref-source-spike.md).
+Independent acceptance inputs are the
+[playoff season-count reference](../data/reference/playoff_season_counts.csv)
+and [2020 site-rule ledger](../data/reference/playoff_site_rules.csv).
 
 ## Tables and physical types
 
@@ -144,6 +156,116 @@ The historical boundary is exactly ending seasons 1947–1983. The modern
 contains schedule-level results and preserved box-score URLs only; collecting
 rich historical team/player box scores is future separate scope requiring its
 own design and review.
+
+### `playoff_games.parquet`
+
+One schedule-results row per scoped BAA/NBA postseason game for ending seasons
+1947–2026. This table is independently published and is not joined into
+`games.parquet`, `team_games.parquet`, or `historical_games.parquet`. These are
+the exact Arrow/Parquet columns and physical types in publication order:
+
+| Column | Type | Meaning |
+|---|---|---|
+| game_id | large_string | Stable Basketball Reference-derived identifier |
+| season | int64 | Ending season, exactly 1947 through 2026 |
+| league | large_string | `BAA` for 1947–1949 and `NBA` for 1950–2026 |
+| game_date | date32[day] | Scheduled game date |
+| game_type | large_string | Exact scoped classification defined below |
+| away_team_name | large_string | Source-era visitor name |
+| home_team_name | large_string | Source-era designated-home name |
+| away_franchise_id | large_string | Stable organizational-lineage code for the visitor |
+| home_franchise_id | large_string | Stable organizational-lineage code for the designated home team |
+| away_pts | int64 | Final visitor score |
+| home_pts | int64 | Final designated-home score |
+| home_margin | int64 | `home_pts - away_pts`, regardless of site classification |
+| overtime_periods | int64 | `0` for regulation; otherwise the parsed overtime count |
+| site_status | large_string | `home`, `neutral`, or `unknown` |
+| venue_name | large_string nullable | Reported arena/site; null when the source cell is blank |
+| attendance | int64 nullable | Reported attendance; null when the source cell is blank |
+| attendance_status | large_string | `reported_positive`, `reported_zero`, or `missing` |
+| boxscore_url | large_string nullable | Preserved Basketball Reference box-score link when present |
+| schedule_url | large_string | Verified schedule page that produced the row |
+
+Only `venue_name`, `attendance`, and `boxscore_url` are nullable. Every other
+field is non-null after validation. Rows are deterministically ordered by
+`season`, `game_date`, and `game_id`.
+
+#### `game_type` values
+
+| Value | Meaning |
+|---|---|
+| `playoff` | A completed BAA/NBA playoff result |
+| `play_in` | An exact `Play-In Game` row from one of the seven approved seeded monthly pages for 2020–2026 |
+| `tiebreaker` | One of the eight historical rows whose exact source remark is `Tiebreaker` |
+| `voided` | The single 1953 result marked `Protest; does not count toward record` |
+
+The league and season boundaries use the ending-season convention: `1947`
+means 1946–47, BAA covers 1947–1949, and NBA covers 1950–2026. ABA games are
+not included.
+
+Basketball Reference (BREF) owns every published result row. For ending
+seasons 1947–1983, the builder reads the already verified
+`raw/historical_bref/` pages and publishes the exact
+`(schedule_url, source_row)` complement of the proven regular-season selector.
+For 1984–2026, it reads 43 dedicated playoff schedule pages from the separate
+`raw/playoff_bref/` cache. The 37 `play_in` rows for 2020–2026 come only from
+seven checksum-verified monthly BREF pages copied from `raw/bref/` into that
+cache with their original source identity preserved. The playoff fetch never
+writes `raw/bref/` or `raw/historical_bref/`.
+
+Visitor and designated-home columns always determine away/home score
+orientation. `site_status` records site evidence separately, and neither a
+`game_type` remark nor a play-in label reverses the scores. The one
+provenance-backed cohort rule sets exactly all 84 ending-season 2020 rows to
+`neutral`; no other cohort-wide site rule is applied.
+
+A blank attendance cell is null with `attendance_status=missing`. A literal
+source zero is retained as integer `0` with
+`attendance_status=reported_zero`, never converted to missing. A positive
+reported value uses `reported_positive`. Blank venue cells remain null.
+
+Pinned hoopR schedules are validator-only evidence and never supply
+publication rows or fill missing values. For 2020–2026, BREF and hoopR must be
+bidirectionally equal on exactly 627 unique rows using:
+
+```text
+(season, game_date, game_type, away_franchise_id, home_franchise_id, away_pts, home_pts)
+```
+
+Canonical overlap with each regular publication must be zero using:
+
+```text
+(season, game_date, away_franchise_id, home_franchise_id, away_pts, home_pts)
+```
+
+Game IDs are deliberately absent from the overlap key because the
+publications use different identifier namespaces.
+
+The deterministic `playoff_games_manifest.json` contains the table hash,
+ordered Arrow schema, versions, complete validation report, and only relative,
+stable provenance identities. Its Basketball Reference source inventory pins
+the historical manifest, every consumed historical page, all 43 dedicated
+playoff pages, and all seven seeded play-in pages. Its hoopR inventory pins
+the seven validator schedules and upstream commit. Its reference inventory
+attests exactly `franchises.csv`, `hoopr_snapshot.json`,
+`playoff_season_counts.csv`, and `playoff_site_rules.csv`. Fetch timestamps,
+absolute checkout or temporary paths, and other machine-specific values are
+forbidden. A complete offline build validates the exact 1947–2026
+season/type counts and windows, the 627-row equality, the zero regular
+overlap, the 84-row 2020 neutral cohort, source/cache inventories, schema,
+ordering, and provenance before atomically replacing the Parquet/manifest
+pair. Two consecutive offline builds must reproduce both files byte for byte,
+and modern or historical regular rebuilds must leave all seven locked regular
+artifact hashes unchanged.
+
+#### Playoff scope limitations
+
+The publication intentionally has no round, seed, or series metadata; no ABA
+games; and no box-score statistics beyond the schedule result fields. It does
+not classify exhibitions, All-Star games, or NBA Cup games. It changes no
+modeling input, analysis output, regular-publication schema, or regular row
+set. The workflow also does not bulk-acquire 1984–2019 regular-season monthly
+BREF pages.
 
 ### `franchises.parquet`
 
@@ -322,6 +444,39 @@ all 37 ending seasons, validates curated season counts independently, and
 atomically publishes the historical Parquet/manifest pair. The verified raw
 cache lives at `data/raw/historical_bref/` and remains untracked.
 
+### Playoff results
+
+Run the playoff operator flow in this order:
+
+```bash
+# One season or resumable full acquisition; networked and rate-limited.
+python -m nba_data fetch-playoffs --season 1984
+python -m nba_data fetch-playoffs
+
+# Strictly offline deterministic publication.
+python -m nba_data build-playoffs
+
+# Independent immutable raw recovery.
+bash scripts/archive_playoff_raw_snapshot.sh
+bash scripts/restore_playoff_raw.sh
+```
+
+`fetch-playoffs` is the only playoff network path. It accepts ending seasons
+1984–2026, reuses valid cache pairs, seeds the applicable verified play-in
+monthly page, and requests only missing dedicated pages. Basketball Reference
+access uses ordinary TLS verification, the browser-identifying User-Agent, no
+parallel requests, and at least 12 seconds between requests. HTTP, TLS,
+rate-limit, block-page, or schema failure stops acquisition immediately.
+
+`build-playoffs` is strictly offline. It requires the complete verified
+historical dependency, all 43 dedicated and seven seeded playoff cache pairs,
+all pinned 2020–2026 hoopR schedules, and both curated playoff reference
+files. It atomically publishes only `playoff_games.parquet` and
+`playoff_games_manifest.json`. Run it twice and compare both file hashes for
+the byte-identity gate; `python -m nba_data build` and
+`python -m nba_data build-historical` must not change either playoff product
+or any locked regular product.
+
 ### Modern results
 
 ```bash
@@ -379,6 +534,35 @@ copy, and performs a final checksum-based comparison before an atomic rename;
 a consistent copy-time snapshot swap is rejected. The destination defaults to
 `data/raw/historical_bref/` and must be absent: restore never merges with or
 replaces an existing cache.
+
+Playoff raw recovery is another independent snapshot family under the same
+default NAS archive root:
+
+```text
+playoff-raw-2026-<first-12-hex-of-playoff-manifest-sha256>/
+    playoff_bref/
+    playoff_games_manifest.json
+    SHA256SUMS
+```
+
+`bash scripts/archive_playoff_raw_snapshot.sh` pins and rechecks the trusted
+playoff and historical manifests, requires the exact 50-body cache and
+body/sidecar identities attested by `playoff_games_manifest.json`, stages on
+the archive filesystem, detects source changes during copying, and publishes
+an immutable snapshot atomically. An existing snapshot name is accepted only
+when its structure, manifest, and checksums validate exactly.
+
+`bash scripts/restore_playoff_raw.sh` derives that snapshot from the current
+committed playoff manifest and restores only `playoff_bref/`. Its destination
+defaults to `data/raw/playoff_bref/` and must be absent; restore never merges,
+overwrites, or silently repairs a live cache. It validates the snapshot before
+and after copying, stages under the destination parent, verifies the staged
+cache and both manifest pins, and then renames atomically. The historical
+manifest and current `historical_bref/` cache are prerequisites because the
+playoff publication consumes them, but playoff restore never writes them. If
+that cache is absent, first run
+`bash scripts/restore_historical_raw.sh`, then run
+`bash scripts/restore_playoff_raw.sh`.
 
 The modern recovery flow remains separate:
 

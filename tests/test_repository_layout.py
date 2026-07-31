@@ -486,6 +486,95 @@ def test_historical_documentation_matches_the_delivered_contract() -> None:
     assert "attendance_status" in analysis_readme
 
 
+def test_playoff_documentation_matches_the_delivered_contract() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    dictionary = (ROOT / "docs/data-dictionary.md").read_text(
+        encoding="utf-8"
+    )
+    required_terms = (
+        "playoff_games.parquet",
+        "playoff_games_manifest.json",
+        "fetch-playoffs",
+        "build-playoffs",
+        "archive_playoff_raw_snapshot.sh",
+        "restore_playoff_raw.sh",
+        "playoff-raw-2026-",
+        "game_type",
+    )
+    for document in (readme, dictionary):
+        for term in required_terms:
+            assert term in document
+
+    operator_commands = (
+        "python -m nba_data fetch-playoffs --season 1984",
+        "python -m nba_data fetch-playoffs",
+        "python -m nba_data build-playoffs",
+        "bash scripts/archive_playoff_raw_snapshot.sh",
+        "bash scripts/restore_playoff_raw.sh",
+    )
+    readme_lines = readme.splitlines()
+    command_positions = [
+        readme_lines.index(command) for command in operator_commands
+    ]
+    assert command_positions == sorted(command_positions)
+
+    heading = "### `playoff_games.parquet`"
+    assert heading in dictionary
+    section = dictionary.split(heading, maxsplit=1)[1]
+    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    game_type_heading = "#### `game_type` values"
+    assert game_type_heading in section
+    schema_section = section.split(game_type_heading, maxsplit=1)[0]
+    documented_schema = []
+    for line in schema_section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip().strip("`") for cell in line.split("|")[1:-1]]
+        if (
+            len(cells) >= 2
+            and cells[0] not in {"Column", "---"}
+            and set(cells[0]) != {"-"}
+        ):
+            documented_schema.append((cells[0], cells[1]))
+    assert documented_schema == [
+        ("game_id", "large_string"),
+        ("season", "int64"),
+        ("league", "large_string"),
+        ("game_date", "date32[day]"),
+        ("game_type", "large_string"),
+        ("away_team_name", "large_string"),
+        ("home_team_name", "large_string"),
+        ("away_franchise_id", "large_string"),
+        ("home_franchise_id", "large_string"),
+        ("away_pts", "int64"),
+        ("home_pts", "int64"),
+        ("home_margin", "int64"),
+        ("overtime_periods", "int64"),
+        ("site_status", "large_string"),
+        ("venue_name", "large_string nullable"),
+        ("attendance", "int64 nullable"),
+        ("attendance_status", "large_string"),
+        ("boxscore_url", "large_string nullable"),
+        ("schedule_url", "large_string"),
+    ]
+
+    game_type_section = section.split(game_type_heading, maxsplit=1)[1]
+    game_type_section = re.split(r"\n#### ", game_type_section, maxsplit=1)[0]
+    documented_game_types = set()
+    for line in game_type_section.splitlines():
+        if not line.startswith("|"):
+            continue
+        value = line.split("|")[1].strip().strip("`")
+        if value not in {"Value", "---"} and set(value) != {"-"}:
+            documented_game_types.add(value)
+    assert documented_game_types == {
+        "playoff",
+        "play_in",
+        "tiebreaker",
+        "voided",
+    }
+
+
 def seed_raw_snapshot(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"

@@ -1,5 +1,13 @@
 # Playoff Game Results Implementation Plan
 
+## Status — 2026-07-30
+
+**Implementation complete; final whole-branch review pending.** Tasks 1–12
+are implemented on `playoff-game-results`; default, integration,
+deterministic-publication, non-interference, and independent recovery gates
+pass. Task 12 Step 10 remains pending for the controller’s final whole-branch
+review. The branch remains unmerged and unpushed for user review.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Publish a provenance-complete, independently validated BAA/NBA postseason-results table for ending seasons 1947–2026 without changing any existing regular-season artifact.
@@ -334,7 +342,7 @@ the final playoff manifest is committed and two offline builds are identical.
   `sha256_file(path: Path) -> str`, the shared `repo_data_dir` pytest
   fixture, and committed fixture pages used by Tasks 2–4.
 
-- [ ] **Step 1: Create the exact baseline ledger**
+- [x] **Step 1: Create the exact baseline ledger**
 
 Write `tests/fixtures/playoff_non_interference_sha256.json`:
 
@@ -350,7 +358,7 @@ Write `tests/fixtures/playoff_non_interference_sha256.json`:
 }
 ```
 
-- [ ] **Step 2: Write the shared conftest and the failing fixed-hash and layout tests**
+- [x] **Step 2: Write the shared conftest and the failing fixed-hash and layout tests**
 
 There is no `tests/conftest.py` today. Create it with exactly:
 
@@ -404,7 +412,7 @@ def test_regular_publication_matches_locked_baseline():
 Add a repository-layout assertion that the three playoff fixture files are
 tracked and that `git ls-files data/raw/playoff_bref` returns no paths.
 
-- [ ] **Step 3: Run the baseline tests before adding fixtures**
+- [x] **Step 3: Run the baseline tests before adding fixtures**
 
 Run:
 
@@ -416,7 +424,7 @@ pytest tests/test_playoff_non_interference.py \
 Expected: the fixed-hash test passes and the new fixture/layout assertion
 fails because `tests/fixtures/playoff_bref/` does not exist.
 
-- [ ] **Step 4: Add three sanitized fixture pages**
+- [x] **Step 4: Add three sanitized fixture pages**
 
 Each fixture must contain one `<table id="schedule">` with the exact
 `data-stat` cells used by the parser:
@@ -481,7 +489,7 @@ game_remarks=Play-In Game
 Keep each fixture under 4 KiB and retain no navigation, advertising, scripts,
 comments, or unrelated rows.
 
-- [ ] **Step 5: Run the focused tests**
+- [x] **Step 5: Run the focused tests**
 
 Run:
 
@@ -492,7 +500,7 @@ pytest tests/test_playoff_non_interference.py \
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/conftest.py \
@@ -530,7 +538,7 @@ git commit -m "test: lock playoff non-interference baseline"
   `historical_bref._overtime_periods` remain callable with their current
   signatures and delegate to the new module.
 
-- [ ] **Step 1: Write failing source-neutral parser tests**
+- [x] **Step 1: Write failing source-neutral parser tests**
 
 Create `tests/test_bref_schedule.py` with focused tests for:
 
@@ -587,7 +595,7 @@ reported-zero attendance, missing attendance, unsupported league, malformed
 box-score link, duplicate schedule tables, and non-final scores into this
 module. Keep historical wrapper tests in `test_historical_bref.py`.
 
-- [ ] **Step 2: Run the new tests and verify the missing module**
+- [x] **Step 2: Run the new tests and verify the missing module**
 
 Run:
 
@@ -597,7 +605,7 @@ pytest tests/test_bref_schedule.py -q
 
 Expected: collection fails because `nba_data.bref_schedule` does not exist.
 
-- [ ] **Step 3: Move parser primitives without changing behavior**
+- [x] **Step 3: Move parser primitives without changing behavior**
 
 Create `src/nba_data/bref_schedule.py`. Move these exact current symbols from
 `historical_bref.py` without changing their statements:
@@ -641,7 +649,7 @@ Keep the existing stat-keyed row loop, stable sort, slug/fallback ordinal,
 dtype normalization, and output columns byte-for-byte. The new module must
 not import `historical_bref`.
 
-- [ ] **Step 4: Add historical compatibility wrappers**
+- [x] **Step 4: Add historical compatibility wrappers**
 
 Define these historical compatibility wrappers:
 
@@ -672,7 +680,7 @@ Import `bref_schedule` in `historical_bref.py`. Update
 `historical_build.validate()` to call `bref_schedule.overtime_periods`
 directly while retaining the historical wrapper for compatibility tests.
 
-- [ ] **Step 5: Run parser and historical regression tests**
+- [x] **Step 5: Run parser and historical regression tests**
 
 Run:
 
@@ -685,7 +693,7 @@ pytest tests/test_bref_schedule.py \
 
 Expected: PASS.
 
-- [ ] **Step 6: Prove historical byte identity**
+- [x] **Step 6: Prove historical byte identity**
 
 Run:
 
@@ -699,7 +707,7 @@ git status --short data/parquet/historical_games.parquet \
 Expected: build succeeds, the fixed-hash test passes, and `git status`
 prints nothing for both historical products.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/nba_data/bref_schedule.py \
@@ -741,7 +749,7 @@ git commit -m "refactor: share basketball reference schedule parser"
   `fetch(raw_dir: Path, seasons: Iterable[int] = DEDICATED_SEASONS,
   sleep_s: float = 12) -> None`.
 
-- [ ] **Step 1: Write failing URL, validator, and seeding tests**
+- [x] **Step 1: Write failing URL, validator, and seeding tests**
 
 Start `tests/test_playoff_bref.py` with:
 
@@ -816,7 +824,7 @@ Add rejection tests for a missing source body, missing source sidecar,
 checksum mismatch, wrong source season/month metadata, destination symlink,
 or an already-present destination whose metadata is not identical.
 
-- [ ] **Step 2: Write failing fetch cadence and resumability tests**
+- [x] **Step 2: Write failing fetch cadence and resumability tests**
 
 Use a fake session and monkeypatched `time.sleep`:
 
@@ -860,7 +868,7 @@ failure and no second request for HTTP 403, HTTP 429, request exceptions,
 invalid HTML, a missing schedule table, a non-final row, and an invalid
 box-score URL.
 
-- [ ] **Step 3: Run the new adapter tests**
+- [x] **Step 3: Run the new adapter tests**
 
 Run:
 
@@ -870,7 +878,7 @@ pytest tests/test_playoff_bref.py -q
 
 Expected: collection fails because `nba_data.playoff_bref` does not exist.
 
-- [ ] **Step 4: Implement constants, identities, and page validators**
+- [x] **Step 4: Implement constants, identities, and page validators**
 
 Create the module with these exact identities:
 
@@ -908,7 +916,7 @@ every row. `validate_seeded_play_in_page()` parses with the deterministic
 regular-month URL and requires at least one completed row whose normalized
 remark is exactly `play-in game`.
 
-- [ ] **Step 5: Implement provenance-preserving seeding**
+- [x] **Step 5: Implement provenance-preserving seeding**
 
 Use `cache.require_valid(source, bref.validate_payload)` to validate the
 original body/sidecar checksum pair, then explicitly validate these original
@@ -947,7 +955,7 @@ Return `None` for seasons outside `PLAY_IN_MONTHS`. For an existing valid
 destination, require every identity field above plus the destination checksum
 to match and return without rewriting either file.
 
-- [ ] **Step 6: Implement strict inventory validation and polite fetch**
+- [x] **Step 6: Implement strict inventory validation and polite fetch**
 
 `validate_cache_inventory(..., complete=False)` accepts only regular
 non-symlink `.html` bodies and `.html.meta.json` sidecars whose filenames,
@@ -984,7 +992,7 @@ publication exception, and stop on the first failure. Dedicated metadata is:
 }
 ```
 
-- [ ] **Step 7: Run adapter and cache tests**
+- [x] **Step 7: Run adapter and cache tests**
 
 Run:
 
@@ -994,7 +1002,7 @@ pytest tests/test_playoff_bref.py tests/test_cache.py -q
 
 Expected: PASS, with no network access.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/nba_data/playoff_bref.py \
@@ -1033,7 +1041,7 @@ git commit -m "feat: acquire verified playoff schedule cache"
 - Internal frames retain `overtime_marker`, `game_remarks`, `source_row`, and
   `boxscore_slug` as validation evidence; these are not publication columns.
 
-- [ ] **Step 0: Add the duplicate-separator fixture season and shared cache fixtures**
+- [x] **Step 0: Add the duplicate-separator fixture season and shared cache fixtures**
 
 Derive the three 1948 fixture pages from the verified originals in
 `data/raw/historical_bref/`, following the sanitization style of the existing
@@ -1135,7 +1143,7 @@ directory containing `historical_bref/`; `seeded_playoff_cache` returns the
 passes indirectly by handing `tmp_path` to `audit_cache()` as the data
 directory.
 
-- [ ] **Step 1: Write failing historical-complement tests**
+- [x] **Step 1: Write failing historical-complement tests**
 
 Add a fixture-level test that builds a verified historical cache from the
 existing boundary fixtures and asserts that the new adapter returns only the
@@ -1183,7 +1191,7 @@ The 1953 voided-game identity (`bref-195211280MLH`) and carryover regions are
 asserted against the real verified cache by the Step 7 integration census; no
 1953 fixture season is committed.
 
-- [ ] **Step 2: Write failing modern classification tests**
+- [x] **Step 2: Write failing modern classification tests**
 
 ```python
 def test_modern_union_labels_dedicated_and_play_in_rows(
@@ -1208,7 +1216,7 @@ Also assert that a `Play-In Game` remark is normalized to `site_status ==
 does not create a play-in, and that duplicate natural results across inputs
 fail.
 
-- [ ] **Step 3: Run the focused tests**
+- [x] **Step 3: Run the focused tests**
 
 Run:
 
@@ -1219,7 +1227,7 @@ pytest tests/test_playoff_bref.py \
 
 Expected: FAIL because the three loader functions do not exist.
 
-- [ ] **Step 4: Implement historical complement selection**
+- [x] **Step 4: Implement historical complement selection**
 
 For 1947–1983:
 
@@ -1278,7 +1286,7 @@ Use source-row keys, not `game_id`, for the complement. This is necessary
 because fallback ID ordinals may differ when regular and excluded rows are
 assigned separately.
 
-- [ ] **Step 5: Implement modern classification**
+- [x] **Step 5: Implement modern classification**
 
 For 1984–2026, require and validate the dedicated body, parse it, label every
 completed row `playoff`, and normalize exact type remarks away from site
@@ -1308,7 +1316,7 @@ publish any other row from the seeded monthly page.
 `load_season()` dispatches 1947–1983 to the historical loader, 1984–2026 to
 the modern loader, and rejects other seasons.
 
-- [ ] **Step 6: Run unit classification tests**
+- [x] **Step 6: Run unit classification tests**
 
 Run:
 
@@ -1319,7 +1327,7 @@ pytest tests/test_playoff_bref.py \
 
 Expected: PASS.
 
-- [ ] **Step 7: Run the full historical complement integration check**
+- [x] **Step 7: Run the full historical complement integration check**
 
 Add an `integration` test over the existing local cache:
 
@@ -1366,7 +1374,7 @@ pytest tests/test_playoff_bref.py -m integration -q
 
 Expected: PASS with 1,240 rows and exact type counts.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/nba_data/playoff_bref.py \
@@ -1399,7 +1407,7 @@ git commit -m "feat: classify historical and modern postseason games"
   `apply_site_rules(games: pd.DataFrame,
   rules: dict[int, SiteRule]) -> tuple[pd.DataFrame, dict[int, int]]`.
 
-- [ ] **Step 1: Write failing reference-loader tests**
+- [x] **Step 1: Write failing reference-loader tests**
 
 Create `tests/test_playoff_build.py`. Generate an 80-row valid count frame in
 a helper, then mutate one property per test:
@@ -1471,7 +1479,7 @@ assert rules == {
 Add rejection tests for another season, status other than `neutral`,
 `expected_matches != 84`, duplicate rows, and missing provenance.
 
-- [ ] **Step 2: Run loader tests**
+- [x] **Step 2: Run loader tests**
 
 Run:
 
@@ -1481,7 +1489,7 @@ pytest tests/test_playoff_build.py -q
 
 Expected: collection fails because `nba_data.playoff_build` does not exist.
 
-- [ ] **Step 3: Implement exact typed reference loaders**
+- [x] **Step 3: Implement exact typed reference loaders**
 
 Create `PlayoffValidationError(ValueError)`, the two frozen dataclasses, and
 the two exact column constants. Read CSVs with `dtype="string"`, validate
@@ -1510,7 +1518,7 @@ All unspecified `tiebreaker_games`, `voided_games`, and pre-2020
 `play_in_games` must be zero. Every `playoff_games` and `total_games` value
 must be positive; other type counts may be zero.
 
-- [ ] **Step 4: Implement the exact-match site-rule applier**
+- [x] **Step 4: Implement the exact-match site-rule applier**
 
 `apply_site_rules()` selects every game in the named season, requires the
 match count to equal `expected_matches`, changes only `site_status`, and
@@ -1536,7 +1544,7 @@ def apply_site_rules(games, rules):
     return output, matches
 ```
 
-- [ ] **Step 5: Curate all 80 independent season rows**
+- [x] **Step 5: Curate all 80 independent season rows**
 
 Write `data/reference/playoff_season_counts.csv` with the exact header:
 
@@ -1590,7 +1598,7 @@ PY
 
 Expected: no output and exit 0.
 
-- [ ] **Step 6: Add the one approved site rule**
+- [x] **Step 6: Add the one approved site rule**
 
 Write `data/reference/playoff_site_rules.csv` as:
 
@@ -1599,7 +1607,7 @@ season,site_status,expected_matches,source_url,note
 2020,neutral,84,https://pr.nba.com/nba-nbpa-finalize-plan-2019-20-season-restart/,All remaining 2019-20 games were played at the three ESPN Wide World of Sports venues at Walt Disney World.
 ```
 
-- [ ] **Step 7: Validate the committed references**
+- [x] **Step 7: Validate the committed references**
 
 Add:
 
@@ -1625,7 +1633,7 @@ pytest tests/test_playoff_build.py -q
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add data/reference/playoff_season_counts.csv \
@@ -1655,7 +1663,7 @@ git commit -m "feat: add playoff validation references"
 - Compatibility: `hoopr.load_season()` and every existing modern build result
   remain unchanged.
 
-- [ ] **Step 1: Write failing postseason normalization tests**
+- [x] **Step 1: Write failing postseason normalization tests**
 
 Extend `tests/test_hoopr.py`:
 
@@ -1709,7 +1717,7 @@ Add tests for missing/tampered cache, wrong pin metadata, season outside
 2020–2026, unknown source team, missing/non-integer/negative scores, equal
 teams, equal scores, and invalid date.
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -1719,7 +1727,7 @@ pytest tests/test_hoopr.py -q
 
 Expected: FAIL with `AttributeError` for `load_postseason`.
 
-- [ ] **Step 3: Implement the evidence-only loader**
+- [x] **Step 3: Implement the evidence-only loader**
 
 Add:
 
@@ -1784,7 +1792,7 @@ Before returning, require all published fields non-null, different
 franchises, nonnegative scores, non-tied finals, and no duplicate
 `CROSS_SOURCE_KEY` values.
 
-- [ ] **Step 4: Run unit and pinned-cache integration tests**
+- [x] **Step 4: Run unit and pinned-cache integration tests**
 
 Add an integration test:
 
@@ -1816,7 +1824,7 @@ pytest tests/test_hoopr.py -m integration -q
 
 Expected: both commands PASS; integration reports 627 rows.
 
-- [ ] **Step 5: Prove the regular hoopR adapter did not change**
+- [x] **Step 5: Prove the regular hoopR adapter did not change**
 
 Run:
 
@@ -1826,7 +1834,7 @@ pytest tests/test_build_gates.py tests/test_playoff_non_interference.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/nba_data/hoopr.py tests/test_hoopr.py
@@ -1864,7 +1872,7 @@ git commit -m "feat: expose hoopr postseason evidence"
   `source_rows`, `hoopr_games`, `modern_regular`, `historical_regular`, and
   `site_rule_matches`; Task 8 reuses it for the Parquet reread check.
 
-- [ ] **Step 1: Write failing assembly-orientation and schema tests**
+- [x] **Step 1: Write failing assembly-orientation and schema tests**
 
 Add a test that monkeypatches the 80 source loaders to return one valid row
 per season and checks the exact ordered contract:
@@ -1908,7 +1916,7 @@ Assert every dtype in `PLAYOFF_DTYPES`, `game_date` values are
 `datetime.date`, away/home orientation is unchanged, and a franchise lookup
 failure propagates with the team name and season.
 
-- [ ] **Step 2: Write one failing test per validation family**
+- [x] **Step 2: Write one failing test per validation family**
 
 Use a valid complete synthetic frame and mutate exactly one property in each
 parametrized case:
@@ -1959,7 +1967,7 @@ fallback ID, reported attendance zero, missing attendance, five overtime
 periods, the exact 1953 voided exemption, and different game-ID namespaces
 sharing no canonical overlap.
 
-- [ ] **Step 3: Run the new builder tests**
+- [x] **Step 3: Run the new builder tests**
 
 Run:
 
@@ -1970,7 +1978,7 @@ pytest tests/test_playoff_build.py -q
 Expected: FAIL because `_enforce_schema`, `validate`, and `assemble` are not
 defined.
 
-- [ ] **Step 4: Implement schema enforcement and deterministic season hashes**
+- [x] **Step 4: Implement schema enforcement and deterministic season hashes**
 
 Implement:
 
@@ -2000,7 +2008,7 @@ Before `_enforce_schema()`, resolve both franchise columns, apply the site
 rules, and calculate `home_margin`. Save the parser-only evidence by `game_id`
 before dropping internal columns.
 
-- [ ] **Step 5: Implement structural, arithmetic, and source-evidence gates**
+- [x] **Step 5: Implement structural, arithmetic, and source-evidence gates**
 
 `validate()` first checks exact ordered columns and dtypes without allowing
 duplicate-column masking. Then collect all errors and raise one
@@ -2050,7 +2058,7 @@ Require `site_status` in `{"home", "neutral", "unknown"}` and
 `site_rule_matches == {2020: 84}`. Then require all 84 season-2020 rows to be
 neutral and no fewer/no more than 84 rows exist for that season.
 
-- [ ] **Step 6: Implement count, window, voided, and overlap gates**
+- [x] **Step 6: Implement count, window, voided, and overlap gates**
 
 For every expected season, compare the actual four type counts and total
 against the `ExpectedSeason` fields. For `playoff`, `play_in`, and
@@ -2076,7 +2084,7 @@ Require exactly one `voided` row and exact equality to that identity. Normalize
 both regular tables to `REGULAR_OVERLAP_KEY`, concatenate them, and fail if an
 inner merge with the playoff frame returns any row. Do not compare game IDs.
 
-- [ ] **Step 7: Implement bidirectional hoopR reconciliation**
+- [x] **Step 7: Implement bidirectional hoopR reconciliation**
 
 Filter BREF games to 2020–2026 and `playoff`/`play_in`. Select
 `CROSS_SOURCE_KEY`, assert uniqueness in both frames, then use an outer merge:
@@ -2098,7 +2106,7 @@ if len(comparison) != 627 or not comparison["_merge"].eq("both").all():
 Include sorted `left_only` and `right_only` key samples in the exception so a
 source mismatch is diagnosable without bypassing the gate.
 
-- [ ] **Step 8: Build the deterministic report and assembly function**
+- [x] **Step 8: Build the deterministic report and assembly function**
 
 Create report maps with string season keys for JSON stability:
 
@@ -2129,7 +2137,7 @@ rules, enforces schema, reads both regular publications with only overlap
 columns, loads and concatenates seven hoopR evidence frames, validates, and
 returns `(games, report, evidence_bundle)`.
 
-- [ ] **Step 9: Run the builder tests**
+- [x] **Step 9: Run the builder tests**
 
 Run:
 
@@ -2139,7 +2147,7 @@ pytest tests/test_playoff_build.py -q
 
 Expected: PASS.
 
-- [ ] **Step 10: Run all source and identity regressions**
+- [x] **Step 10: Run all source and identity regressions**
 
 Run:
 
@@ -2153,7 +2161,7 @@ pytest tests/test_bref_schedule.py \
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/nba_data/playoff_build.py tests/test_playoff_build.py
@@ -2192,7 +2200,7 @@ git commit -m "feat: validate complete playoff results panel"
   `playoff_build.run(data_dir: Path) -> None`, and CLI commands
   `fetch-playoffs`/`build-playoffs`.
 
-- [ ] **Step 1: Write failing generic publisher tests**
+- [x] **Step 1: Write failing generic publisher tests**
 
 Create `tests/test_publication.py` by extracting the behavioral cases from
 the historical publisher tests. Use neutral product names:
@@ -2228,7 +2236,7 @@ the first new product, failure publishing the second new product, successful
 rollback, failed rollback with retained recovery path, and committed pair with
 rollback-directory cleanup warning.
 
-- [ ] **Step 2: Run publisher tests**
+- [x] **Step 2: Run publisher tests**
 
 Run:
 
@@ -2238,7 +2246,7 @@ pytest tests/test_publication.py -q
 
 Expected: collection fails because `nba_data.publication` does not exist.
 
-- [ ] **Step 3: Extract the exact transactional publisher**
+- [x] **Step 3: Extract the exact transactional publisher**
 
 Move the exact bodies of `_restore_historical_products()` and
 `_publish_historical_pair()` from `historical_build.py` into
@@ -2305,7 +2313,7 @@ def _publish_historical_pair(
 Update historical fault-injection tests to patch
 `publication.os.replace`/`publication.shutil.rmtree`.
 
-- [ ] **Step 4: Prove publisher compatibility and historical byte identity**
+- [x] **Step 4: Prove publisher compatibility and historical byte identity**
 
 Run:
 
@@ -2317,7 +2325,7 @@ pytest tests/test_playoff_non_interference.py -q
 
 Expected: PASS and all seven locked hashes remain exact.
 
-- [ ] **Step 5: Write failing provenance and manifest tests**
+- [x] **Step 5: Write failing provenance and manifest tests**
 
 Add tests to `tests/test_playoff_build.py` that seed small verified historical,
 playoff, and hoopR caches plus reference files, then assert this top-level
@@ -2361,7 +2369,7 @@ seeded source hash, extra/missing playoff body, sidecar identity mismatch,
 wrong hoopR pin, unreferenced playoff file, absolute path, and fetch timestamp
 leaking into the deterministic manifest.
 
-- [ ] **Step 6: Implement exact raw and reference provenance**
+- [x] **Step 6: Implement exact raw and reference provenance**
 
 `_raw_provenance()` performs these checks in order:
 
@@ -2423,7 +2431,7 @@ REFERENCE_FILES = (
 Each value contains the relative `path` and lowercase 64-character `sha256`.
 Reject symlinks and non-regular files.
 
-- [ ] **Step 7: Implement deterministic staged build and pair publication**
+- [x] **Step 7: Implement deterministic staged build and pair publication**
 
 Add:
 
@@ -2460,7 +2468,7 @@ If publication commits but rollback cleanup fails, emit the same
 `RuntimeWarning` pattern as the historical builder. Always remove an
 unpublished stage directory in `finally`.
 
-- [ ] **Step 8: Write failing CLI dispatch tests**
+- [x] **Step 8: Write failing CLI dispatch tests**
 
 Extend `tests/test_cli.py`:
 
@@ -2506,7 +2514,7 @@ def test_build_playoffs_is_offline_dispatch(monkeypatch, tmp_path):
 Also test that omitted season passes all 43 seasons and that 1983/2027 are
 rejected by argparse.
 
-- [ ] **Step 9: Add CLI commands**
+- [x] **Step 9: Add CLI commands**
 
 Import `playoff_bref` and `playoff_build`. Add:
 
@@ -2535,7 +2543,7 @@ elif args.command == "build-playoffs":
     playoff_build.run(data)
 ```
 
-- [ ] **Step 10: Run publication, builder, and CLI tests**
+- [x] **Step 10: Run publication, builder, and CLI tests**
 
 Run:
 
@@ -2548,7 +2556,7 @@ pytest tests/test_publication.py \
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/nba_data/publication.py \
@@ -2584,7 +2592,7 @@ git commit -m "feat: publish attested playoff artifact pair"
   stage_dir: Path) -> set[str]`, modern snapshot exclusion for both
   independent cache roots, and a full rebuild hash gate.
 
-- [ ] **Step 1: Write failing complete-pair preservation tests**
+- [x] **Step 1: Write failing complete-pair preservation tests**
 
 Extend `tests/test_build_gates.py`:
 
@@ -2646,7 +2654,7 @@ Add the equivalent non-regular product test by creating both names, replacing
 one with a symlink to a regular file outside `output`, and asserting
 `non-regular <label> publication product`.
 
-- [ ] **Step 2: Write failing snapshot-exclusion and provenance tests**
+- [x] **Step 2: Write failing snapshot-exclusion and provenance tests**
 
 In `tests/test_repository_layout.py`, seed files under:
 
@@ -2668,7 +2676,7 @@ Add a build provenance test that creates a deliberately invalid
 before. The playoff builder, not the modern builder, owns validation of that
 directory.
 
-- [ ] **Step 3: Run the focused tests**
+- [x] **Step 3: Run the focused tests**
 
 Run:
 
@@ -2680,7 +2688,7 @@ pytest tests/test_build_gates.py \
 Expected: FAIL because playoff pairs are not preserved and the modern archive
 still includes `playoff_bref`.
 
-- [ ] **Step 4: Generalize independent pair preservation**
+- [x] **Step 4: Generalize independent pair preservation**
 
 Keep the existing historical constant for compatibility and add:
 
@@ -2736,7 +2744,7 @@ Call this function from `build.run()`. Keep the staged-file-set equality as
 `set(PUBLISHED_FILES) | preserved`, so an unknown output never enters the new
 directory.
 
-- [ ] **Step 5: Exclude playoff raw data from modern snapshots**
+- [x] **Step 5: Exclude playoff raw data from modern snapshots**
 
 Change both rsync invocations in `scripts/archive_raw_snapshot.sh` to include
 both anchored exclusions:
@@ -2749,7 +2757,7 @@ both anchored exclusions:
 Do not change `restore_raw.sh`: the archived snapshot is already the
 authoritative restored inventory and must not gain either directory.
 
-- [ ] **Step 6: Run seam tests**
+- [x] **Step 6: Run seam tests**
 
 Run:
 
@@ -2761,7 +2769,7 @@ bash -n scripts/archive_raw_snapshot.sh scripts/restore_raw.sh
 
 Expected: PASS and Bash syntax exit 0.
 
-- [ ] **Step 7: Add the full rebuild non-interference test**
+- [x] **Step 7: Add the full rebuild non-interference test**
 
 Extend `tests/test_playoff_non_interference.py`:
 
@@ -2791,7 +2799,7 @@ def test_modern_and_historical_rebuilds_preserve_baseline():
 This test intentionally operates only against the verified repository cache
 and is never part of a fixture-only unit run.
 
-- [ ] **Step 8: Run the integration non-interference gate**
+- [x] **Step 8: Run the integration non-interference gate**
 
 Run:
 
@@ -2802,7 +2810,7 @@ git status --short data/parquet
 
 Expected: PASS; no tracked regular artifact is modified.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/nba_data/build.py \
@@ -2836,7 +2844,7 @@ git commit -m "feat: preserve independent playoff publication"
   seasons: tuple[int, ...]) -> str`, a deterministic source-spike report, the
   complete 50-body raw cache, and both committed playoff artifacts.
 
-- [ ] **Step 1: Write the failing deterministic audit test**
+- [x] **Step 1: Write the failing deterministic audit test**
 
 Create `tests/test_playoff_audit.py`:
 
@@ -2869,7 +2877,7 @@ def test_audit_cache_is_deterministic(
 Test rejection of a season without a dedicated body and confirm importing the
 script performs no I/O.
 
-- [ ] **Step 2: Run the audit test**
+- [x] **Step 2: Run the audit test**
 
 Run:
 
@@ -2880,7 +2888,7 @@ pytest tests/test_playoff_audit.py -q
 Expected: collection fails because `scripts.audit_playoff_source` does not
 exist.
 
-- [ ] **Step 3: Implement the offline audit**
+- [x] **Step 3: Implement the offline audit**
 
 The script parses verified cache bodies through `playoff_bref`; for each
 resource it emits one stable Markdown row with:
@@ -2913,7 +2921,7 @@ parser.add_argument("--output", type=Path, required=True)
 Write the output with UTF-8 only in `main()`; `audit_cache()` returns the
 string and is pure apart from verified cache reads.
 
-- [ ] **Step 4: Run audit unit tests**
+- [x] **Step 4: Run audit unit tests**
 
 Run:
 
@@ -2923,7 +2931,7 @@ pytest tests/test_playoff_audit.py -q
 
 Expected: PASS with no network.
 
-- [ ] **Step 5: Fetch the four representative dedicated pages**
+- [x] **Step 5: Fetch the four representative dedicated pages**
 
 Run one CLI process so the adapter enforces cadence across requests:
 
@@ -2940,7 +2948,7 @@ play-in pairs. Any block page, HTTP error, schema mismatch, or invalid
 box-score link stops the task; do not retry until the root cause and
 Basketball Reference access policy are checked.
 
-- [ ] **Step 6: Generate and inspect the four-season source spike**
+- [x] **Step 6: Generate and inspect the four-season source spike**
 
 Run:
 
@@ -2960,7 +2968,7 @@ well-formed venue/attendance values. Require the 2020 and 2026 play-in
 classifier rows to come only from seeded pages. Record any source anomaly and
 its deterministic handling in the report before proceeding.
 
-- [ ] **Step 7: Run the source-spike test gate**
+- [x] **Step 7: Run the source-spike test gate**
 
 Run:
 
@@ -2973,7 +2981,7 @@ git diff --check
 
 Expected: PASS and no whitespace errors.
 
-- [ ] **Step 8: Commit the adapter audit before bulk acquisition**
+- [x] **Step 8: Commit the adapter audit before bulk acquisition**
 
 ```bash
 git add scripts/audit_playoff_source.py \
@@ -2982,7 +2990,7 @@ git add scripts/audit_playoff_source.py \
 git commit -m "docs: audit representative playoff sources"
 ```
 
-- [ ] **Step 9: Complete the resumable rate-limited fetch**
+- [x] **Step 9: Complete the resumable rate-limited fetch**
 
 Run:
 
@@ -2995,7 +3003,7 @@ pages are requested sequentially with at least 12 seconds between requests;
 the remaining five play-in pages are seeded from verified existing cache
 pairs.
 
-- [ ] **Step 10: Validate the exact 50-body cache inventory**
+- [x] **Step 10: Validate the exact 50-body cache inventory**
 
 Run:
 
@@ -3020,7 +3028,7 @@ PY
 
 Expected: `verified playoff cache bodies: 50`.
 
-- [ ] **Step 11: Build and reconcile the complete publication**
+- [x] **Step 11: Build and reconcile the complete publication**
 
 Run:
 
@@ -3038,7 +3046,7 @@ was transcribed incorrectly; record the correction in that row’s note and
 rerun the loader tests before rebuilding. Never derive a replacement count
 solely from the schedule rows being validated.
 
-- [ ] **Step 12: Inspect the manifest contract**
+- [x] **Step 12: Inspect the manifest contract**
 
 Run:
 
@@ -3065,7 +3073,7 @@ jq -e '
 
 Expected: `true`.
 
-- [ ] **Step 13: Prove byte-for-byte offline reproducibility**
+- [x] **Step 13: Prove byte-for-byte offline reproducibility**
 
 Run:
 
@@ -3087,7 +3095,7 @@ printf '%s\n' "$second"
 
 Expected: both SHA-256 lines print and the equality check exits 0.
 
-- [ ] **Step 14: Prove regular non-interference after publication**
+- [x] **Step 14: Prove regular non-interference after publication**
 
 Run:
 
@@ -3100,7 +3108,7 @@ pytest tests/test_playoff_non_interference.py -q
 Expected: PASS. The modern rebuild preserves both independent pairs, and all
 seven locked regular hashes remain unchanged.
 
-- [ ] **Step 15: Confirm raw data remains untracked**
+- [x] **Step 15: Confirm raw data remains untracked**
 
 Run:
 
@@ -3112,7 +3120,7 @@ git ls-files data/raw/playoff_bref
 Expected: the first command prints the ignored path; the second prints
 nothing.
 
-- [ ] **Step 16: Commit references corrected by independent evidence and both artifacts**
+- [x] **Step 16: Commit references corrected by independent evidence and both artifacts**
 
 ```bash
 git add data/reference/playoff_season_counts.csv \
@@ -3147,7 +3155,7 @@ git commit -m "data: publish playoff game results"
   `NBA_PLAYOFF_HISTORICAL_MANIFEST`, and
   `NBA_PLAYOFF_HISTORICAL_CACHE`.
 
-- [ ] **Step 1: Write failing archive/restore inverse tests**
+- [x] **Step 1: Write failing archive/restore inverse tests**
 
 Create `tests/test_playoff_raw_snapshot.py` with a helper that seeds:
 
@@ -3204,7 +3212,7 @@ Add one independently named test for each rejection:
 Use fake `rsync` wrappers in race tests to mutate the named file at the copy
 boundary, matching the established historical snapshot test style.
 
-- [ ] **Step 2: Run snapshot tests**
+- [x] **Step 2: Run snapshot tests**
 
 Run:
 
@@ -3214,7 +3222,7 @@ pytest tests/test_playoff_raw_snapshot.py -q
 
 Expected: FAIL because both scripts are missing.
 
-- [ ] **Step 3: Implement the shared shell validation contract in both scripts**
+- [x] **Step 3: Implement the shared shell validation contract in both scripts**
 
 Both scripts start with:
 
@@ -3251,7 +3259,7 @@ Both scripts define `validate_historical_dependency`, which:
    against the current historical cache and manifest; and
 5. rechecks the playoff and historical manifest hashes after validation.
 
-- [ ] **Step 4: Implement immutable archive publication**
+- [x] **Step 4: Implement immutable archive publication**
 
 `archive_playoff_raw_snapshot.sh` defaults to:
 
@@ -3278,7 +3286,7 @@ then validate source, stage, both manifest pins, and a checksum dry run again.
 Publish with `mv -T -n`. If the immutable snapshot already exists, accept it
 only after exact validation and print its verified path; never overwrite it.
 
-- [ ] **Step 5: Implement absent-target atomic restore**
+- [x] **Step 5: Implement absent-target atomic restore**
 
 `restore_playoff_raw.sh` uses the same manifest SHA to select the snapshot,
 requires the destination not to exist, validates the snapshot and historical
@@ -3298,7 +3306,7 @@ historical-manifest pin, and historical cache immediately before
 `mv -T -n "$staging" "$destination"`. The restore never writes
 `historical_bref` and never merges into an existing playoff destination.
 
-- [ ] **Step 6: Run shell syntax and inverse tests**
+- [x] **Step 6: Run shell syntax and inverse tests**
 
 Run:
 
@@ -3310,7 +3318,7 @@ pytest tests/test_playoff_raw_snapshot.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Add repository-layout recovery assertions**
+- [x] **Step 7: Add repository-layout recovery assertions**
 
 Require both scripts to be tracked and executable, require their default
 archive root to match the design.
@@ -3323,7 +3331,7 @@ pytest tests/test_repository_layout.py -q
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the recovery implementation**
+- [x] **Step 8: Commit the recovery implementation**
 
 ```bash
 chmod +x scripts/archive_playoff_raw_snapshot.sh \
@@ -3335,7 +3343,7 @@ git add scripts/archive_playoff_raw_snapshot.sh \
 git commit -m "feat: archive and restore playoff raw cache"
 ```
 
-- [ ] **Step 9: Create or verify the immutable NAS snapshot**
+- [x] **Step 9: Create or verify the immutable NAS snapshot**
 
 Run:
 
@@ -3346,7 +3354,7 @@ bash scripts/archive_playoff_raw_snapshot.sh
 Expected: prints one verified path matching
 `/mnt/nas/llm/documents/nba-predictions-archive/playoff-raw-2026-<12 hex>`.
 
-- [ ] **Step 10: Independently restore-verify without touching the live cache**
+- [x] **Step 10: Independently restore-verify without touching the live cache**
 
 Run:
 
@@ -3393,7 +3401,7 @@ Expected: restore prints a verified destination and both comparisons exit 0.
 - Produces: operator-facing documentation, a fully checked plan status, and a
   reviewed unmerged implementation branch.
 
-- [ ] **Step 1: Write failing documentation assertions**
+- [x] **Step 1: Write failing documentation assertions**
 
 Assert README/data dictionary contain:
 
@@ -3411,7 +3419,7 @@ game_type
 Also assert the data dictionary lists all 19 ordered columns and four exact
 `game_type` values.
 
-- [ ] **Step 2: Run documentation tests**
+- [x] **Step 2: Run documentation tests**
 
 Run:
 
@@ -3421,7 +3429,7 @@ pytest tests/test_repository_layout.py -q
 
 Expected: FAIL because playoff documentation is incomplete.
 
-- [ ] **Step 3: Update README operator flow**
+- [x] **Step 3: Update README operator flow**
 
 Document, in order:
 
@@ -3442,7 +3450,7 @@ State that the table is separate from modeling inputs, covers BAA/NBA ending
 seasons 1947–2026, uses BREF publication rows plus hoopR cross-validation,
 and leaves both regular publications byte-identical.
 
-- [ ] **Step 4: Update the data dictionary**
+- [x] **Step 4: Update the data dictionary**
 
 Add:
 
@@ -3461,7 +3469,7 @@ Add:
   prerequisite; and
 - limitations from the spec’s Non-goals section.
 
-- [ ] **Step 5: Run documentation and focused feature tests**
+- [x] **Step 5: Run documentation and focused feature tests**
 
 Run:
 
@@ -3478,7 +3486,7 @@ pytest tests/test_repository_layout.py \
 
 Expected: PASS.
 
-- [ ] **Step 6: Run the complete default suite**
+- [x] **Step 6: Run the complete default suite**
 
 Run:
 
@@ -3488,7 +3496,7 @@ pytest -q
 
 Expected: all tests PASS with zero unexpected skips or xfails.
 
-- [ ] **Step 7: Run integration and repository verification**
+- [x] **Step 7: Run integration and repository verification**
 
 Run:
 
@@ -3499,7 +3507,7 @@ python scripts/verify_repository.py
 
 Expected: all integration tests PASS; repository verification exits 0.
 
-- [ ] **Step 8: Repeat deterministic and non-interference gates**
+- [x] **Step 8: Repeat deterministic and non-interference gates**
 
 Run:
 
@@ -3523,7 +3531,7 @@ pytest tests/test_playoff_non_interference.py -q
 
 Expected: equality and fixed-hash gates both pass.
 
-- [ ] **Step 9: Run static hygiene checks**
+- [x] **Step 9: Run static hygiene checks**
 
 Run:
 
@@ -3557,7 +3565,7 @@ current head. Require review of:
 Resolve every substantive finding with TDD and rerun the affected focused
 tests plus Steps 6–9.
 
-- [ ] **Step 11: Mark the plan complete and commit documentation**
+- [x] **Step 11: Mark the plan complete and commit documentation**
 
 Add a status immediately below the title:
 
@@ -3578,7 +3586,7 @@ git add README.md docs/data-dictionary.md \
 git commit -m "docs: document playoff results operation"
 ```
 
-- [ ] **Step 12: Final clean-state verification**
+- [x] **Step 12: Final clean-state verification**
 
 Invoke `superpowers:verification-before-completion`, then run:
 

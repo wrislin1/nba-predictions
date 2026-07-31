@@ -88,6 +88,43 @@ publications. Historical raw schedule pages remain untracked and have an
 independent immutable recovery snapshot; the data dictionary documents the
 network, offline-build, archive, and restore commands.
 
+## Playoff results
+
+`data/parquet/playoff_games.parquet` is a separate results publication for
+BAA/NBA postseason games in ending seasons 1947–2026. It is not a modeling
+input and does not change analysis outputs. Its 19-column schema includes
+`game_type`, whose values are exactly `playoff`, `play_in`, `tiebreaker`, and
+`voided`. Basketball Reference (BREF) supplies the published schedule-result
+rows; pinned hoopR schedules independently cross-validate the 2020–2026
+results. The companion
+`data/parquet/playoff_games_manifest.json` records deterministic source,
+reference, table, and validation evidence. Publishing or rebuilding this pair
+leaves both the modern and historical regular-season publications
+byte-identical.
+
+From a repository checkout, use this operator flow in order:
+
+```bash
+# One season or resumable full acquisition; networked and rate-limited.
+python -m nba_data fetch-playoffs --season 1984
+python -m nba_data fetch-playoffs
+
+# Strictly offline deterministic publication.
+python -m nba_data build-playoffs
+
+# Independent immutable raw recovery.
+bash scripts/archive_playoff_raw_snapshot.sh
+bash scripts/restore_playoff_raw.sh
+```
+
+The immutable snapshot family is
+`playoff-raw-2026-<first-12-hex-of-playoff-manifest-sha256>`. Restore targets
+must be absent. If the separately owned historical raw cache is missing,
+restore it with `bash scripts/restore_historical_raw.sh` before running
+`restore_playoff_raw.sh`. See the data dictionary for the exact schema,
+source ownership, validation keys, deterministic rebuild contract, recovery
+checks, and scope limitations.
+
 ## Revival roadmap
 
 1. Slice 1: rescue the authored project, archive local data, and remove the
