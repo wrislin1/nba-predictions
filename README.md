@@ -7,8 +7,9 @@ three controlled slices. Slice 1 preserves the original work and establishes a
 small, portable, analysis-first repository. The archived dashboard and models
 are historical artifacts, not maintained predictions.
 
-Results-level BAA/NBA history for ending seasons 1947–2026 is delivered as
-two validated publications with a reproducible long-run home-court trend.
+Results-level BAA/NBA history for ending seasons 1947–2026 is delivered
+through two validated regular-season publications and a separate postseason
+publication, with a reproducible long-run home-court trend.
 The rich historical team/player box scores remain future work in a
 separately reviewed phase; the 1947–1983 delivery intentionally preserves
 box-score links without collecting those pages.
@@ -87,6 +88,51 @@ the authoritative machine-readable provenance ledgers for their exact
 publications. Historical raw schedule pages remain untracked and have an
 independent immutable recovery snapshot; the data dictionary documents the
 network, offline-build, archive, and restore commands.
+
+## Playoff results
+
+`data/parquet/playoff_games.parquet` is a separate results publication for
+BAA/NBA postseason games in ending seasons 1947–2026. It is not a modeling
+input and does not change analysis outputs. Its 19-column schema includes
+`game_type`, whose values are exactly `playoff`, `play_in`, `tiebreaker`, and
+`voided`. Basketball Reference (BREF) supplies the published schedule-result
+rows; pinned hoopR schedules independently cross-validate the 2020–2026
+results. The companion
+`data/parquet/playoff_games_manifest.json` records deterministic source,
+reference, table, and validation evidence. Publishing or rebuilding this pair
+leaves both the modern and historical regular-season publications
+byte-identical.
+
+All three writers coordinate through the stable advisory lock
+`data/.parquet-publication.lock`, which remains outside the replaceable
+`data/parquet/` directory. Pair and directory writers take its exclusive
+lock; compliant readers must take its shared lock for the complete read (the
+Python helper is `nba_data.publication.publication_lock`). The atomic
+visibility guarantee applies only to participants in that protocol:
+direct-path readers that ignore the lock can observe intermediate path states.
+
+From a repository checkout, use this operator flow in order:
+
+```bash
+# One season or resumable full acquisition; networked and rate-limited.
+python -m nba_data fetch-playoffs --season 1984
+python -m nba_data fetch-playoffs
+
+# Strictly offline deterministic publication.
+python -m nba_data build-playoffs
+
+# Independent immutable raw recovery.
+bash scripts/archive_playoff_raw_snapshot.sh
+bash scripts/restore_playoff_raw.sh
+```
+
+The immutable snapshot family is
+`playoff-raw-2026-<first-12-hex-of-playoff-manifest-sha256>`. Restore targets
+must be absent. If the separately owned historical raw cache is missing,
+restore it with `bash scripts/restore_historical_raw.sh` before running
+`restore_playoff_raw.sh`. See the data dictionary for the exact schema,
+source ownership, validation keys, deterministic rebuild contract, recovery
+checks, and scope limitations.
 
 ## Revival roadmap
 

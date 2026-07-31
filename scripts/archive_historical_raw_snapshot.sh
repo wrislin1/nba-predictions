@@ -229,6 +229,9 @@ manifest="${NBA_HISTORICAL_RAW_MANIFEST:-$root/data/parquet/historical_games_man
 source="${NBA_HISTORICAL_RAW_SOURCE:-$root/data/raw/historical_bref}"
 archive_root="${NBA_HISTORICAL_RAW_ARCHIVE_ROOT:-/mnt/nas/llm/documents/nba-predictions-archive}"
 
+# shellcheck source=publication_read_lock.sh
+source "$root/scripts/publication_read_lock.sh"
+
 validate_live_manifest_pin() {
   local live_manifest="$1"
   local pinned_manifest="$2"
@@ -266,8 +269,11 @@ cleanup() {
   if test -n "${trusted_manifest:-}" && test -e "$trusted_manifest"; then
     rm -f -- "$trusted_manifest"
   fi
+  release_publication_read_locks || true
 }
 trap cleanup EXIT
+
+acquire_publication_read_locks "$manifest"
 
 test -f "$manifest" || {
   printf 'missing historical manifest: %s\n' "$manifest" >&2
@@ -281,11 +287,13 @@ test -d "$archive_root" || {
   printf 'missing historical archive root: %s\n' "$archive_root" >&2
   exit 1
 }
-trusted_manifest="$(
-  mktemp "${TMPDIR:-/tmp}/.historical-archive-manifest.XXXXXX"
-)"
-cp -- "$manifest" "$trusted_manifest"
-chmod 400 "$trusted_manifest"
+if ! trusted_manifest="$(
+  capture_publication_manifest "$manifest" \
+    "${TMPDIR:-/tmp}/.historical-archive-manifest.XXXXXX"
+)"; then
+  printf 'invalid historical cache manifest: %s\n' "$manifest" >&2
+  exit 1
+fi
 manifest_sha="$(sha256sum "$trusted_manifest" | cut -d' ' -f1)"
 validate_live_manifest_pin "$manifest" "$trusted_manifest" "$manifest_sha"
 
@@ -387,5 +395,6 @@ rm -f -- "$checksum_inventory"
 checksum_inventory=
 rm -f -- "$trusted_manifest"
 trusted_manifest=
+release_publication_read_locks
 trap - EXIT
 printf 'verified historical raw snapshot: %s\n' "$destination"

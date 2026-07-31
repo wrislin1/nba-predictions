@@ -7,6 +7,8 @@ from nba_data import (
     historical_bref,
     historical_build,
     hoopr,
+    playoff_bref,
+    playoff_build,
     stats_nba,
 )
 
@@ -39,9 +41,17 @@ def main() -> None:
         action="append",
         choices=historical_bref.HISTORICAL_SEASONS,
     )
+    playoff_fetch = commands.add_parser("fetch-playoffs")
+    playoff_fetch.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        choices=playoff_bref.DEDICATED_SEASONS,
+    )
     commands.add_parser("inspect-venues")
     commands.add_parser("build")
     commands.add_parser("build-historical")
+    commands.add_parser("build-playoffs")
     args = parser.parse_args()
     if args.data_dir is None:
         data = _source_checkout_data_dir()
@@ -70,6 +80,15 @@ def main() -> None:
         historical_bref.fetch(raw, selected)
     elif args.command == "build-historical":
         historical_build.run(data)
+    elif args.command == "fetch-playoffs":
+        selected = (
+            tuple(args.season)
+            if args.season
+            else playoff_bref.DEDICATED_SEASONS
+        )
+        playoff_bref.fetch(raw, selected)
+    elif args.command == "build-playoffs":
+        playoff_build.run(data)
 
 
 if __name__ == "__main__":

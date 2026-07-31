@@ -41,7 +41,7 @@ def test_discovery_accepts_month_pages_and_rejects_playoffs():
     assert all("playoffs" not in page.url for page in pages)
 
 
-def test_parser_preserves_missing_zero_and_overtime_semantics():
+def test_historical_parser_wrapper_preserves_missing_zero_and_overtime_semantics():
     result = historical_bref.parse_schedule_page(
         (FIXTURES / "BAA_1947_games-november.html").read_bytes(),
         season=1947,
@@ -676,10 +676,10 @@ def test_audit_renderer_documents_verified_postseason_edge_cases():
 def test_load_season_rejects_later_separator_after_boundary(monkeypatch):
     original = historical_bref._playoff_separator_source_rows
 
-    def later_separator(payload, schedule_url):
+    def later_separator(payload, schedule_url, *, policy=None):
         if schedule_url.endswith("BAA_1948_games-april.html"):
             return (1,)
-        return original(payload, schedule_url)
+        return original(payload, schedule_url, policy=policy)
 
     monkeypatch.setattr(
         historical_bref, "_playoff_separator_source_rows", later_separator
@@ -693,10 +693,10 @@ def test_load_season_rejects_later_separator_after_boundary(monkeypatch):
 def test_load_season_validates_later_month_duplicate_separator_drift(monkeypatch):
     original = historical_bref._playoff_separator_source_rows
 
-    def later_duplicate(payload, schedule_url):
+    def later_duplicate(payload, schedule_url, *, policy=None):
         if schedule_url.endswith("BAA_1948_games-april.html"):
             raise ValueError("unverified duplicate Playoffs separator rows (1, 2)")
-        return original(payload, schedule_url)
+        return original(payload, schedule_url, policy=policy)
 
     monkeypatch.setattr(
         historical_bref, "_playoff_separator_source_rows", later_duplicate
@@ -754,8 +754,21 @@ def test_load_season_rejects_excluded_remark_duplicate_curated_1953_id(
 ):
     original = historical_bref.parse_schedule_page
 
-    def duplicate_after_separator(payload, *, season, schedule_url):
-        frame = original(payload, season=season, schedule_url=schedule_url)
+    def duplicate_after_separator(
+        payload,
+        *,
+        season,
+        schedule_url,
+        policy=None,
+        schedule_policy=None,
+    ):
+        frame = original(
+            payload,
+            season=season,
+            schedule_url=schedule_url,
+            policy=policy,
+            schedule_policy=schedule_policy,
+        )
         if schedule_url.endswith("NBA_1953_games-march.html"):
             duplicate = frame.loc[
                 frame["game_id"].eq("bref-195303170SYR")

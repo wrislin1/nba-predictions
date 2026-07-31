@@ -1,0 +1,81 @@
+season,playoff_games,play_in_games,tiebreaker_games,voided_games,total_games,first_postseason_date,last_postseason_date,source_url,note
+1947,19,0,0,0,19,1947-04-02,1947-04-22,https://www.basketball-reference.com/playoffs/BAA_1947.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1948,21,0,2,0,23,1948-03-23,1948-04-21,https://www.basketball-reference.com/playoffs/BAA_1948.html,Series-result game totals and first/last dates transcribed from the league playoff summary; tiebreaker count separately identified in the summary.
+1949,20,0,0,0,20,1949-03-22,1949-04-13,https://www.basketball-reference.com/playoffs/BAA_1949.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1950,30,0,2,0,32,1950-03-20,1950-04-23,https://www.basketball-reference.com/playoffs/NBA_1950.html,Series-result game totals and first/last dates transcribed from the league playoff summary; tiebreaker count separately identified in the summary.
+1951,26,0,0,0,26,1951-03-20,1951-04-21,https://www.basketball-reference.com/playoffs/NBA_1951.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1952,25,0,0,0,25,1952-03-18,1952-04-25,https://www.basketball-reference.com/playoffs/NBA_1952.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1953,23,0,0,1,24,1953-03-17,1953-04-10,https://www.basketball-reference.com/playoffs/NBA_1953.html,Series-result game totals and first/last dates transcribed from the league playoff summary; voided-game count independently documented.
+1954,23,0,0,0,23,1954-03-16,1954-04-12,https://www.basketball-reference.com/playoffs/NBA_1954.html,Series-result and round-robin standings game totals transcribed from the league playoff summary; first round-robin date independently documented.
+1955,21,0,0,0,21,1955-03-15,1955-04-10,https://www.basketball-reference.com/playoffs/NBA_1955.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1956,21,0,2,0,23,1956-03-15,1956-04-07,https://www.basketball-reference.com/playoffs/NBA_1956.html,Series-result game totals and first/last dates transcribed from the league playoff summary; tiebreaker count separately identified in the summary.
+1957,17,0,2,0,19,1957-03-14,1957-04-13,https://www.basketball-reference.com/playoffs/NBA_1957.html,Series-result game totals and first/last dates transcribed from the league playoff summary; tiebreaker count separately identified in the summary.
+1958,21,0,0,0,21,1958-03-15,1958-04-12,https://www.basketball-reference.com/playoffs/NBA_1958.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1959,22,0,0,0,22,1959-03-13,1959-04-09,https://www.basketball-reference.com/playoffs/NBA_1959.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1960,25,0,0,0,25,1960-03-11,1960-04-09,https://www.basketball-reference.com/playoffs/NBA_1960.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1961,25,0,0,0,25,1961-03-14,1961-04-11,https://www.basketball-reference.com/playoffs/NBA_1961.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1962,29,0,0,0,29,1962-03-16,1962-04-18,https://www.basketball-reference.com/playoffs/NBA_1962.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1963,29,0,0,0,29,1963-03-19,1963-04-24,https://www.basketball-reference.com/playoffs/NBA_1963.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1964,27,0,0,0,27,1964-03-21,1964-04-26,https://www.basketball-reference.com/playoffs/NBA_1964.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1965,26,0,0,0,26,1965-03-24,1965-04-25,https://www.basketball-reference.com/playoffs/NBA_1965.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1966,27,0,0,0,27,1966-03-23,1966-04-28,https://www.basketball-reference.com/playoffs/NBA_1966.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1967,31,0,0,0,31,1967-03-21,1967-04-24,https://www.basketball-reference.com/playoffs/NBA_1967.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1968,40,0,0,0,40,1968-03-22,1968-05-02,https://www.basketball-reference.com/playoffs/NBA_1968.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1969,39,0,0,0,39,1969-03-26,1969-05-05,https://www.basketball-reference.com/playoffs/NBA_1969.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1970,40,0,0,0,40,1970-03-25,1970-05-08,https://www.basketball-reference.com/playoffs/NBA_1970.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1971,40,0,0,0,40,1971-03-24,1971-04-30,https://www.basketball-reference.com/playoffs/NBA_1971.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1972,37,0,0,0,37,1972-03-28,1972-05-07,https://www.basketball-reference.com/playoffs/NBA_1972.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1973,41,0,0,0,41,1973-03-30,1973-05-10,https://www.basketball-reference.com/playoffs/NBA_1973.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1974,41,0,0,0,41,1974-03-29,1974-05-12,https://www.basketball-reference.com/playoffs/NBA_1974.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1975,47,0,0,0,47,1975-04-08,1975-05-25,https://www.basketball-reference.com/playoffs/NBA_1975.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1976,50,0,0,0,50,1976-04-13,1976-06-06,https://www.basketball-reference.com/playoffs/NBA_1976.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1977,53,0,0,0,53,1977-04-12,1977-06-05,https://www.basketball-reference.com/playoffs/NBA_1977.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1978,51,0,0,0,51,1978-04-11,1978-06-07,https://www.basketball-reference.com/playoffs/NBA_1978.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1979,53,0,0,0,53,1979-04-10,1979-06-01,https://www.basketball-reference.com/playoffs/NBA_1979.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1980,48,0,0,0,48,1980-04-02,1980-05-16,https://www.basketball-reference.com/playoffs/NBA_1980.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1981,53,0,0,0,53,1981-03-31,1981-05-14,https://www.basketball-reference.com/playoffs/NBA_1981.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1982,47,0,0,0,47,1982-04-20,1982-06-08,https://www.basketball-reference.com/playoffs/NBA_1982.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1983,43,0,0,0,43,1983-04-19,1983-05-31,https://www.basketball-reference.com/playoffs/NBA_1983.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1984,79,0,0,0,79,1984-04-17,1984-06-12,https://www.basketball-reference.com/playoffs/NBA_1984.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1985,68,0,0,0,68,1985-04-17,1985-06-09,https://www.basketball-reference.com/playoffs/NBA_1985.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1986,68,0,0,0,68,1986-04-17,1986-06-08,https://www.basketball-reference.com/playoffs/NBA_1986.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1987,71,0,0,0,71,1987-04-23,1987-06-14,https://www.basketball-reference.com/playoffs/NBA_1987.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1988,80,0,0,0,80,1988-04-28,1988-06-21,https://www.basketball-reference.com/playoffs/NBA_1988.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1989,62,0,0,0,62,1989-04-27,1989-06-13,https://www.basketball-reference.com/playoffs/NBA_1989.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1990,72,0,0,0,72,1990-04-26,1990-06-14,https://www.basketball-reference.com/playoffs/NBA_1990.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1991,68,0,0,0,68,1991-04-25,1991-06-12,https://www.basketball-reference.com/playoffs/NBA_1991.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1992,73,0,0,0,73,1992-04-23,1992-06-14,https://www.basketball-reference.com/playoffs/NBA_1992.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1993,76,0,0,0,76,1993-04-29,1993-06-20,https://www.basketball-reference.com/playoffs/NBA_1993.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1994,77,0,0,0,77,1994-04-28,1994-06-22,https://www.basketball-reference.com/playoffs/NBA_1994.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1995,73,0,0,0,73,1995-04-27,1995-06-14,https://www.basketball-reference.com/playoffs/NBA_1995.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1996,68,0,0,0,68,1996-04-25,1996-06-16,https://www.basketball-reference.com/playoffs/NBA_1996.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1997,72,0,0,0,72,1997-04-24,1997-06-13,https://www.basketball-reference.com/playoffs/NBA_1997.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1998,71,0,0,0,71,1998-04-23,1998-06-14,https://www.basketball-reference.com/playoffs/NBA_1998.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+1999,66,0,0,0,66,1999-05-08,1999-06-25,https://www.basketball-reference.com/playoffs/NBA_1999.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2000,75,0,0,0,75,2000-04-22,2000-06-19,https://www.basketball-reference.com/playoffs/NBA_2000.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2001,71,0,0,0,71,2001-04-21,2001-06-15,https://www.basketball-reference.com/playoffs/NBA_2001.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2002,71,0,0,0,71,2002-04-20,2002-06-12,https://www.basketball-reference.com/playoffs/NBA_2002.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2003,88,0,0,0,88,2003-04-19,2003-06-15,https://www.basketball-reference.com/playoffs/NBA_2003.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2004,82,0,0,0,82,2004-04-17,2004-06-15,https://www.basketball-reference.com/playoffs/NBA_2004.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2005,84,0,0,0,84,2005-04-23,2005-06-23,https://www.basketball-reference.com/playoffs/NBA_2005.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2006,89,0,0,0,89,2006-04-22,2006-06-20,https://www.basketball-reference.com/playoffs/NBA_2006.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2007,79,0,0,0,79,2007-04-21,2007-06-14,https://www.basketball-reference.com/playoffs/NBA_2007.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2008,86,0,0,0,86,2008-04-19,2008-06-17,https://www.basketball-reference.com/playoffs/NBA_2008.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2009,85,0,0,0,85,2009-04-18,2009-06-14,https://www.basketball-reference.com/playoffs/NBA_2009.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2010,82,0,0,0,82,2010-04-17,2010-06-17,https://www.basketball-reference.com/playoffs/NBA_2010.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2011,81,0,0,0,81,2011-04-16,2011-06-12,https://www.basketball-reference.com/playoffs/NBA_2011.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2012,84,0,0,0,84,2012-04-28,2012-06-21,https://www.basketball-reference.com/playoffs/NBA_2012.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2013,85,0,0,0,85,2013-04-20,2013-06-20,https://www.basketball-reference.com/playoffs/NBA_2013.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2014,89,0,0,0,89,2014-04-19,2014-06-15,https://www.basketball-reference.com/playoffs/NBA_2014.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2015,81,0,0,0,81,2015-04-18,2015-06-16,https://www.basketball-reference.com/playoffs/NBA_2015.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2016,86,0,0,0,86,2016-04-16,2016-06-19,https://www.basketball-reference.com/playoffs/NBA_2016.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2017,79,0,0,0,79,2017-04-15,2017-06-12,https://www.basketball-reference.com/playoffs/NBA_2017.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2018,82,0,0,0,82,2018-04-14,2018-06-08,https://www.basketball-reference.com/playoffs/NBA_2018.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2019,82,0,0,0,82,2019-04-13,2019-06-13,https://www.basketball-reference.com/playoffs/NBA_2019.html,Series-result game totals and first/last dates transcribed from the league playoff summary.
+2020,83,1,0,0,84,2020-08-15,2020-10-11,https://www.basketball-reference.com/playoffs/NBA_2020.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2021,85,6,0,0,91,2021-05-18,2021-07-20,https://www.basketball-reference.com/playoffs/NBA_2021.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2022,87,6,0,0,93,2022-04-12,2022-06-16,https://www.basketball-reference.com/playoffs/NBA_2022.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2023,84,6,0,0,90,2023-04-11,2023-06-12,https://www.basketball-reference.com/playoffs/NBA_2023.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2024,82,6,0,0,88,2024-04-16,2024-06-17,https://www.basketball-reference.com/playoffs/NBA_2024.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2025,84,6,0,0,90,2025-04-15,2025-06-22,https://www.basketball-reference.com/playoffs/NBA_2025.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.
+2026,85,6,0,0,91,2026-04-14,2026-06-13,https://www.basketball-reference.com/playoffs/NBA_2026.html,Series-result game totals and first/last dates transcribed from the league playoff summary; play-in count and first date independently documented.

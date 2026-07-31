@@ -1,4 +1,5 @@
 from pathlib import Path
+import fcntl
 import hashlib
 import json
 import os
@@ -6,9 +7,47 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def wait_for_modern_shared_flock_waiter(
+    lock_path: Path,
+    process: subprocess.Popen[str],
+    forbidden_marker: Path,
+    timeout: float = 5,
+) -> None:
+    inode = lock_path.stat().st_ino
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        locks = Path("/proc/locks").read_text(encoding="utf-8")
+        if any(
+            "->" in line
+            and " FLOCK " in line
+            and " READ " in line
+            and f":{inode} " in line
+            for line in locks.splitlines()
+        ):
+            return
+        if forbidden_marker.exists():
+            raise AssertionError("modern raw reader ran before publisher exit")
+        if process.poll() is not None:
+            raise AssertionError("modern raw reader exited before taking lock")
+        time.sleep(0.01)
+    raise AssertionError("modern raw shared-lock waiter did not appear")
+
+
+def wait_for_modern_file(path: Path, timeout: float = 5) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {path}")
 
 REQUIRED_ARCHIVE_FILES = {
     "archive/dashboard/start.py",
@@ -84,7 +123,15 @@ def test_analysis_first_layout_exists() -> None:
 
 def test_gitignore_protects_generated_and_raw_state() -> None:
     rules = set((ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
-    assert {".venv/", "venv/", "data/raw/", "nba-stats/", "*.duckdb", ".serena/"} <= rules
+    assert {
+        ".venv/",
+        "venv/",
+        "data/raw/",
+        "data/.parquet-publication.lock",
+        "nba-stats/",
+        "*.duckdb",
+        ".serena/",
+    } <= rules
 
 
 def test_requirements_are_utf8_and_pinned() -> None:
@@ -228,7 +275,9 @@ def test_readme_documents_the_new_contract() -> None:
         assert heading in readme
     normalized = " ".join(readme.lower().split())
     assert re.search(
-        r"results-level baa/nba history.*1947–2026.*delivered",
+        r"results-level baa/nba history.*1947–2026.*delivered"
+        r".*two validated regular-season publications"
+        r".*separate postseason publication",
         normalized,
     )
     assert re.search(
@@ -251,7 +300,10 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
         "docs/audits/2026-07-29-historical-bref-source-spike.md",
         "scripts/archive_raw_snapshot.sh",
         "scripts/archive_historical_raw_snapshot.sh",
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/playoff_raw_snapshot_common.sh",
         "scripts/restore_historical_raw.sh",
+        "scripts/restore_playoff_raw.sh",
         "data/parquet/build_manifest.json",
         "data/parquet/franchises.parquet",
         "data/parquet/games.parquet",
@@ -316,6 +368,67 @@ def test_game_data_delivery_layout_is_recoverable_and_portable() -> None:
         text=True,
     ).stdout.splitlines()
     assert tracked_historical == []
+
+    playoff_fixtures = {
+        "tests/fixtures/playoff_bref/NBA_1984_games.html",
+        "tests/fixtures/playoff_bref/NBA_2020_games.html",
+        "tests/fixtures/playoff_bref/NBA_2020_games-august.html",
+    }
+    tracked_playoff_fixtures = subprocess.run(
+        ["git", "ls-files", *sorted(playoff_fixtures)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert set(tracked_playoff_fixtures) == playoff_fixtures
+
+    tracked_playoff = subprocess.run(
+        ["git", "ls-files", "data/raw/playoff_bref"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked_playoff == []
+
+    recovery_scripts = {
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/playoff_raw_snapshot_common.sh",
+        "scripts/restore_playoff_raw.sh",
+    }
+    tracked_recovery = subprocess.run(
+        ["git", "ls-files", "-s", *sorted(recovery_scripts)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    tracked_modes = {
+        fields[3]: fields[0]
+        for line in tracked_recovery
+        if len(fields := line.split(maxsplit=3)) == 4
+    }
+    assert set(tracked_modes) == recovery_scripts
+    assert tracked_modes["scripts/archive_playoff_raw_snapshot.sh"] == "100755"
+    assert tracked_modes["scripts/restore_playoff_raw.sh"] == "100755"
+    assert tracked_modes["scripts/playoff_raw_snapshot_common.sh"] == "100644"
+
+    default_archive_root = (
+        "/mnt/nas/llm/documents/nba-predictions-archive"
+    )
+    expected_assignment = (
+        'archive_root="${NBA_PLAYOFF_RAW_ARCHIVE_ROOT:-'
+        f'{default_archive_root}}}"'
+    )
+    for relative in (
+        "scripts/archive_playoff_raw_snapshot.sh",
+        "scripts/restore_playoff_raw.sh",
+    ):
+        lines = (ROOT / relative).read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert lines.count(expected_assignment) == 1
 
 
 def test_historical_documentation_matches_the_delivered_contract() -> None:
@@ -422,11 +535,357 @@ def test_historical_documentation_matches_the_delivered_contract() -> None:
     assert "attendance_status" in analysis_readme
 
 
+def test_playoff_documentation_matches_the_delivered_contract() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    dictionary = (ROOT / "docs/data-dictionary.md").read_text(
+        encoding="utf-8"
+    )
+    required_terms = (
+        "playoff_games.parquet",
+        "playoff_games_manifest.json",
+        "fetch-playoffs",
+        "build-playoffs",
+        "archive_playoff_raw_snapshot.sh",
+        "restore_playoff_raw.sh",
+        "playoff-raw-2026-",
+        "game_type",
+    )
+    for document in (readme, dictionary):
+        for term in required_terms:
+            assert term in document
+        for term in (
+            "data/.parquet-publication.lock",
+            "shared lock",
+            "direct-path readers",
+        ):
+            assert term in document
+
+    manifest_ledger_intro = (
+        "The committed [historical manifest]"
+        "(../data/parquet/historical_games_manifest.json),\n"
+        "[modern build manifest](../data/parquet/build_manifest.json), and\n"
+        "[playoff manifest]"
+        "(../data/parquet/playoff_games_manifest.json) record"
+    )
+    assert manifest_ledger_intro in dictionary
+
+    operator_flow = """```bash
+# One season or resumable full acquisition; networked and rate-limited.
+python -m nba_data fetch-playoffs --season 1984
+python -m nba_data fetch-playoffs
+
+# Strictly offline deterministic publication.
+python -m nba_data build-playoffs
+
+# Independent immutable raw recovery.
+bash scripts/archive_playoff_raw_snapshot.sh
+bash scripts/restore_playoff_raw.sh
+```"""
+    assert operator_flow in readme
+
+    heading = "### `playoff_games.parquet`"
+    assert heading in dictionary
+    section = dictionary.split(heading, maxsplit=1)[1]
+    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    game_type_heading = "#### `game_type` values"
+    assert game_type_heading in section
+    schema_section = section.split(game_type_heading, maxsplit=1)[0]
+    documented_schema = []
+    for line in schema_section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip().strip("`") for cell in line.split("|")[1:-1]]
+        if (
+            len(cells) >= 2
+            and cells[0] not in {"Column", "---"}
+            and set(cells[0]) != {"-"}
+        ):
+            documented_schema.append((cells[0], cells[1]))
+    assert documented_schema == [
+        ("game_id", "large_string"),
+        ("season", "int64"),
+        ("league", "large_string"),
+        ("game_date", "date32[day]"),
+        ("game_type", "large_string"),
+        ("away_team_name", "large_string"),
+        ("home_team_name", "large_string"),
+        ("away_franchise_id", "large_string"),
+        ("home_franchise_id", "large_string"),
+        ("away_pts", "int64"),
+        ("home_pts", "int64"),
+        ("home_margin", "int64"),
+        ("overtime_periods", "int64"),
+        ("site_status", "large_string"),
+        ("venue_name", "large_string nullable"),
+        ("attendance", "int64 nullable"),
+        ("attendance_status", "large_string"),
+        ("boxscore_url", "large_string nullable"),
+        ("schedule_url", "large_string"),
+    ]
+
+    game_type_section = section.split(game_type_heading, maxsplit=1)[1]
+    game_type_section = re.split(r"\n#### ", game_type_section, maxsplit=1)[0]
+    documented_game_types = []
+    for line in game_type_section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")[1:-1]]
+        value = cells[0].strip("`")
+        if value not in {"Value", "---"} and set(value) != {"-"}:
+            documented_game_types.append((value, cells[1]))
+    assert documented_game_types == [
+        ("playoff", "A completed BAA/NBA playoff result"),
+        (
+            "play_in",
+            "An exact `Play-In Game` row from one of the seven approved "
+            "seeded monthly pages for 2020–2026",
+        ),
+        (
+            "tiebreaker",
+            "One of the eight historical rows whose exact source remark "
+            "is `Tiebreaker`",
+        ),
+        (
+            "voided",
+            "The single 1953 result marked "
+            "`Protest; does not count toward record`",
+        ),
+    ]
+
+
+def seed_modern_raw_lock_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    for name in (
+        "archive_raw_snapshot.sh",
+        "publication_read_lock.sh",
+        "restore_raw.sh",
+    ):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    manifest = repo / "data/parquet/build_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"tables": {"games": {"max_season": 2026}}}) + "\n",
+        encoding="utf-8",
+    )
+    raw_file = repo / "data/raw/stats_nba/leaguegamefinder_2026.json"
+    raw_file.parent.mkdir(parents=True)
+    raw_file.write_text('{"resultSets":[]}\n', encoding="utf-8")
+    return repo, tmp_path / "archive"
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_shell_reader_holds_shared_publication_lock(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Would fail if either modern raw script read outside its shared lock."""
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(repo / "data/parquet/build_manifest.json"),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+
+    fake_bin = tmp_path / "lock-test-bin"
+    fake_bin.mkdir()
+    pause_marker = tmp_path / "modern-rsync-paused"
+    pause_gate = tmp_path / "modern-rsync-continue"
+    fake_rsync = fake_bin / "rsync"
+    fake_rsync.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if test ! -e "$PAUSE_MARKER"; then
+  : > "$PAUSE_MARKER"
+  while test ! -e "$PAUSE_GATE"; do sleep 0.01; done
+fi
+exec "$REAL_RSYNC" "$@"
+""",
+        encoding="utf-8",
+    )
+    fake_rsync.chmod(0o755)
+    environment.update({
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PAUSE_GATE": str(pause_gate),
+        "PAUSE_MARKER": str(pause_marker),
+        "REAL_RSYNC": shutil.which("rsync") or "rsync",
+    })
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_modern_shared_flock_waiter(
+            lock_path,
+            process,
+            pause_marker,
+        )
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        wait_for_modern_file(pause_marker)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        pause_gate.touch()
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        pause_gate.touch(exist_ok=True)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 0, f"stdout={stdout!r}\nstderr={stderr!r}"
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_scripts_reject_symlinked_live_manifest(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    manifest = repo / "data/parquet/build_manifest.json"
+    pin_tmp = tmp_path / "manifest-tmp"
+    pin_tmp.mkdir()
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(manifest),
+        "TMPDIR": str(pin_tmp),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+    target = tmp_path / "build-manifest-target.json"
+    manifest.replace(target)
+    manifest.symlink_to(target)
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+
+    completed = subprocess.run(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "missing or unsafe build manifest" in completed.stderr
+    assert list(pin_tmp.iterdir()) == []
+
+
+@pytest.mark.parametrize("operation", ["archive", "restore"])
+def test_modern_raw_scripts_reject_manifest_swapped_to_symlink_while_waiting(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    """Would fail if a pre-lock check authorized a later path reopen."""
+    repo, archive_root = seed_modern_raw_lock_fixture(tmp_path)
+    manifest = repo / "data/parquet/build_manifest.json"
+    pin_tmp = tmp_path / "manifest-tmp"
+    pin_tmp.mkdir()
+    environment = {
+        **os.environ,
+        "NBA_RAW_ARCHIVE_ROOT": str(archive_root),
+        "NBA_RAW_DESTINATION": str(repo / "data/raw"),
+        "NBA_RAW_MANIFEST": str(manifest),
+        "TMPDIR": str(pin_tmp),
+    }
+    if operation == "restore":
+        archived = subprocess.run(
+            ["bash", "scripts/archive_raw_snapshot.sh"],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert archived.returncode == 0, archived.stderr
+        shutil.rmtree(repo / "data/raw")
+
+    lock_path = repo / "data/.parquet-publication.lock"
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    script = (
+        "scripts/archive_raw_snapshot.sh"
+        if operation == "archive"
+        else "scripts/restore_raw.sh"
+    )
+    process = subprocess.Popen(
+        ["bash", script],
+        cwd=repo,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stdout = ""
+    stderr = ""
+    try:
+        wait_for_modern_shared_flock_waiter(
+            lock_path,
+            process,
+            tmp_path / "forbidden-modern-progress",
+        )
+        target = tmp_path / f"{operation}-manifest-target.json"
+        manifest.replace(target)
+        manifest.symlink_to(target)
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode != 0, stdout
+    assert "missing or unsafe build manifest" in stderr
+    assert list(pin_tmp.iterdir()) == []
+
+
 def seed_raw_snapshot(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(ROOT / "scripts/restore_raw.sh", scripts)
+    shutil.copy2(ROOT / "scripts/publication_read_lock.sh", scripts)
     manifest = repo / "data/parquet/build_manifest.json"
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
@@ -481,6 +940,73 @@ def run_raw_restore(
         text=True,
         env=environment,
     )
+
+
+def test_modern_raw_snapshot_excludes_independent_caches(tmp_path) -> None:
+    """Would fail if a modern snapshot archived either independent cache."""
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    scripts.mkdir(parents=True)
+    for name in (
+        "archive_raw_snapshot.sh",
+        "publication_read_lock.sh",
+        "restore_raw.sh",
+    ):
+        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+    manifest = repo / "data/parquet/build_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps({"tables": {"games": {"max_season": 2026}}}) + "\n",
+        encoding="utf-8",
+    )
+    raw_files = {
+        "stats_nba/leaguegamefinder_2026.json": b'{"resultSets":[]}',
+        "bref/NBA_2026_games.html": b"<html>schedule</html>",
+        "hoopr/nba_schedule_2026.parquet": b"parquet fixture",
+        "historical_bref/198501010BOS.html": b"<html>historical</html>",
+        "playoff_bref/202604180BOS.html": b"<html>playoff</html>",
+    }
+    for relative, payload in raw_files.items():
+        path = repo / "data/raw" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    archive_root = tmp_path / "archive"
+    completed = subprocess.run(
+        ["bash", "scripts/archive_raw_snapshot.sh"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "NBA_RAW_ARCHIVE_ROOT": str(archive_root)},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    [snapshot] = archive_root.iterdir()
+    expected = {
+        "stats_nba/leaguegamefinder_2026.json",
+        "bref/NBA_2026_games.html",
+        "hoopr/nba_schedule_2026.parquet",
+    }
+    archived = {
+        path.relative_to(snapshot / "raw").as_posix()
+        for path in (snapshot / "raw").rglob("*")
+        if path.is_file()
+    }
+    assert archived == expected
+    assert not (snapshot / "raw/historical_bref").exists()
+    assert not (snapshot / "raw/playoff_bref").exists()
+
+    shutil.rmtree(repo / "data/raw")
+    restored = run_raw_restore(repo, archive_root)
+
+    assert restored.returncode == 0, restored.stderr
+    restored_files = {
+        path.relative_to(repo / "data/raw").as_posix()
+        for path in (repo / "data/raw").rglob("*")
+        if path.is_file()
+    }
+    assert restored_files == expected
+    assert not (repo / "data/raw/historical_bref").exists()
+    assert not (repo / "data/raw/playoff_bref").exists()
 
 
 def test_restore_raw_restores_verified_full_snapshot(tmp_path) -> None:

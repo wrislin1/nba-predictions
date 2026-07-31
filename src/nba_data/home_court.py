@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from nba_data import publication
+
 
 RESULT_COLUMNS = [
     "game_id",
@@ -46,17 +48,20 @@ SUMMARY_COLUMNS = [
 def load_results_panel(data_dir: Path) -> pd.DataFrame:
     """Load compatible historical and modern result rows."""
     parquet = data_dir / "parquet"
-    historical = pd.read_parquet(
-        parquet / "historical_games.parquet"
-    ).assign(period="historical")
-    modern = pd.read_parquet(parquet / "games.parquet").assign(
-        league="NBA",
-        home_margin=lambda frame: frame["home_pts"] - frame["away_pts"],
-        site_status=lambda frame: np.where(
-            frame["neutral_site"], "neutral", "home"
-        ),
-        period="modern",
-    )
+    with publication.publication_lock(parquet, exclusive=False):
+        historical = pd.read_parquet(
+            parquet / "historical_games.parquet"
+        ).assign(period="historical")
+        modern = pd.read_parquet(parquet / "games.parquet").assign(
+            league="NBA",
+            home_margin=lambda frame: (
+                frame["home_pts"] - frame["away_pts"]
+            ),
+            site_status=lambda frame: np.where(
+                frame["neutral_site"], "neutral", "home"
+            ),
+            period="modern",
+        )
     if (
         int(historical["season"].max()) != 1983
         or int(modern["season"].min()) != 1984

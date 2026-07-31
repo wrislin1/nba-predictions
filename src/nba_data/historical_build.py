@@ -1,19 +1,27 @@
 """Validation helpers for the historical publication pipeline."""
 
+from collections.abc import Iterable, Mapping
 from datetime import date
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
 import tempfile
+from typing import NamedTuple
 import warnings
 
 import pandas as pd
 import pyarrow.parquet as pq
 
-from nba_data import build, cache, franchises, historical_bref
+from nba_data import (
+    bref_schedule,
+    build,
+    cache,
+    franchises,
+    historical_bref,
+    publication,
+)
 
 
 COUNT_COLUMNS = [
@@ -67,6 +75,20 @@ _HISTORICAL_CACHE_NAME = re.compile(
     r"(?P<league>BAA|NBA)_(?P<season>\d{4})_games"
     r"(?:-(?P<month>[a-z]+))?\.html$"
 )
+
+
+class HistoricalProvenancePolicy(NamedTuple):
+    """Immutable contract for historical cache provenance names."""
+
+    cache_name_pattern: str
+    cache_name_flags: int
+
+
+def capture_provenance_policy() -> HistoricalProvenancePolicy:
+    return HistoricalProvenancePolicy(
+        cache_name_pattern=str(_HISTORICAL_CACHE_NAME.pattern),
+        cache_name_flags=int(_HISTORICAL_CACHE_NAME.flags),
+    )
 
 
 class HistoricalValidationError(ValueError):
@@ -352,7 +374,7 @@ def validate(
                 for marker in overtime_evidence["overtime_marker"]:
                     try:
                         parsed_periods.append(
-                            historical_bref._overtime_periods(str(marker))
+                            bref_schedule.overtime_periods(str(marker))
                         )
                     except ValueError:
                         parsed_periods.append(None)
@@ -461,6 +483,208 @@ def _cache_error(exc: Exception) -> HistoricalValidationError:
     return HistoricalValidationError(str(exc))
 
 
+def _raw_provenance_from_payloads(
+    payloads: Mapping[str, bytes] | Iterable[tuple[str, bytes]],
+    *,
+    policy: HistoricalProvenancePolicy | None = None,
+    historical_policy: historical_bref.HistoricalBrefPolicy | None = None,
+    schedule_policy=None,
+) -> dict:
+    """Attest historical cache pairs from immutable captured bytes."""
+    policy = (
+        capture_provenance_policy() if policy is None else policy
+    )
+    historical_policy = (
+        historical_bref.capture_policy()
+        if historical_policy is None
+        else historical_policy
+    )
+    if schedule_policy is None:
+        schedule_policy = bref_schedule.capture_policy()
+    cache_name = re.compile(
+        policy.cache_name_pattern, policy.cache_name_flags
+    )
+    prefix = "raw/historical_bref/"
+    payload_items = (
+        payloads.items()
+        if isinstance(payloads, Mapping)
+        else payloads
+    )
+    entries = {
+        name.removeprefix(prefix): payload
+        for name, payload in payload_items
+        if name.startswith(prefix)
+    }
+    if not entries:
+        return {"basketball_reference": {"pages": []}}
+    bodies = {
+        name for name in entries
+        if name.endswith(".html")
+    }
+    sidecars = {
+        name.removesuffix(".meta.json")
+        for name in entries
+        if name.endswith(".html.meta.json")
+    }
+    if any(
+        not (
+            name.endswith(".html")
+            or name.endswith(".html.meta.json")
+        )
+        for name in entries
+    ):
+        raise HistoricalValidationError(
+            "unexpected historical cache entry"
+        )
+    if bodies != sidecars:
+        raise HistoricalValidationError("incomplete historical cache pair")
+    if any(
+        cache_name.fullmatch(name) is None
+        for name in bodies
+    ):
+        raise HistoricalValidationError(
+            "unexpected historical cache entry"
+        )
+
+    by_season: dict[int, list[str]] = {}
+    for name in sorted(bodies):
+        match = cache_name.fullmatch(name)
+        assert match is not None
+        season = int(match["season"])
+        try:
+            expected_league = historical_bref.league_for_season(
+                season, policy=historical_policy
+            )
+        except ValueError as exc:
+            raise _cache_error(exc) from exc
+        if match["league"] != expected_league:
+            raise HistoricalValidationError(
+                "historical cache metadata mismatch"
+            )
+        by_season.setdefault(season, []).append(name)
+
+    pages = []
+    identities = set()
+    urls = set()
+    for season, names in sorted(by_season.items()):
+        indexes = [name for name in names if "_games-" not in name]
+        if len(indexes) != 1:
+            raise HistoricalValidationError(
+                "historical cache requires exactly one season index"
+            )
+        index_name = indexes[0]
+        try:
+            index_metadata = cache.attest_bytes(
+                entries[index_name],
+                entries[index_name + ".meta.json"],
+                lambda value: historical_bref.validate_index_bytes(
+                    value, season, policy=historical_policy
+                ),
+                label=prefix + index_name,
+            )
+            discovered = historical_bref.discover_month_pages(
+                entries[index_name],
+                season,
+                policy=historical_policy,
+            )
+        except (
+            cache.CacheIntegrityError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise _cache_error(exc) from exc
+        discovered_by_name = {
+            page.filename: page for page in discovered
+        }
+        actual_month_names = {
+            name for name in names if name != index_name
+        }
+        if actual_month_names != set(discovered_by_name):
+            raise HistoricalValidationError(
+                "historical cache month pages differ from discovered index"
+            )
+
+        for name in sorted(names):
+            match = cache_name.fullmatch(name)
+            assert match is not None
+            month = match["month"]
+            is_index = month is None
+            url = (
+                historical_bref.index_url(
+                    season, policy=historical_policy
+                )
+                if is_index else discovered_by_name[name].url
+            )
+            resource = (
+                "historical_schedule_index"
+                if is_index else "historical_schedule_month"
+            )
+            try:
+                metadata = (
+                    index_metadata if is_index else cache.attest_bytes(
+                        entries[name],
+                        entries[name + ".meta.json"],
+                        lambda value, page_url=url: (
+                            historical_bref.validate_month_bytes(
+                                value,
+                                season,
+                                page_url,
+                                policy=historical_policy,
+                                schedule_policy=schedule_policy,
+                            )
+                        ),
+                        label=prefix + name,
+                    )
+                )
+            except (
+                cache.CacheIntegrityError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise _cache_error(exc) from exc
+            expected = {
+                "provider": "basketball_reference",
+                "resource": resource,
+                "league": match["league"],
+                "season": season,
+                "month": month,
+                "url": url,
+            }
+            observed = {
+                key: metadata.get(key) for key in expected
+            }
+            if observed != expected or any(
+                type(observed[key]) is not type(expected[key])
+                for key in expected
+            ):
+                raise HistoricalValidationError(
+                    "historical cache metadata mismatch"
+                )
+            identity = (
+                metadata.get("resource"),
+                metadata.get("league"),
+                metadata.get("season"),
+                metadata.get("month"),
+            )
+            if identity in identities or metadata["url"] in urls:
+                raise HistoricalValidationError(
+                    "duplicate historical cache identity"
+                )
+            identities.add(identity)
+            urls.add(metadata["url"])
+            pages.append({
+                "path": prefix + name,
+                "provider": metadata["provider"],
+                "resource": metadata["resource"],
+                "league": metadata["league"],
+                "season": metadata["season"],
+                "month": metadata.get("month"),
+                "url": metadata["url"],
+                "sha256": metadata["sha256"],
+            })
+    return {"basketball_reference": {"pages": pages}}
+
+
 def _raw_provenance(data_dir: Path) -> dict:
     """Attest every historical schedule cache body and its exact sidecar."""
     cache_dir = data_dir / "raw/historical_bref"
@@ -529,13 +753,14 @@ def _raw_provenance(data_dir: Path) -> dict:
             )
         index_path = indexes[0]
         try:
-            index_payload = cache.read_valid(
+            index_attestation = cache.read_attested(
                 index_path,
                 lambda path, value=season: historical_bref.validate_index(
                     path, value
                 ),
             )
-            assert index_payload is not None
+            assert index_attestation is not None
+            index_payload, _ = index_attestation
             discovered = historical_bref.discover_month_pages(
                 index_payload, season
             )
@@ -562,7 +787,7 @@ def _raw_provenance(data_dir: Path) -> dict:
                 if is_index else "historical_schedule_month"
             )
             try:
-                cache.read_valid(
+                attestation = cache.read_attested(
                     path,
                     (
                         (lambda value, year=season: historical_bref.validate_index(
@@ -577,11 +802,8 @@ def _raw_provenance(data_dir: Path) -> dict:
                         )
                     ),
                 )
-                metadata = json.loads(
-                    path.with_name(path.name + ".meta.json").read_text(
-                        encoding="utf-8"
-                    )
-                )
+                assert attestation is not None
+                _, metadata = attestation
             except (cache.CacheIntegrityError, ValueError, json.JSONDecodeError) as exc:
                 raise _cache_error(exc) from exc
             expected = {
@@ -633,122 +855,30 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
-def _restore_historical_products(
-    rollback_dir: Path,
-    moved_prior: list[str],
-    output_dir: Path,
-) -> None:
-    """Restore prior products without consuming the retained recovery data."""
-    restoration_dir = None
-    complete_pair = len(moved_prior) == len(HISTORICAL_PRODUCTS)
-    try:
-        restoration_dir = Path(
-            tempfile.mkdtemp(
-                prefix=".historical-restoration-",
-                dir=output_dir.parent,
-            )
-        )
-        for name in moved_prior:
-            shutil.copy2(rollback_dir / name, restoration_dir / name)
-        for name in moved_prior:
-            os.replace(restoration_dir / name, output_dir / name)
-    except OSError as restoration_error:
-        retained = (
-            "complete recovery pair"
-            if complete_pair
-            else "recovery data"
-        )
-        raise HistoricalValidationError(
-            "historical publication restoration failed; "
-            f"{retained} retained at {rollback_dir}"
-        ) from restoration_error
-    finally:
-        if restoration_dir is not None and restoration_dir.exists():
-            shutil.rmtree(restoration_dir, ignore_errors=True)
-
-
 def _publish_historical_pair(
     stage_dir: Path, output_dir: Path
 ) -> Path | None:
-    """Publish the pair, returning retained rollback data after commit."""
-    staged = sorted(path.name for path in stage_dir.iterdir())
-    if staged != sorted(HISTORICAL_PRODUCTS):
-        raise HistoricalValidationError(
-            "historical stage must contain exactly "
-            f"{sorted(HISTORICAL_PRODUCTS)}"
-        )
-    if any(
-        (stage_dir / name).is_symlink()
-        or not (stage_dir / name).is_file()
-        for name in HISTORICAL_PRODUCTS
-    ):
-        raise HistoricalValidationError(
-            "non-regular historical publication product"
-        )
-    existing = [name for name in HISTORICAL_PRODUCTS if (
-        (output_dir / name).exists() or (output_dir / name).is_symlink()
-    )]
-    if existing and len(existing) != len(HISTORICAL_PRODUCTS):
-        raise HistoricalValidationError("historical publication pair is incomplete")
-    if any(
-        (output_dir / name).is_symlink()
-        or not (output_dir / name).is_file()
-        for name in existing
-    ):
-        raise HistoricalValidationError(
-            "non-regular historical publication product"
-        )
-    rollback_dir = None
-    moved_prior = []
-    published = []
     try:
-        if existing:
-            rollback_dir = Path(
-                tempfile.mkdtemp(
-                    prefix=".historical-rollback-", dir=output_dir.parent
-                )
-            )
-            for name in HISTORICAL_PRODUCTS:
-                os.replace(output_dir / name, rollback_dir / name)
-                moved_prior.append(name)
-        for name in HISTORICAL_PRODUCTS:
-            os.replace(stage_dir / name, output_dir / name)
-            published.append(name)
-    except OSError:
-        if rollback_dir is not None:
-            _restore_historical_products(
-                rollback_dir,
-                moved_prior,
-                output_dir,
-            )
-            try:
-                shutil.rmtree(rollback_dir)
-            except OSError as cleanup_error:
-                raise HistoricalValidationError(
-                    "historical publication failed after restoring the prior "
-                    "pair; rollback data retained at "
-                    f"{rollback_dir}"
-                ) from cleanup_error
-        else:
-            for name in published:
-                path = output_dir / name
-                if path.exists():
-                    path.unlink()
-        raise
-    if rollback_dir is not None and rollback_dir.exists():
-        try:
-            shutil.rmtree(rollback_dir)
-        except OSError:
-            return rollback_dir
-    return None
+        return publication.publish_pair(
+            stage_dir,
+            output_dir,
+            HISTORICAL_PRODUCTS,
+            label="historical",
+            manifest_table="historical_games",
+        )
+    except publication.PairPublicationError as exc:
+        raise HistoricalValidationError(str(exc)) from exc
 
 
 def run(data_dir: Path) -> None:
     """Build and atomically publish the independently attested history."""
     games, report = assemble(data_dir)
-    modern_seasons = pd.read_parquet(
-        data_dir / "parquet/games.parquet", columns=["season"]
-    )["season"]
+    with publication.publication_lock(
+        data_dir / "parquet", exclusive=False
+    ):
+        modern_seasons = pd.read_parquet(
+            data_dir / "parquet/games.parquet", columns=["season"]
+        )["season"]
     modern_min_season = int(modern_seasons.min())
     if modern_min_season != 1984:
         raise HistoricalValidationError(

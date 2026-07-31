@@ -1,12 +1,14 @@
 import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
+import threading
 
 import pandas as pd
 import pytest
 
-from nba_data import build, franchises, hoopr
+from nba_data import build, franchises, hoopr, publication
 
 
 CORRECTION_COLUMNS = [
@@ -1968,6 +1970,31 @@ def publication_fixture(monkeypatch, data_dir):
     return team_games, games
 
 
+def seed_bound_independent_pair(
+    output_dir: Path,
+    label: str,
+    products: tuple[str, str],
+    *,
+    generation: str,
+) -> dict[str, bytes]:
+    parquet_name, manifest_name = products
+    parquet = f"{generation}-{label}-parquet".encode()
+    manifest = json.dumps({
+        "tables": {
+            Path(parquet_name).stem: {
+                "sha256": hashlib.sha256(parquet).hexdigest(),
+            },
+        },
+    }, sort_keys=True).encode()
+    payloads = {
+        parquet_name: parquet,
+        manifest_name: manifest,
+    }
+    for name, payload in payloads.items():
+        (output_dir / name).write_bytes(payload)
+    return payloads
+
+
 def test_run_requires_checkout_hoopr_pin(monkeypatch, tmp_path):
     """Would fail if a build could attest a pin absent from its data tree."""
     data_dir = tmp_path / "data"
@@ -2139,65 +2166,295 @@ def test_run_publishes_exact_tables_and_deterministic_manifest(
     assert "fetched_at" not in json.dumps(manifest)
 
 
-def test_run_preserves_complete_historical_publication_pair(monkeypatch, tmp_path):
-    """Would fail if the modern directory swap discarded historical bytes."""
+def test_modern_publish_preserves_both_independent_pairs(
+    tmp_path, monkeypatch
+):
+    """Would fail if the modern directory swap discarded either product pair."""
     data_dir = tmp_path / "data"
     publication_fixture(monkeypatch, data_dir)
     output_dir = data_dir / "parquet"
     output_dir.mkdir()
-    historical = {
-        "historical_games.parquet": b"historical parquet bytes",
-        "historical_games_manifest.json": b"historical manifest bytes",
+    (output_dir / ".gitkeep").write_bytes(b"\n")
+    products = {
+        **seed_bound_independent_pair(
+            output_dir,
+            "historical",
+            build.PRESERVED_HISTORICAL_FILES,
+            generation="current",
+        ),
+        **seed_bound_independent_pair(
+            output_dir,
+            "playoff",
+            build.PRESERVED_PLAYOFF_FILES,
+            generation="current",
+        ),
     }
-    for name, payload in historical.items():
-        (output_dir / name).write_bytes(payload)
+    for name in products:
+        (output_dir / name).chmod(0o640)
 
     build.run(data_dir)
 
-    assert {name: (output_dir / name).read_bytes() for name in historical} == historical
+    assert {
+        name: (output_dir / name).read_bytes()
+        for name in products
+    } == products
+    assert {
+        name: (output_dir / name).stat().st_mode & 0o777
+        for name in products
+    } == {name: 0o640 for name in products}
+    assert (output_dir / ".gitkeep").read_bytes() == b"\n"
 
 
-def test_run_rejects_incomplete_historical_publication_pair(monkeypatch, tmp_path):
-    """Would fail if a modern rebuild replaced an orphan historical product."""
-    data_dir = tmp_path / "data"
-    publication_fixture(monkeypatch, data_dir)
-    output_dir = data_dir / "parquet"
-    output_dir.mkdir()
-    orphan = output_dir / "historical_games.parquet"
-    orphan.write_bytes(b"orphaned historical bytes")
-
-    with pytest.raises(
-        build.ValidationError,
-        match="historical publication pair is incomplete",
-    ):
-        build.run(data_dir)
-
-    assert orphan.read_bytes() == b"orphaned historical bytes"
-
-
-@pytest.mark.parametrize("kind", ["directory", "symlink"])
-def test_modern_preservation_rejects_non_regular_historical_inputs(tmp_path, kind):
-    """Would fail if a modern swap silently dropped a non-file historical input."""
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+def test_modern_publish_rejects_incomplete_independent_pair(
+    tmp_path, label, products
+):
+    """Would fail if a modern rebuild replaced an orphan independent product."""
     output = tmp_path / "parquet"
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
-    for name in build.PRESERVED_HISTORICAL_FILES:
-        (output / name).write_bytes(b"historical")
-    target = output / build.PRESERVED_HISTORICAL_FILES[0]
+    (output / products[0]).write_bytes(b"orphan")
+
+    with pytest.raises(
+        build.ValidationError,
+        match=rf"{label} publication pair is incomplete",
+    ):
+        build._copy_independent_publications(output, stage)
+
+
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_modern_publish_rejects_non_regular_independent_product(
+    tmp_path, label, products, kind
+):
+    """Would fail if a modern swap silently dropped a non-regular product."""
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    for name in products:
+        (output / name).write_bytes(label.encode())
+    target = output / products[0]
     target.unlink()
     if kind == "directory":
         target.mkdir()
     else:
-        replacement = tmp_path / "historical-product"
-        replacement.write_bytes(b"historical")
+        replacement = tmp_path / f"{label}-product"
+        replacement.write_bytes(label.encode())
         target.symlink_to(replacement)
 
     with pytest.raises(
         build.ValidationError,
-        match="non-regular historical publication product",
+        match=rf"non-regular {label} publication product",
     ):
-        build._copy_historical_publication(output, stage)
+        build._copy_independent_publications(output, stage)
+
+
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+def test_modern_preservation_rejects_between_copy_generation_swap(
+    monkeypatch, tmp_path, label, products
+):
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    replacement = tmp_path / "replacement"
+    output.mkdir()
+    stage.mkdir()
+    replacement.mkdir()
+    seed_bound_independent_pair(
+        output, label, products, generation="old"
+    )
+    seed_bound_independent_pair(
+        replacement, label, products, generation="new"
+    )
+    real_write = build._write_preserved_product
+    copies = 0
+
+    def swap_generation_after_first_copy(payload, destination, **kwargs):
+        nonlocal copies
+        result = real_write(payload, destination, **kwargs)
+        if Path(destination).name in products:
+            copies += 1
+            if copies == 1:
+                for name in products:
+                    os.replace(replacement / name, output / name)
+        return result
+
+    monkeypatch.setattr(
+        build, "_write_preserved_product", swap_generation_after_first_copy
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match=rf"{label} publication changed during preservation",
+    ):
+        build._copy_independent_publications(output, stage)
+
+    assert not any((stage / name).exists() for name in products)
+
+
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+def test_modern_preservation_rejects_path_changed_to_symlink(
+    monkeypatch, tmp_path, label, products
+):
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    seed_bound_independent_pair(
+        output, label, products, generation="old"
+    )
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes((output / products[1]).read_bytes())
+    real_write = build._write_preserved_product
+    copies = 0
+
+    def replace_second_path_with_symlink(payload, destination, **kwargs):
+        nonlocal copies
+        result = real_write(payload, destination, **kwargs)
+        if Path(destination).name in products:
+            copies += 1
+            if copies == 1:
+                (output / products[1]).unlink()
+                (output / products[1]).symlink_to(replacement)
+        return result
+
+    monkeypatch.setattr(
+        build, "_write_preserved_product", replace_second_path_with_symlink
+    )
+
+    with pytest.raises(
+        build.ValidationError,
+        match=rf"{label} publication changed during preservation",
+    ):
+        build._copy_independent_publications(output, stage)
+
+    assert not any((stage / name).exists() for name in products)
+
+
+@pytest.mark.parametrize(
+    ("label", "products"),
+    [
+        ("historical", build.PRESERVED_HISTORICAL_FILES),
+        ("playoff", build.PRESERVED_PLAYOFF_FILES),
+    ],
+)
+def test_modern_preservation_rejects_manifest_parquet_mismatch(
+    tmp_path, label, products
+):
+    output = tmp_path / "parquet"
+    stage = tmp_path / "stage"
+    output.mkdir()
+    stage.mkdir()
+    seed_bound_independent_pair(
+        output, label, products, generation="current"
+    )
+    manifest_path = output / products[1]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tables"][Path(products[0]).stem]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(
+        build.ValidationError,
+        match=rf"{label} manifest does not bind preserved Parquet",
+    ):
+        build._copy_independent_publications(output, stage)
+
+    assert not any((stage / name).exists() for name in products)
+
+
+def test_modern_publication_holds_exclusive_lock_through_swap(
+    monkeypatch, tmp_path
+):
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output = data_dir / "parquet"
+    output.mkdir()
+    expected = seed_bound_independent_pair(
+        output,
+        "playoff",
+        build.PRESERVED_PLAYOFF_FILES,
+        generation="current",
+    )
+    entered_swap = threading.Event()
+    allow_swap = threading.Event()
+    reader_finished = threading.Event()
+    observed = {}
+    failures = []
+    real_publish_stage = build._publish_stage
+
+    def paused_publish_stage(stage_dir, output_dir):
+        entered_swap.set()
+        assert allow_swap.wait(timeout=5)
+        real_publish_stage(stage_dir, output_dir)
+
+    def run_build():
+        try:
+            build.run(data_dir)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def read_pair():
+        observed.update(publication.read_pair_bytes(
+            output,
+            build.PRESERVED_PLAYOFF_FILES,
+            label="playoff",
+            manifest_table="playoff_games",
+        ))
+        reader_finished.set()
+
+    monkeypatch.setattr(build, "_publish_stage", paused_publish_stage)
+    writer = threading.Thread(target=run_build)
+    writer.start()
+    assert entered_swap.wait(timeout=5)
+    reader = threading.Thread(target=read_pair)
+    reader.start()
+    assert not reader_finished.wait(timeout=0.2)
+    allow_swap.set()
+    writer.join(timeout=10)
+    reader.join(timeout=10)
+
+    assert failures == []
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert observed == expected
+
+
+def test_modern_publish_excludes_unknown_prior_output(monkeypatch, tmp_path):
+    """Would fail if an unknown prior output entered the modern publication."""
+    data_dir = tmp_path / "data"
+    publication_fixture(monkeypatch, data_dir)
+    output = data_dir / "parquet"
+    output.mkdir()
+    (output / "unknown-product.bin").write_bytes(b"not independently owned")
+
+    build.run(data_dir)
+
+    assert not (output / "unknown-product.bin").exists()
 
 
 def test_modern_manifest_omits_historical_only_references(monkeypatch, tmp_path):
@@ -2243,6 +2500,19 @@ def test_raw_provenance_excludes_cache_metadata_sidecars(tmp_path):
         "season_label": "2025-26",
         "sha256": digest,
     }]
+
+
+def test_raw_provenance_does_not_own_playoff_cache(tmp_path):
+    """Would fail if the modern builder traversed playoff-owned raw data."""
+    data_dir = tmp_path / "data"
+    before = build._raw_provenance(data_dir)
+    playoff_cache = data_dir / "raw/playoff_bref"
+    playoff_cache.mkdir(parents=True)
+    (playoff_cache / "unrelated.file").write_bytes(b"deliberately invalid")
+
+    after = build._raw_provenance(data_dir)
+
+    assert after == before
 
 
 @pytest.mark.parametrize(

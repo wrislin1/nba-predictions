@@ -7,12 +7,21 @@ import os
 import platform
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
 import pandas as pd
 
-from nba_data import bref, cache, franchises, hoopr, legacy, stats_nba
+from nba_data import (
+    bref,
+    cache,
+    franchises,
+    hoopr,
+    legacy,
+    publication,
+    stats_nba,
+)
 
 
 JOIN_KEY = [
@@ -154,6 +163,14 @@ PRESERVED_HISTORICAL_FILES = (
     "historical_games.parquet",
     "historical_games_manifest.json",
 )
+PRESERVED_PLAYOFF_FILES = (
+    "playoff_games.parquet",
+    "playoff_games_manifest.json",
+)
+PRESERVED_PUBLICATION_PAIRS = {
+    "historical": PRESERVED_HISTORICAL_FILES,
+    "playoff": PRESERVED_PLAYOFF_FILES,
+}
 MODERN_REFERENCE_FILES = (
     "franchises.csv",
     "game_corrections.csv",
@@ -1606,26 +1623,198 @@ def _reference_provenance(data_dir: Path) -> dict:
     }
 
 
-def _copy_historical_publication(
+def _copy_independent_publications(
     output_dir: Path,
     stage_dir: Path,
 ) -> set[str]:
-    present = {
-        name
-        for name in PRESERVED_HISTORICAL_FILES
-        if (output_dir / name).exists() or (output_dir / name).is_symlink()
-    }
-    if present and present != set(PRESERVED_HISTORICAL_FILES):
-        raise ValidationError("historical publication pair is incomplete")
-    if any(
-        (output_dir / name).is_symlink()
-        or not (output_dir / name).is_file()
-        for name in present
-    ):
-        raise ValidationError("non-regular historical publication product")
-    for name in sorted(present):
-        shutil.copyfile(output_dir / name, stage_dir / name)
-    return present
+    with publication.publication_lock(output_dir, exclusive=False):
+        return _copy_independent_publications_locked(
+            output_dir, stage_dir
+        )
+
+
+def _write_preserved_product(
+    payload: bytes, destination: Path, *, mode: int
+) -> None:
+    destination_fd = os.open(
+        destination,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(destination_fd, mode)
+        with os.fdopen(os.dup(destination_fd), "wb") as target:
+            target.write(payload)
+            target.flush()
+            os.fsync(target.fileno())
+    finally:
+        os.close(destination_fd)
+
+
+def _copy_independent_publications_locked(
+    output_dir: Path,
+    stage_dir: Path,
+) -> set[str]:
+    """Copy coherent independent pairs while the publication lock is held."""
+    if not output_dir.exists():
+        return set()
+    try:
+        output_fd = os.open(
+            output_dir,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError as exc:
+        raise ValidationError(
+            "modern publication output must be a regular directory"
+        ) from exc
+    preserved = set()
+    created = []
+    try:
+        for label, products in PRESERVED_PUBLICATION_PAIRS.items():
+            observed = {}
+            for name in products:
+                try:
+                    observed[name] = os.stat(
+                        name,
+                        dir_fd=output_fd,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    observed[name] = None
+            present = {
+                name for name, value in observed.items()
+                if value is not None
+            }
+            if present and present != set(products):
+                raise ValidationError(
+                    f"{label} publication pair is incomplete"
+                )
+            if not present:
+                continue
+            if any(
+                not stat.S_ISREG(observed[name].st_mode)
+                for name in products
+                if observed[name] is not None
+            ):
+                raise ValidationError(
+                    f"non-regular {label} publication product"
+                )
+            identities = {
+                name: (
+                    observed[name].st_dev,
+                    observed[name].st_ino,
+                    observed[name].st_mode,
+                )
+                for name in products
+                if observed[name] is not None
+            }
+            source_fds = {}
+            try:
+                for name in products:
+                    source_fd = os.open(
+                        name,
+                        os.O_RDONLY
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=output_fd,
+                    )
+                    source_fds[name] = source_fd
+                    value = os.fstat(source_fd)
+                    identity = (value.st_dev, value.st_ino, value.st_mode)
+                    if identity != identities[name]:
+                        raise ValidationError(
+                            f"{label} publication changed during preservation"
+                        )
+                payloads = {}
+                for name in products:
+                    with os.fdopen(
+                        os.dup(source_fds[name]), "rb"
+                    ) as source:
+                        payload = source.read()
+                    payloads[name] = payload
+                    destination = stage_dir / name
+                    _write_preserved_product(
+                        payload,
+                        destination,
+                        mode=stat.S_IMODE(identities[name][2]),
+                    )
+                    created.append(destination)
+                for name in products:
+                    value = os.fstat(source_fds[name])
+                    identity = (value.st_dev, value.st_ino, value.st_mode)
+                    try:
+                        path_value = os.stat(
+                            name,
+                            dir_fd=output_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError as exc:
+                        raise ValidationError(
+                            f"{label} publication changed during preservation"
+                        ) from exc
+                    path_identity = (
+                        path_value.st_dev,
+                        path_value.st_ino,
+                        path_value.st_mode,
+                    )
+                    os.lseek(source_fds[name], 0, os.SEEK_SET)
+                    with os.fdopen(
+                        os.dup(source_fds[name]), "rb"
+                    ) as source:
+                        rebound = source.read()
+                    if (
+                        identity != identities[name]
+                        or path_identity != identities[name]
+                        or rebound != payloads[name]
+                    ):
+                        raise ValidationError(
+                            f"{label} publication changed during preservation"
+                        )
+                parquet_name, manifest_name = products
+                try:
+                    manifest = json.loads(
+                        payloads[manifest_name].decode("utf-8")
+                    )
+                    expected_sha256 = manifest["tables"][
+                        Path(parquet_name).stem
+                    ]["sha256"]
+                except (
+                    KeyError,
+                    TypeError,
+                    UnicodeDecodeError,
+                    json.JSONDecodeError,
+                ) as exc:
+                    raise ValidationError(
+                        f"{label} manifest does not bind preserved Parquet"
+                    ) from exc
+                actual_sha256 = hashlib.sha256(
+                    payloads[parquet_name]
+                ).hexdigest()
+                if (
+                    not isinstance(expected_sha256, str)
+                    or expected_sha256 != actual_sha256
+                ):
+                    raise ValidationError(
+                        f"{label} manifest does not bind preserved Parquet"
+                    )
+                preserved.update(products)
+            finally:
+                for source_fd in source_fds.values():
+                    os.close(source_fd)
+        return preserved
+    except (OSError, ValidationError):
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        os.close(output_fd)
 
 
 def _dependency_versions(project_dir: Path) -> dict:
@@ -1769,17 +1958,7 @@ def run(data_dir: Path) -> None:
         tempfile.mkdtemp(prefix=".parquet-stage-", dir=data_dir)
     )
     try:
-        preserved = _copy_historical_publication(
-            data_dir / "parquet", stage_dir
-        )
-        existing_placeholder = data_dir / "parquet/.gitkeep"
-        if existing_placeholder.exists():
-            shutil.copyfile(
-                existing_placeholder,
-                stage_dir / ".gitkeep",
-            )
-        else:
-            (stage_dir / ".gitkeep").touch()
+        (stage_dir / ".gitkeep").write_bytes(b"\n")
         for table, frame in frames.items():
             frame.to_parquet(
                 stage_dir / f"{table}.parquet",
@@ -1832,14 +2011,23 @@ def run(data_dir: Path) -> None:
             + "\n",
             encoding="utf-8",
         )
-        staged_products = {
-            path.name
-            for path in stage_dir.iterdir()
-            if not path.name.startswith(".")
-        }
-        if staged_products != set(PUBLISHED_FILES) | preserved:
-            raise ValidationError("staged publication file set is incomplete")
-        _publish_stage(stage_dir, data_dir / "parquet")
+        output_dir = data_dir / "parquet"
+        with publication.publication_lock(
+            output_dir, exclusive=True
+        ):
+            preserved = _copy_independent_publications_locked(
+                output_dir, stage_dir
+            )
+            staged_products = {
+                path.name
+                for path in stage_dir.iterdir()
+                if not path.name.startswith(".")
+            }
+            if staged_products != set(PUBLISHED_FILES) | preserved:
+                raise ValidationError(
+                    "staged publication file set is incomplete"
+                )
+            _publish_stage(stage_dir, output_dir)
     finally:
         if stage_dir.exists():
             shutil.rmtree(stage_dir)

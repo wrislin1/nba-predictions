@@ -133,6 +133,236 @@ def publish_schedule_fixture(
     return destination
 
 
+def completed_row(**overrides) -> dict:
+    """Return a completed hoopR postseason row with a valid final result."""
+    row = {
+        "season_type": 3,
+        "status_type_completed": True,
+        "game_date": "2020-08-17",
+        "away_display_name": "Utah Jazz",
+        "home_display_name": "Denver Nuggets",
+        "away_score": 125,
+        "home_score": 135,
+    }
+    return row | overrides
+
+
+def incomplete_row(**overrides) -> dict:
+    """Return an otherwise valid hoopR postseason row that is incomplete."""
+    return completed_row(status_type_completed=False) | overrides
+
+
+def seed_hoopr_schedule(
+    raw_dir: Path,
+    *,
+    season: int,
+    rows: list[dict],
+    metadata: dict | None = None,
+) -> Path:
+    """Seed a checksum-valid pinned hoopR schedule cache from supplied rows."""
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    source = raw_dir / "fixture.parquet"
+    pd.DataFrame(rows).to_parquet(source, index=False)
+    destination = raw_dir / "hoopr" / f"nba_schedule_{season}.parquet"
+    cache.publish_bytes(
+        destination,
+        source.read_bytes(),
+        (
+            {
+                "provider": "hoopr",
+                "season": season,
+                "upstream_commit": hoopr.SNAPSHOT["commit"],
+            }
+            if metadata is None
+            else metadata
+        ),
+        hoopr.validate_payload,
+    )
+    return destination
+
+
+def test_load_postseason_normalizes_type_identity_and_scores(tmp_path):
+    """Would fail if hoopR postseason evidence lost its canonical contract."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[
+            completed_row(
+                season_type=3,
+                game_date="2020-08-17",
+                away_display_name="Utah Jazz",
+                home_display_name="Denver Nuggets",
+                away_score=125,
+                home_score=135,
+            ),
+            completed_row(
+                season_type=5,
+                game_date="2020-08-15",
+                away_display_name="Memphis Grizzlies",
+                home_display_name="Portland Trail Blazers",
+                away_score=122,
+                home_score=126,
+            ),
+            completed_row(season_type=2),
+            incomplete_row(season_type=3),
+        ],
+    )
+
+    frame = hoopr.load_postseason(raw_dir, 2020)
+
+    assert frame.columns.tolist() == list(hoopr.POSTSEASON_COLUMNS)
+    assert frame["game_type"].tolist() == ["play_in", "playoff"]
+    assert frame["away_franchise_id"].tolist() == ["MEM", "UTA"]
+    assert frame["home_franchise_id"].tolist() == ["POR", "DEN"]
+    assert frame[["away_pts", "home_pts"]].values.tolist() == [
+        [122, 126],
+        [125, 135],
+    ]
+
+
+def test_load_postseason_reports_missing_cache_entry(tmp_path):
+    """Would fail if an absent evidence cache leaked a file-reader error."""
+    with pytest.raises(cache.CacheIntegrityError, match="missing cache entry"):
+        hoopr.load_postseason(tmp_path / "raw", 2020)
+
+
+def test_load_postseason_rejects_tampered_cache_body(tmp_path):
+    """Would fail if evidence could bypass the pinned cache checksum."""
+    raw_dir = tmp_path / "raw"
+    path = seed_hoopr_schedule(raw_dir, season=2020, rows=[completed_row()])
+    path.write_bytes(b"tampered")
+
+    with pytest.raises(cache.CacheIntegrityError, match="SHA-256 mismatch"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_wrong_pin_metadata(tmp_path):
+    """Would fail if a valid body with another hoopR pin were accepted."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row()],
+        metadata={
+            "provider": "hoopr",
+            "season": 2021,
+            "upstream_commit": hoopr.SNAPSHOT["commit"],
+        },
+    )
+
+    with pytest.raises(cache.CacheIntegrityError, match="metadata mismatch"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+@pytest.mark.parametrize("season", [2019, 2027])
+def test_load_postseason_rejects_seasons_outside_evidence_range(tmp_path, season):
+    """Would fail if the evidence adapter opened non-postseason cache years."""
+    with pytest.raises(ValueError, match="2020..2026"):
+        hoopr.load_postseason(tmp_path / "raw", season)
+
+
+def test_load_postseason_rejects_unknown_source_team(tmp_path):
+    """Would fail if source team names could evade franchise resolution."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(away_display_name="Unknown NBA Club")],
+    )
+
+    with pytest.raises(franchises.UnknownTeamError, match="Unknown NBA Club"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+@pytest.mark.parametrize(
+    "scores",
+    [
+        pytest.param((None, 135), id="missing"),
+        pytest.param((125.5, 135), id="non-integer"),
+        pytest.param((-1, 135), id="negative"),
+        pytest.param((True, 135), id="boolean-true"),
+        pytest.param((False, 135), id="boolean-false"),
+    ],
+)
+def test_load_postseason_rejects_invalid_final_scores(tmp_path, scores):
+    """Would fail if incomplete or impossible final score values published."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(away_score=scores[0], home_score=scores[1])],
+    )
+
+    with pytest.raises(ValueError, match="score"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_non_boolean_completed_status(tmp_path):
+    """Would fail if a truthy string could publish as a completed final."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(status_type_completed="False")],
+    )
+
+    with pytest.raises(ValueError, match="status_type_completed"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_equal_franchises(tmp_path):
+    """Would fail if a row could name one franchise as both competitors."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(home_display_name="Utah Jazz")],
+    )
+
+    with pytest.raises(ValueError, match="different franchises"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_tied_final_score(tmp_path):
+    """Would fail if a completed elimination result could end tied."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(away_score=120, home_score=120)],
+    )
+
+    with pytest.raises(ValueError, match="tied"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_invalid_game_date(tmp_path):
+    """Would fail if malformed source dates reached published evidence."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(game_date="not-a-date")],
+    )
+
+    with pytest.raises(ValueError, match="date"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
+def test_load_postseason_rejects_duplicate_cross_source_keys(tmp_path):
+    """Would fail if duplicate evidence identities survived normalization."""
+    raw_dir = tmp_path / "raw"
+    seed_hoopr_schedule(
+        raw_dir,
+        season=2020,
+        rows=[completed_row(), completed_row()],
+    )
+
+    with pytest.raises(ValueError, match="duplicate CROSS_SOURCE_KEY"):
+        hoopr.load_postseason(raw_dir, 2020)
+
+
 def test_load_season_filters_exhibitions_cup_and_incomplete_rows(tmp_path):
     """Would fail if non-canonical completed schedule rows were retained."""
     publish_schedule_fixture(tmp_path)
@@ -346,3 +576,21 @@ def test_cached_season_counts(season, games):
 
     assert len(schedule) == games
     assert schedule["season"].eq(season).all()
+
+
+@pytest.mark.integration
+def test_full_pinned_postseason_evidence(repo_data_dir):
+    """Would fail if the pinned 2020–2026 postseason evidence drifted."""
+    evidence = pd.concat(
+        [
+            hoopr.load_postseason(repo_data_dir / "raw", season)
+            for season in range(2020, 2027)
+        ],
+        ignore_index=True,
+    )
+
+    assert len(evidence) == 627
+    assert evidence["game_type"].value_counts().to_dict() == {
+        "playoff": 590,
+        "play_in": 37,
+    }

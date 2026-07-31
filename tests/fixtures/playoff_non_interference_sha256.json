@@ -1,0 +1,9 @@
+{
+  "data/parquet/build_manifest.json": "c7518a6286256e200e9df8d38c3e1d196a38531d527a8c21b4fe4b02f591611c",
+  "data/parquet/franchises.parquet": "65c5c41e51806d8ca5c06f22ce44362a4d23df1ae8eb74d5ba7aca0ef568208d",
+  "data/parquet/games.parquet": "cbbf167aa36a7b908f59c20243ae3cf8a5b91944c53cd5539fb838674afbf8e6",
+  "data/parquet/historical_games.parquet": "2c545d90435f2dc0f7fed1369d02a5033602d1544e2734dde92a8b7ed1eb9269",
+  "data/parquet/historical_games_manifest.json": "2be1f3ccb999bab64a344b28b6b25a45c318e994b74b1b99e9e4c9035b0dc010",
+  "data/parquet/team_games.parquet": "8da6f15b126e0617d870bc65026f5096119a31abc908282dd9ac01fbdb72967d",
+  "data/parquet/venues.parquet": "3d99a0727242b1cede114755fde08c360e882da65686a62be7157f1f7ab33b1a"
+}

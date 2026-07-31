@@ -73,6 +73,9 @@ archive_root="${NBA_HISTORICAL_RAW_ARCHIVE_ROOT:-/mnt/nas/llm/documents/nba-pred
 destination="${NBA_HISTORICAL_RAW_DESTINATION:-$root/data/raw/historical_bref}"
 cache_manifest_validator="$root/scripts/archive_historical_raw_snapshot.sh"
 
+# shellcheck source=publication_read_lock.sh
+source "$root/scripts/publication_read_lock.sh"
+
 validate_snapshot_payload() {
   local candidate="$1"
   local trusted_manifest="$2"
@@ -149,18 +152,18 @@ cleanup() {
   if test -n "${trusted_manifest:-}" && test -e "$trusted_manifest"; then
     rm -f -- "$trusted_manifest"
   fi
+  release_publication_read_locks || true
 }
 trap cleanup EXIT
 
-test -f "$manifest" || {
-  printf 'missing historical manifest: %s\n' "$manifest" >&2
+acquire_publication_read_locks "$manifest"
+if ! trusted_manifest="$(
+  capture_publication_manifest "$manifest" \
+    "${TMPDIR:-/tmp}/.historical-restore-manifest.XXXXXX"
+)"; then
+  printf 'missing or unsafe historical manifest: %s\n' "$manifest" >&2
   exit 1
-}
-trusted_manifest="$(
-  mktemp "${TMPDIR:-/tmp}/.historical-restore-manifest.XXXXXX"
-)"
-cp -- "$manifest" "$trusted_manifest"
-chmod 400 "$trusted_manifest"
+fi
 trusted_manifest_sha="$(sha256sum "$trusted_manifest" | cut -d' ' -f1)"
 validate_live_manifest_pin \
   "$manifest" "$trusted_manifest" "$trusted_manifest_sha"
@@ -212,5 +215,6 @@ test ! -d "$staging" || {
 staging=
 rm -f -- "$trusted_manifest"
 trusted_manifest=
+release_publication_read_locks
 trap - EXIT
 printf 'verified historical raw restore: %s\n' "$destination"

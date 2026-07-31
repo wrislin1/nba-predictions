@@ -2,11 +2,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 
 import pandas as pd
 import pytest
 
-from nba_data import cache, historical_bref, historical_build
+from nba_data import cache, historical_bref, historical_build, publication
 
 
 SEED_INDEX_HTML = (
@@ -28,6 +29,33 @@ COUNT_COLUMNS = [
     "season", "league", "expected_games", "source_url", "source_note"
 ]
 CORRECTION_COLUMNS = ["game_id", "site_status", "source_url", "note"]
+
+
+def _replace_operand(value, directory_fd=None) -> Path:
+    path = Path(value)
+    if directory_fd is None:
+        return path
+    directory = Path(os.readlink(f"/proc/self/fd/{directory_fd}"))
+    return directory / path
+
+
+def _write_bound_historical_pair(
+    directory: Path, parquet_payload: bytes
+) -> dict[str, bytes]:
+    manifest_payload = json.dumps({
+        "tables": {
+            "historical_games": {
+                "sha256": hashlib.sha256(parquet_payload).hexdigest(),
+            },
+        },
+    }).encode()
+    payloads = {
+        "historical_games.parquet": parquet_payload,
+        "historical_games_manifest.json": manifest_payload,
+    }
+    for name, payload in payloads.items():
+        (directory / name).write_bytes(payload)
+    return payloads
 
 
 def write_counts(tmp_path, rows):
@@ -540,19 +568,28 @@ def test_publish_historical_pair_restores_complete_pair_after_replace_failure(
     }
     for name, payload in old.items():
         (output / name).write_bytes(payload)
-        (stage / name).write_bytes(b"new " + payload)
+    _write_bound_historical_pair(stage, b"new old games")
     actual_replace = os.replace
     moves = 0
 
-    def fail_second_stage_move(source, destination):
+    def fail_second_stage_move(source, destination, *args, **kwargs):
         nonlocal moves
-        if Path(source).parent == stage and Path(destination).parent == output:
+        source_path = _replace_operand(
+            source, kwargs.get("src_dir_fd")
+        )
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        if (
+            source_path.parent == stage
+            and destination_path.parent == output
+        ):
             moves += 1
             if moves == 2:
                 raise OSError("seeded replacement failure")
-        actual_replace(source, destination)
+        actual_replace(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(historical_build.os, "replace", fail_second_stage_move)
+    monkeypatch.setattr(publication.os, "replace", fail_second_stage_move)
 
     with pytest.raises(OSError, match="seeded replacement failure"):
         historical_build._publish_historical_pair(stage, output)
@@ -568,21 +605,31 @@ def test_publish_historical_pair_restores_empty_output_after_second_move_failure
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
-    for name in historical_build.HISTORICAL_PRODUCTS:
-        (stage / name).write_bytes(name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     moves = 0
 
-    def fail_second_publication_move(source, destination):
+    def fail_second_publication_move(
+        source, destination, *args, **kwargs
+    ):
         nonlocal moves
-        if Path(source).parent == stage and Path(destination).parent == output:
+        source_path = _replace_operand(
+            source, kwargs.get("src_dir_fd")
+        )
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        if (
+            source_path.parent == stage
+            and destination_path.parent == output
+        ):
             moves += 1
             if moves == 2:
                 raise OSError("seeded publication failure")
-        real_replace(source, destination)
+        real_replace(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(
-        historical_build.os, "replace", fail_second_publication_move
+        publication.os, "replace", fail_second_publication_move
     )
 
     with pytest.raises(OSError, match="seeded publication failure"):
@@ -604,21 +651,32 @@ def test_publish_historical_pair_restores_prior_after_second_backup_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     backups = 0
 
-    def fail_second_backup_move(source, destination):
+    def fail_second_backup_move(
+        source, destination, *args, **kwargs
+    ):
         nonlocal backups
-        if Path(source).parent == output and Path(destination).parent.name.startswith(
-            ".historical-rollback-"
+        source_path = _replace_operand(
+            source, kwargs.get("src_dir_fd")
+        )
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        if (
+            source_path.parent == output
+            and destination_path.parent.name.startswith(
+                ".historical-rollback-"
+            )
         ):
             backups += 1
             if backups == 2:
                 raise OSError("seeded backup failure")
-        real_replace(source, destination)
+        real_replace(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(historical_build.os, "replace", fail_second_backup_move)
+    monkeypatch.setattr(publication.os, "replace", fail_second_backup_move)
 
     with pytest.raises(OSError, match="seeded backup failure"):
         historical_build._publish_historical_pair(stage, output)
@@ -639,29 +697,38 @@ def test_publish_historical_pair_retains_recovery_after_restoration_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     publication_moves = 0
 
-    def fail_publication_then_restoration(source, destination):
+    def fail_publication_then_restoration(
+        source, destination, *args, **kwargs
+    ):
         nonlocal publication_moves
-        source = Path(source)
-        destination = Path(destination)
-        if source.parent == stage and destination.parent == output:
+        source_path = _replace_operand(
+            source, kwargs.get("src_dir_fd")
+        )
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        if (
+            source_path.parent == stage
+            and destination_path.parent == output
+        ):
             publication_moves += 1
             if publication_moves == 2:
                 raise OSError("seeded publication failure")
         if (
-            source.parent.name.startswith(
+            source_path.parent.name.startswith(
                 (".historical-rollback-", ".historical-restoration-")
             )
-            and destination.parent == output
+            and destination_path.parent == output
         ):
             raise OSError("seeded restoration failure")
-        real_replace(source, destination)
+        real_replace(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(
-        historical_build.os, "replace", fail_publication_then_restoration
+        publication.os, "replace", fail_publication_then_restoration
     )
 
     with pytest.raises(
@@ -691,32 +758,41 @@ def test_publish_retains_complete_pair_after_second_restoration_failure(
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(b"new " + name.encode())
+    _write_bound_historical_pair(stage, b"new historical games")
     real_replace = os.replace
     publication_moves = 0
     restoration_moves = 0
 
-    def fail_publication_then_second_restoration(source, destination):
+    def fail_publication_then_second_restoration(
+        source, destination, *args, **kwargs
+    ):
         nonlocal publication_moves, restoration_moves
-        source = Path(source)
-        destination = Path(destination)
-        if source.parent == stage and destination.parent == output:
+        source_path = _replace_operand(
+            source, kwargs.get("src_dir_fd")
+        )
+        destination_path = _replace_operand(
+            destination, kwargs.get("dst_dir_fd")
+        )
+        if (
+            source_path.parent == stage
+            and destination_path.parent == output
+        ):
             publication_moves += 1
             if publication_moves == 2:
                 raise OSError("seeded publication failure")
         if (
-            source.parent.name.startswith(
+            source_path.parent.name.startswith(
                 (".historical-rollback-", ".historical-restoration-")
             )
-            and destination.parent == output
+            and destination_path.parent == output
         ):
             restoration_moves += 1
             if restoration_moves == 2:
                 raise OSError("seeded second restoration failure")
-        real_replace(source, destination)
+        real_replace(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(
-        historical_build.os,
+        publication.os,
         "replace",
         fail_publication_then_second_restoration,
     )
@@ -745,20 +821,18 @@ def test_publish_historical_pair_retains_prior_after_commit_cleanup_failure(
     output.mkdir()
     stage.mkdir()
     old = {}
-    new = {}
     for name in historical_build.HISTORICAL_PRODUCTS:
         old[name] = b"old " + name.encode()
-        new[name] = b"new " + name.encode()
         (output / name).write_bytes(old[name])
-        (stage / name).write_bytes(new[name])
-    real_rmtree = historical_build.shutil.rmtree
+    new = _write_bound_historical_pair(stage, b"new historical games")
+    real_rmtree = publication.shutil.rmtree
 
     def retain_rollback(path):
         if Path(path).name.startswith(".historical-rollback-"):
             raise OSError("seeded rollback cleanup failure")
         real_rmtree(path)
 
-    monkeypatch.setattr(historical_build.shutil, "rmtree", retain_rollback)
+    monkeypatch.setattr(publication.shutil, "rmtree", retain_rollback)
 
     recovery_dir = historical_build._publish_historical_pair(stage, output)
 
@@ -862,6 +936,47 @@ def test_raw_provenance_rejects_non_regular_cache_entry(tmp_path, target, kind):
         historical_build._raw_provenance(tmp_path)
 
 
+def test_raw_provenance_binds_record_to_final_validated_body(
+    monkeypatch, tmp_path
+):
+    """Would fail if the body changed after validation but before recording."""
+    seed_verified_historical_cache(tmp_path)
+    real_validate = historical_bref.validate_month
+    mutated = False
+
+    def mutate_after_validation(path, season, url):
+        nonlocal mutated
+        real_validate(path, season, url)
+        if not mutated:
+            original = (
+                tmp_path
+                / "raw/historical_bref/"
+                "BAA_1947_games-november.html"
+            )
+            original.write_bytes(b"not a valid historical schedule")
+            sidecar = original.with_name(
+                original.name + ".meta.json"
+            )
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            metadata["sha256"] = hashlib.sha256(
+                original.read_bytes()
+            ).hexdigest()
+            sidecar.write_text(
+                json.dumps(metadata) + "\n", encoding="utf-8"
+            )
+            mutated = True
+
+    monkeypatch.setattr(
+        historical_bref, "validate_month", mutate_after_validation
+    )
+
+    with pytest.raises(
+        historical_build.HistoricalValidationError,
+        match="cache pair changed while validating",
+    ):
+        historical_build._raw_provenance(tmp_path)
+
+
 @pytest.mark.parametrize(
     "kind", ["stage-directory", "stage-symlink", "prior-directory", "prior-symlink"]
 )
@@ -871,8 +986,8 @@ def test_publish_historical_pair_rejects_non_regular_products(tmp_path, kind):
     stage = tmp_path / "stage"
     output.mkdir()
     stage.mkdir()
+    _write_bound_historical_pair(stage, b"stage")
     for name in historical_build.HISTORICAL_PRODUCTS:
-        (stage / name).write_bytes(b"stage")
         (output / name).write_bytes(b"prior")
     target = stage if kind.startswith("stage") else output
     product = target / historical_build.HISTORICAL_PRODUCTS[0]
@@ -902,7 +1017,7 @@ def test_publish_historical_pair_rejects_orphan_stage_or_prior_pair(tmp_path):
     with pytest.raises(historical_build.HistoricalValidationError):
         historical_build._publish_historical_pair(stage, output)
 
-    (stage / historical_build.HISTORICAL_PRODUCTS[1]).write_bytes(b"stage")
+    _write_bound_historical_pair(stage, b"stage")
     (output / historical_build.HISTORICAL_PRODUCTS[0]).write_bytes(b"prior")
     with pytest.raises(
         historical_build.HistoricalValidationError,
@@ -925,6 +1040,63 @@ def test_run_rejects_modern_publication_starting_after_1984(monkeypatch, tmp_pat
         match="modern publication must begin at ending season 1984",
     ):
         historical_build.run(tmp_path)
+
+
+def test_run_holds_shared_lock_while_reading_modern_publication(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "parquet"
+    output.mkdir()
+    pd.DataFrame({"season": [1985]}).to_parquet(
+        output / "games.parquet"
+    )
+    monkeypatch.setattr(
+        historical_build,
+        "assemble",
+        lambda data_dir: (assembled_game_frame(), {}),
+    )
+    real_read_parquet = historical_build.pd.read_parquet
+    read_started = threading.Event()
+    allow_read = threading.Event()
+    writer_attempting = threading.Event()
+    writer_acquired = threading.Event()
+    reader_done = threading.Event()
+
+    def paused_read(path, *args, **kwargs):
+        if Path(path).name == "games.parquet":
+            read_started.set()
+            assert allow_read.wait(5)
+        return real_read_parquet(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        historical_build.pd, "read_parquet", paused_read
+    )
+
+    def read_modern():
+        try:
+            historical_build.run(tmp_path)
+        except historical_build.HistoricalValidationError:
+            pass
+        finally:
+            reader_done.set()
+
+    def publish_observer():
+        writer_attempting.set()
+        with publication.publication_lock(output, exclusive=True):
+            writer_acquired.set()
+
+    reader = threading.Thread(target=read_modern, daemon=True)
+    writer = threading.Thread(target=publish_observer, daemon=True)
+    reader.start()
+    assert read_started.wait(5)
+    writer.start()
+    assert writer_attempting.wait(5)
+    assert not writer_acquired.wait(0.2)
+    allow_read.set()
+    assert reader_done.wait(5)
+    assert writer_acquired.wait(5)
+    reader.join(5)
+    writer.join(5)
 
 
 def test_run_preserves_prior_historical_pair_when_validation_fails(
@@ -1186,6 +1358,31 @@ def test_validation_rejects_overtime_marker_disagreement():
         match="overtime marker disagreement",
     ):
         historical_build.validate(games, {1947: 1}, evidence=evidence)
+
+
+def test_validation_uses_shared_overtime_parser_not_historical_wrapper(
+    monkeypatch,
+):
+    """Would fail if validation called the compatibility wrapper instead."""
+    games = assembled_game_frame()
+    games.loc[0, "overtime_periods"] = 2
+    evidence = pd.DataFrame([{
+        "game_id": games.loc[0, "game_id"],
+        "overtime_marker": "2OT",
+        "overtime_periods": 2,
+        "game_remarks": "",
+    }])
+
+    def unexpected_historical_wrapper(marker):
+        raise AssertionError(f"unexpected historical wrapper call: {marker}")
+
+    monkeypatch.setattr(
+        historical_build.historical_bref,
+        "_overtime_periods",
+        unexpected_historical_wrapper,
+    )
+
+    historical_build.validate(games, {1947: 1}, evidence=evidence)
 
 
 def test_validation_accumulates_multiple_diagnostics():

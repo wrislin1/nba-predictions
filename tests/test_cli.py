@@ -228,3 +228,111 @@ def test_build_historical_runs_from_repository_data_directory(monkeypatch, tmp_p
     cli.main()
 
     assert build_calls == [data_dir]
+
+
+def test_fetch_playoffs_one_season(monkeypatch, tmp_path):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(
+        cli.playoff_bref,
+        "fetch",
+        lambda raw, seasons: calls.append((raw, tuple(seasons))),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-playoffs",
+            "--season",
+            "1984",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path.resolve() / "raw", (1984,))]
+
+
+def test_fetch_playoffs_defaults_to_all_dedicated_seasons(
+    monkeypatch, tmp_path
+):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(
+        cli.playoff_bref,
+        "fetch",
+        lambda raw, seasons: calls.append((raw, tuple(seasons))),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-playoffs",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [
+        (
+            tmp_path.resolve() / "raw",
+            tuple(range(1984, 2027)),
+        )
+    ]
+
+
+@pytest.mark.parametrize("season", [1983, 2027])
+def test_fetch_playoffs_rejects_out_of_range_season(
+    monkeypatch, tmp_path, season
+):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(
+        cli.playoff_bref,
+        "fetch",
+        lambda *args: calls.append(args),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "fetch-playoffs",
+            "--season",
+            str(season),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as caught:
+        cli.main()
+
+    assert caught.value.code == 2
+    assert calls == []
+
+
+def test_build_playoffs_is_offline_dispatch(monkeypatch, tmp_path):
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli.playoff_build, "run", calls.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data",
+            "--data-dir",
+            str(tmp_path),
+            "build-playoffs",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [tmp_path.resolve()]
