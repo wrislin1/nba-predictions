@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from nba_data import pbp
+from nba_data import cache, pbp, pbp_build
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures/pbp"
@@ -641,3 +642,567 @@ def test_load_worklist_require_complete_false_skips_missing_files(tmp_path):
     frame = pbp.load_worklist(data_dir, [1997], require_complete=False)
     assert frame["game_type"].tolist() == ["regular"]
     assert frame.columns.tolist() == pbp.WORKLIST_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# Task 3: exact cache identities, transport validators, and complete
+# recursive inventories
+# ---------------------------------------------------------------------------
+
+
+def expected_game_metadata(season, game_type, game_id):
+    return {
+        "provider": "stats_nba",
+        "resource": "play_by_play",
+        "endpoint": "PlayByPlayV3",
+        "parameters": {
+            "GameID": game_id,
+            "StartPeriod": 0,
+            "EndPeriod": 0,
+        },
+        "season": season,
+        "season_label": pbp.season_label(season),
+        "game_type": game_type,
+        "game_id": game_id,
+    }
+
+
+def expected_worklist_metadata(season, game_type):
+    return {
+        "provider": "stats_nba",
+        "resource": "pbp_worklist",
+        "endpoint": "LeagueGameFinder",
+        "parameters": {
+            "Season": pbp.season_label(season),
+            "SeasonType": pbp.SEASON_TYPES[game_type],
+        },
+        "season": season,
+        "season_label": pbp.season_label(season),
+        "game_type": game_type,
+    }
+
+
+def worklist_row(**changes):
+    row = {
+        "game_id": "0029600001",
+        "season": 1997,
+        "game_type": "regular",
+        "game_date": date(1996, 11, 1),
+        "away_franchise_id": "CHI",
+        "home_franchise_id": "BOS",
+        "away_pts": 107,
+        "home_pts": 98,
+    }
+    row.update(changes)
+    return row
+
+
+def _minimal_game_payload(game_id):
+    return json.dumps(
+        {"game": {"gameId": game_id, "actions": [{"actionId": 1}]}}
+    ).encode("utf-8")
+
+
+def _raw_root(data_dir):
+    return data_dir / "raw/stats_nba/pbp"
+
+
+# ---------------------------------------------------------------------------
+# Step 1: exact metadata identity at publish time
+# ---------------------------------------------------------------------------
+
+
+WORKLIST_VALUE_MUTATIONS = {
+    "provider": "other_provider",
+    "resource": "other_resource",
+    "endpoint": "OtherEndpoint",
+    "season": 1998,
+    "season_label": "wrong-label",
+    "game_type": "playoff",
+}
+WORKLIST_TYPE_MUTATIONS = {
+    "provider": 1,
+    "resource": 1,
+    "endpoint": 1,
+    "season": "1997",
+    "season_label": 199798,
+    "game_type": 1,
+}
+
+
+@pytest.mark.parametrize("field", sorted(WORKLIST_VALUE_MUTATIONS))
+def test_publish_worklist_payload_rejects_metadata_value_mismatch(tmp_path, field):
+    metadata = expected_worklist_metadata(1997, "regular")
+    metadata[field] = WORKLIST_VALUE_MUTATIONS[field]
+    destination = pbp.worklist_path(tmp_path, 1997, "regular")
+    payload = json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_worklist_payload(destination, payload, metadata)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("field", sorted(WORKLIST_TYPE_MUTATIONS))
+def test_publish_worklist_payload_rejects_metadata_type_mismatch(tmp_path, field):
+    metadata = expected_worklist_metadata(1997, "regular")
+    metadata[field] = WORKLIST_TYPE_MUTATIONS[field]
+    destination = pbp.worklist_path(tmp_path, 1997, "regular")
+    payload = json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_worklist_payload(destination, payload, metadata)
+
+
+def test_publish_worklist_payload_accepts_exact_metadata(tmp_path):
+    metadata = expected_worklist_metadata(1997, "regular")
+    destination = pbp.worklist_path(tmp_path, 1997, "regular")
+    payload = json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8")
+    result = pbp.publish_worklist_payload(destination, payload, metadata)
+    assert result == destination
+    assert destination.read_bytes() == payload
+
+
+GAME_VALUE_MUTATIONS = {
+    "provider": "other_provider",
+    "resource": "other_resource",
+    "endpoint": "OtherEndpoint",
+    "season": 1998,
+    "season_label": "wrong-label",
+    "game_id": "0000000000",
+}
+GAME_TYPE_MUTATIONS = {
+    "provider": 1,
+    "resource": 1,
+    "endpoint": 1,
+    "season": "1997",
+    "season_label": 199798,
+    "game_id": 29600001,
+}
+
+
+@pytest.mark.parametrize("field", sorted(GAME_VALUE_MUTATIONS))
+def test_publish_game_payload_rejects_metadata_value_mismatch(tmp_path, field):
+    metadata = expected_game_metadata(1997, "regular", "0029600001")
+    metadata[field] = GAME_VALUE_MUTATIONS[field]
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = _minimal_game_payload("0029600001")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_game_payload(destination, payload, metadata)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("field", sorted(GAME_TYPE_MUTATIONS))
+def test_publish_game_payload_rejects_metadata_type_mismatch(tmp_path, field):
+    metadata = expected_game_metadata(1997, "regular", "0029600001")
+    metadata[field] = GAME_TYPE_MUTATIONS[field]
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = _minimal_game_payload("0029600001")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_game_payload(destination, payload, metadata)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("GameID", "0000000000"), ("StartPeriod", 1), ("EndPeriod", 1)],
+)
+def test_publish_game_payload_rejects_parameters_value_mismatch(
+    tmp_path, field, value
+):
+    metadata = expected_game_metadata(1997, "regular", "0029600001")
+    metadata["parameters"] = {**metadata["parameters"], field: value}
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = _minimal_game_payload("0029600001")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_game_payload(destination, payload, metadata)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("GameID", 29600001), ("StartPeriod", "0"), ("EndPeriod", False)],
+)
+def test_publish_game_payload_rejects_parameters_type_mismatch(
+    tmp_path, field, value
+):
+    metadata = expected_game_metadata(1997, "regular", "0029600001")
+    metadata["parameters"] = {**metadata["parameters"], field: value}
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = _minimal_game_payload("0029600001")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.publish_game_payload(destination, payload, metadata)
+
+
+def test_publish_game_payload_accepts_exact_metadata(tmp_path):
+    metadata = expected_game_metadata(1997, "regular", "0029600001")
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = _minimal_game_payload("0029600001")
+    result = pbp.publish_game_payload(destination, payload, metadata)
+    assert result == destination
+    assert destination.read_bytes() == payload
+
+
+# ---------------------------------------------------------------------------
+# Step 2: transport validation vs. fixed V3 schema separation
+# ---------------------------------------------------------------------------
+
+
+def test_transport_valid_schema_drift_remains_cached(tmp_path):
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    payload = json.dumps({
+        "game": {
+            "gameId": "0029600001",
+            "actions": [{"newUpstreamField": 1}],
+        }
+    }).encode("utf-8")
+    pbp.publish_game_payload(
+        destination,
+        payload,
+        expected_game_metadata(1997, "regular", "0029600001"),
+    )
+    assert destination.read_bytes() == payload
+    with pytest.raises(
+        pbp_build.PBPBuildError,
+        match="V3 action schema drift",
+    ):
+        pbp_build.parse_game_payload(payload, worklist_row())
+
+
+def test_publish_game_payload_rejects_malformed_json_transport(tmp_path):
+    destination = pbp.game_path(tmp_path, 1997, "0029600001")
+    with pytest.raises(json.JSONDecodeError):
+        pbp.publish_game_payload(
+            destination,
+            b"not json",
+            expected_game_metadata(1997, "regular", "0029600001"),
+        )
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("document", "match"),
+    [
+        ({}, "wrong outer game ID"),
+        ({"game": "not-an-object"}, "wrong outer game ID"),
+        (
+            {"game": {"gameId": "0000000000", "actions": [{}]}},
+            "wrong outer game ID",
+        ),
+        ({"game": {"gameId": "0029600001"}}, "invalid action envelope"),
+        (
+            {"game": {"gameId": "0029600001", "actions": "nope"}},
+            "invalid action envelope",
+        ),
+        (
+            {"game": {"gameId": "0029600001", "actions": []}},
+            "invalid action envelope",
+        ),
+        (
+            {"game": {"gameId": "0029600001", "actions": [1, 2]}},
+            "invalid action envelope",
+        ),
+    ],
+    ids=[
+        "missing-game",
+        "non-object-game",
+        "wrong-game-id",
+        "missing-actions",
+        "non-list-actions",
+        "empty-actions",
+        "non-object-action-elements",
+    ],
+)
+def test_validate_game_transport_rejects_malformed_envelopes(
+    tmp_path, document, match
+):
+    path = tmp_path / "game.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(pbp.PBPValidationError, match=match):
+        pbp.validate_game_transport(path, game_id="0029600001")
+
+
+def test_validate_worklist_transport_accepts_valid_payload(tmp_path):
+    path = tmp_path / "worklist.json"
+    path.write_text(json.dumps(_document(rows=REGULAR_1997_ROWS)), encoding="utf-8")
+    pbp.validate_worklist_transport(path, season=1997, game_type="regular")
+
+
+def test_validate_worklist_transport_rejects_invalid_payload(tmp_path):
+    path = tmp_path / "worklist.json"
+    path.write_text(json.dumps(_document(rows=REGULAR_1997_ROWS)), encoding="utf-8")
+    with pytest.raises(pbp.PBPValidationError, match="unknown game type"):
+        pbp.validate_worklist_transport(path, season=1997, game_type="exhibition")
+
+
+# ---------------------------------------------------------------------------
+# Step 3: safe recursive cache-tree inventory validation
+# ---------------------------------------------------------------------------
+
+
+def _seed_valid_cache_tree(data_dir):
+    """Publish two valid worklists and their two matching game pairs."""
+    pbp.publish_worklist_payload(
+        pbp.worklist_path(data_dir, 1997, "regular"),
+        json.dumps(_document(rows=REGULAR_1997_ROWS)).encode("utf-8"),
+        expected_worklist_metadata(1997, "regular"),
+    )
+    pbp.publish_worklist_payload(
+        pbp.worklist_path(data_dir, 1997, "playoff"),
+        json.dumps(_document(rows=PLAYOFF_1997_ROWS)).encode("utf-8"),
+        expected_worklist_metadata(1997, "playoff"),
+    )
+    pbp.publish_game_payload(
+        pbp.game_path(data_dir, 1997, "0029600001"),
+        _minimal_game_payload("0029600001"),
+        expected_game_metadata(1997, "regular", "0029600001"),
+    )
+    pbp.publish_game_payload(
+        pbp.game_path(data_dir, 1997, "0049600001"),
+        _minimal_game_payload("0049600001"),
+        expected_game_metadata(1997, "playoff", "0049600001"),
+    )
+
+
+def test_validate_cache_tree_accepts_valid_subset(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    inventory = pbp.validate_cache_tree(
+        _raw_root(data_dir), required_seasons=pbp.SEASONS, require_complete=False
+    )
+    assert [p.name for p in inventory.worklist_bodies] == [
+        "playoff.json", "regular.json",
+    ]
+    assert [p.name for p in inventory.game_bodies] == [
+        "0029600001.json", "0049600001.json",
+    ]
+    assert inventory.worklist["game_id"].tolist() == ["0029600001", "0049600001"]
+    assert inventory.worklist.columns.tolist() == pbp.WORKLIST_COLUMNS
+
+
+def test_validate_cache_inventory_matches_validate_cache_tree(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    from_tree = pbp.validate_cache_tree(
+        _raw_root(data_dir), required_seasons=[1997], require_complete=False
+    )
+    from_inventory = pbp.validate_cache_inventory(
+        data_dir, required_seasons=[1997], require_complete=False
+    )
+    assert from_tree.worklist_bodies == from_inventory.worklist_bodies
+    assert from_tree.game_bodies == from_inventory.game_bodies
+    pd.testing.assert_frame_equal(from_tree.worklist, from_inventory.worklist)
+
+
+def _mutate_missing_body(raw_root):
+    (raw_root / "games/1997/0029600001.json").unlink()
+
+
+def _mutate_missing_sidecar(raw_root):
+    (raw_root / "games/1997/0029600001.json.meta.json").unlink()
+
+
+def _mutate_orphan_json(raw_root):
+    (raw_root / "games/1997/orphan.json").write_text("{}", encoding="utf-8")
+
+
+def _mutate_orphan_sidecar(raw_root):
+    (raw_root / "games/1997/9999999999.json.meta.json").write_text(
+        json.dumps({"sha256": "x"}), encoding="utf-8"
+    )
+
+
+def _mutate_stale_part(raw_root):
+    (raw_root / "games/1997/0029600001.json.part").write_bytes(b"stale")
+
+
+def _mutate_symlinked_file(raw_root):
+    target = raw_root / "worklists/1997/regular.json"
+    playoff = raw_root / "worklists/1997/playoff.json"
+    target.unlink()
+    target.symlink_to(playoff)
+
+
+def _mutate_fifo(raw_root):
+    body = raw_root / "worklists/1997/playoff.json"
+    body.unlink()
+    os.mkfifo(body)
+
+
+def _mutate_unexpected_season_dir(raw_root):
+    season_dir = raw_root / "worklists/2099"
+    season_dir.mkdir(parents=True)
+    (season_dir / "regular.json").write_text("{}", encoding="utf-8")
+
+
+def _mutate_unexpected_game_id(raw_root):
+    games_dir = raw_root / "games/1997"
+    (games_dir / "0029699999.json").write_text("{}", encoding="utf-8")
+    (games_dir / "0029699999.json.meta.json").write_text(
+        json.dumps({"sha256": "x"}), encoding="utf-8"
+    )
+
+
+def _mutate_pair_absent_from_worklist(raw_root):
+    games_dir = raw_root / "games/1997"
+    (games_dir / "0021700123.json").write_text("{}", encoding="utf-8")
+    (games_dir / "0021700123.json.meta.json").write_text(
+        json.dumps({"sha256": "x"}), encoding="utf-8"
+    )
+
+
+def _mutate_wrong_game_under_season(raw_root):
+    source_body = raw_root / "games/1997/0049600001.json"
+    source_meta = raw_root / "games/1997/0049600001.json.meta.json"
+    destination_dir = raw_root / "games/2020"
+    destination_dir.mkdir(parents=True)
+    (destination_dir / "0049600001.json").write_bytes(source_body.read_bytes())
+    (destination_dir / "0049600001.json.meta.json").write_bytes(
+        source_meta.read_bytes()
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutator", "exception", "match"),
+    [
+        (_mutate_missing_body, cache.CacheIntegrityError, "incomplete cache pair"),
+        (_mutate_missing_sidecar, cache.CacheIntegrityError, "incomplete cache pair"),
+        (_mutate_orphan_json, pbp.PBPValidationError, "unexpected cache entry"),
+        (_mutate_orphan_sidecar, pbp.PBPValidationError, "unexpected cache entry"),
+        (_mutate_stale_part, pbp.PBPValidationError, "unexpected cache entry"),
+        (_mutate_symlinked_file, pbp.PBPValidationError, "unsafe entry"),
+        (_mutate_fifo, pbp.PBPValidationError, "unsafe entry"),
+        (
+            _mutate_unexpected_season_dir,
+            pbp.PBPValidationError,
+            "unexpected cache entry",
+        ),
+        (_mutate_unexpected_game_id, pbp.PBPValidationError, "unexpected cache entry"),
+        (
+            _mutate_pair_absent_from_worklist,
+            pbp.PBPValidationError,
+            "unexpected cache entry",
+        ),
+        (
+            _mutate_wrong_game_under_season,
+            pbp.PBPValidationError,
+            "unexpected cache entry",
+        ),
+    ],
+    ids=[
+        "missing-body",
+        "missing-sidecar",
+        "orphan-unrelated-json",
+        "orphan-unrelated-sidecar",
+        "stale-part",
+        "symlinked-file",
+        "fifo",
+        "unexpected-season-directory",
+        "unexpected-game-id",
+        "pair-absent-from-worklist",
+        "wrong-game-under-season-directory",
+    ],
+)
+def test_validate_cache_tree_rejects_unsafe_and_unrelated_entries(
+    tmp_path, mutator, exception, match
+):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    raw_root = _raw_root(data_dir)
+    mutator(raw_root)
+    with pytest.raises(exception, match=match):
+        pbp.validate_cache_tree(
+            raw_root, required_seasons=pbp.SEASONS, require_complete=False
+        )
+
+
+def test_validate_cache_tree_rejects_game_type_metadata_mismatch_on_disk(tmp_path):
+    # publish_game_payload cannot itself know a game's true game_type (that
+    # requires the worklist row), so this defends against a game sidecar
+    # whose game_type disagrees with the worklist that names it.
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    raw_root = _raw_root(data_dir)
+    meta_path = raw_root / "games/1997/0029600001.json.meta.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["game_type"] = "playoff"
+    meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.validate_cache_tree(
+            raw_root, required_seasons=[1997], require_complete=False
+        )
+
+
+def test_validate_cache_tree_rejects_worklist_metadata_mismatch_on_disk(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    raw_root = _raw_root(data_dir)
+    meta_path = raw_root / "worklists/1997/regular.json.meta.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["provider"] = "corrupted"
+    meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(
+        cache.CacheIntegrityError, match="PBP cache metadata mismatch"
+    ):
+        pbp.validate_cache_tree(
+            raw_root, required_seasons=pbp.SEASONS, require_complete=False
+        )
+
+
+def test_validate_cache_tree_require_complete_accepts_full_pair(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    inventory = pbp.validate_cache_tree(
+        _raw_root(data_dir), required_seasons=[1997], require_complete=True
+    )
+    assert len(inventory.worklist_bodies) == 2
+    assert len(inventory.game_bodies) == 2
+
+
+def test_validate_cache_tree_require_complete_rejects_missing_game(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    raw_root = _raw_root(data_dir)
+    (raw_root / "games/1997/0049600001.json").unlink()
+    (raw_root / "games/1997/0049600001.json.meta.json").unlink()
+    with pytest.raises(pbp.PBPValidationError, match="missing required game file"):
+        pbp.validate_cache_tree(raw_root, required_seasons=[1997], require_complete=True)
+
+
+def test_validate_cache_tree_require_complete_rejects_missing_worklist(tmp_path):
+    data_dir = tmp_path / "data"
+    _seed_valid_cache_tree(data_dir)
+    raw_root = _raw_root(data_dir)
+    (raw_root / "worklists/1997/playoff.json").unlink()
+    (raw_root / "worklists/1997/playoff.json.meta.json").unlink()
+    with pytest.raises(
+        pbp.PBPValidationError, match="missing required worklist file"
+    ):
+        pbp.validate_cache_tree(raw_root, required_seasons=[1997], require_complete=True)
+
+
+def test_validate_cache_tree_require_complete_true_requires_all_67_worklists(
+    tmp_path,
+):
+    data_dir = tmp_path / "data"
+    raw_root = _raw_root(data_dir)
+    with pytest.raises(
+        pbp.PBPValidationError, match="missing required worklist file"
+    ) as excinfo:
+        pbp.validate_cache_tree(
+            raw_root, required_seasons=pbp.SEASONS, require_complete=True
+        )
+    expected_count = sum(
+        2 + (1 if season in pbp.PLAY_IN_SEASONS else 0) for season in pbp.SEASONS
+    )
+    assert expected_count == 67
+    assert str(excinfo.value).count(".json") == 67

@@ -304,8 +304,8 @@ def _validate_action_keys(action: Mapping[str, object]) -> None:
         if extra:
             parts.append(f"unexpected key(s) {sorted(extra)}")
         raise PBPBuildError(
-            "action key set differs from ACTION_SOURCE_KEYS: "
-            + "; ".join(parts)
+            "V3 action schema drift: action key set differs from "
+            "ACTION_SOURCE_KEYS: " + "; ".join(parts)
         )
 
 

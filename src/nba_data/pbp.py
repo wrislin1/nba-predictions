@@ -9,16 +9,26 @@ and publication interfaces are added by later tasks.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+import functools
 import json
 from pathlib import Path
+import stat
 
 import pandas as pd
 
-from nba_data import franchises
+from nba_data import cache, franchises
 
 
 class PBPValidationError(ValueError):
     """Raised when a play-by-play worklist or cache violates its contract."""
+
+
+@dataclass(frozen=True)
+class CacheInventory:
+    worklist_bodies: Sequence[Path]
+    game_bodies: Sequence[Path]
+    worklist: pd.DataFrame
 
 
 SEASONS = tuple(range(1997, 2027))
@@ -431,3 +441,396 @@ def cross_validate_worklist(
             "publication_only="
             f"{_mismatch_sample(postseason_comparison, 'right_only', _POSTSEASON_KEY)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Transport validators
+#
+# Transport validation is deliberately shallow: it preserves a nonempty,
+# correct-game JSON envelope as cached raw evidence before the fixed V3
+# schema parser (``pbp_build.parse_game_payload``) runs. Schema drift in the
+# action shape is a build-time concern, not a transport-time one.
+# ---------------------------------------------------------------------------
+
+
+def validate_worklist_transport(
+    path: Path,
+    *,
+    season: int,
+    game_type: str,
+) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    normalize_worklist_payload(
+        json.dumps(payload).encode("utf-8"),
+        season=season,
+        game_type=game_type,
+    )
+
+
+def validate_game_transport(path: Path, *, game_id: str) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    game = payload.get("game")
+    if not isinstance(game, dict) or game.get("gameId") != game_id:
+        raise PBPValidationError(f"wrong outer game ID for {path}")
+    actions = game.get("actions")
+    if (
+        not isinstance(actions, list)
+        or not actions
+        or any(not isinstance(action, dict) for action in actions)
+    ):
+        raise PBPValidationError(f"invalid action envelope for {path}")
+
+
+# ---------------------------------------------------------------------------
+# Exact cache identity: expected metadata subsets and comparison
+#
+# ``publish_worklist_payload``/``publish_game_payload`` derive every
+# identity field they *can* know from the destination path plus fixed
+# constants, and reject a mismatched ``metadata`` argument before writing
+# anything. A game pair's ``game_type`` is the one identity field that
+# cannot be derived from its path (``games/<season>/<game_id>.json`` has no
+# game-type component); only cache-tree validation -- which has the
+# cross-referenced worklist row -- can check it.
+# ---------------------------------------------------------------------------
+
+_WORKLIST_PROVIDER = "stats_nba"
+_WORKLIST_RESOURCE = "pbp_worklist"
+_WORKLIST_ENDPOINT = "LeagueGameFinder"
+_GAME_PROVIDER = "stats_nba"
+_GAME_RESOURCE = "play_by_play"
+_GAME_ENDPOINT = "PlayByPlayV3"
+
+_CACHE_MANAGED_METADATA_KEYS = frozenset({"fetched_at", "content_length", "sha256"})
+
+
+def _expected_worklist_identity(season: int, game_type: str) -> dict:
+    return {
+        "provider": _WORKLIST_PROVIDER,
+        "resource": _WORKLIST_RESOURCE,
+        "endpoint": _WORKLIST_ENDPOINT,
+        "season": season,
+        "season_label": season_label(season),
+        "game_type": game_type,
+    }
+
+
+def _expected_game_identity(season: int, game_type: str, game_id: str) -> dict:
+    return {
+        "provider": _GAME_PROVIDER,
+        "resource": _GAME_RESOURCE,
+        "endpoint": _GAME_ENDPOINT,
+        "parameters": {
+            "GameID": game_id,
+            "StartPeriod": 0,
+            "EndPeriod": 0,
+        },
+        "season": season,
+        "season_label": season_label(season),
+        "game_type": game_type,
+        "game_id": game_id,
+    }
+
+
+def _expected_game_identity_without_type(season: int, game_id: str) -> dict:
+    # ``game_type`` cannot be derived from the game cache path alone; the
+    # placeholder is discarded immediately and never compared.
+    identity = _expected_game_identity(season, "__unknown__", game_id)
+    del identity["game_type"]
+    return identity
+
+
+def _identity_mismatch(observed: object, expected: object) -> bool:
+    if isinstance(expected, dict):
+        if not isinstance(observed, dict) or set(observed) != set(expected):
+            return True
+        return any(
+            _identity_mismatch(observed[key], value)
+            for key, value in expected.items()
+        )
+    return type(observed) is not type(expected) or observed != expected
+
+
+def _require_exact_identity(
+    observed: Mapping[str, object], expected: Mapping[str, object], *, label: str
+) -> None:
+    for key, value in expected.items():
+        if key not in observed or _identity_mismatch(observed[key], value):
+            raise cache.CacheIntegrityError(
+                f"PBP cache metadata mismatch for {label}: key {key!r}"
+            )
+
+
+def _season_from_destination(destination: Path, *, label: str) -> int:
+    try:
+        return int(destination.parent.name)
+    except ValueError as exc:
+        raise PBPValidationError(
+            f"cannot derive season from {label} destination {destination}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Publish wrappers
+# ---------------------------------------------------------------------------
+
+
+def publish_worklist_payload(
+    destination: Path, payload: bytes, metadata: Mapping[str, object]
+) -> Path:
+    destination = Path(destination)
+    game_type = destination.stem
+    season = _season_from_destination(destination, label="worklist")
+    _require_exact_identity(
+        metadata,
+        _expected_worklist_identity(season, game_type),
+        label=str(destination),
+    )
+    validator = functools.partial(
+        validate_worklist_transport, season=season, game_type=game_type
+    )
+    return cache.publish_bytes(destination, payload, dict(metadata), validator)
+
+
+def publish_game_payload(
+    destination: Path, payload: bytes, metadata: Mapping[str, object]
+) -> Path:
+    destination = Path(destination)
+    game_id = destination.stem
+    season = _season_from_destination(destination, label="game")
+    _require_exact_identity(
+        metadata,
+        _expected_game_identity_without_type(season, game_id),
+        label=str(destination),
+    )
+    validator = functools.partial(validate_game_transport, game_id=game_id)
+    return cache.publish_bytes(destination, payload, dict(metadata), validator)
+
+
+# ---------------------------------------------------------------------------
+# Exact metadata readers -- used by cache-tree validation to re-check every
+# on-disk pair (including ones this process never published) after
+# checksum/transport validation succeeds.
+# ---------------------------------------------------------------------------
+
+
+def _read_worklist_pair(
+    body_path: Path, *, season: int, game_type: str
+) -> bytes | None:
+    validator = functools.partial(
+        validate_worklist_transport, season=season, game_type=game_type
+    )
+    payload = cache.read_valid(body_path, validator)
+    if payload is None:
+        return None
+    sidecar_path = body_path.with_name(body_path.name + ".meta.json")
+    metadata = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    _require_exact_identity(
+        metadata,
+        _expected_worklist_identity(season, game_type),
+        label=str(body_path),
+    )
+    return payload
+
+
+def _read_game_pair(
+    body_path: Path, *, season: int, game_type: str, game_id: str
+) -> bytes | None:
+    validator = functools.partial(validate_game_transport, game_id=game_id)
+    payload = cache.read_valid(body_path, validator)
+    if payload is None:
+        return None
+    sidecar_path = body_path.with_name(body_path.name + ".meta.json")
+    metadata = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    _require_exact_identity(
+        metadata,
+        _expected_game_identity(season, game_type, game_id),
+        label=str(body_path),
+    )
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Safe recursive cache-tree inventory
+#
+# Every path is derived from a fixed contract before it is opened: the
+# season/type worklist contract, each checksum-valid normalized worklist,
+# and each worklist row's season/game ID. ``lstat`` (never ``stat``) governs
+# every type check so a symlink or FIFO can never be treated as a regular
+# file or directory.
+# ---------------------------------------------------------------------------
+
+
+def _lstat_or_none(path: Path):
+    try:
+        return path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _require_allowed_entries(
+    dir_path: Path, allowed: Mapping[str, str], relative_dir: str
+) -> None:
+    """Reject any entry whose name or filesystem type has no exact contract."""
+    for name in sorted(entry.name for entry in dir_path.iterdir()):
+        relative = f"{relative_dir}/{name}" if relative_dir else name
+        kind = allowed.get(name)
+        if kind is None:
+            raise PBPValidationError(f"unexpected cache entry: {relative}")
+        info = (dir_path / name).lstat()
+        if kind == "dir" and not stat.S_ISDIR(info.st_mode):
+            raise PBPValidationError(
+                f"expected a directory at {relative}, found an unsafe entry"
+            )
+        if kind == "file" and not stat.S_ISREG(info.st_mode):
+            raise PBPValidationError(
+                f"expected a regular file at {relative}, found an unsafe entry"
+            )
+
+
+def validate_cache_tree(
+    raw_root: Path, *, required_seasons: Iterable[int], require_complete: bool
+) -> CacheInventory:
+    raw_root = Path(raw_root)
+    ordered_seasons = sorted({int(season) for season in required_seasons})
+    required_season_names = {str(season) for season in ordered_seasons}
+
+    root_info = _lstat_or_none(raw_root)
+    if root_info is not None:
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise PBPValidationError(
+                f"expected a directory at the PBP cache root, found an "
+                f"unsafe entry: {raw_root}"
+            )
+        _require_allowed_entries(raw_root, {"worklists": "dir", "games": "dir"}, "")
+
+    worklists_root = raw_root / "worklists"
+    games_root = raw_root / "games"
+
+    worklists_info = _lstat_or_none(worklists_root)
+    if worklists_info is not None:
+        if not stat.S_ISDIR(worklists_info.st_mode):
+            raise PBPValidationError(
+                f"expected a directory at worklists, found an unsafe entry: "
+                f"{worklists_root}"
+            )
+        _require_allowed_entries(
+            worklists_root,
+            {name: "dir" for name in required_season_names},
+            "worklists",
+        )
+
+    missing_worklists: list[str] = []
+    worklist_body_paths: list[Path] = []
+    worklist_frames: list[pd.DataFrame] = []
+
+    for season in ordered_seasons:
+        applicable_types = ["regular", "playoff"]
+        if season in PLAY_IN_SEASONS:
+            applicable_types.append("play_in")
+        season_dir = worklists_root / str(season)
+        season_info = _lstat_or_none(season_dir)
+        if season_info is None:
+            if require_complete:
+                missing_worklists.extend(
+                    f"worklists/{season}/{game_type}.json"
+                    for game_type in applicable_types
+                )
+            continue
+        allowed_files = {}
+        for game_type in applicable_types:
+            allowed_files[f"{game_type}.json"] = "file"
+            allowed_files[f"{game_type}.json.meta.json"] = "file"
+        _require_allowed_entries(season_dir, allowed_files, f"worklists/{season}")
+        for game_type in applicable_types:
+            body_path = season_dir / f"{game_type}.json"
+            payload = _read_worklist_pair(body_path, season=season, game_type=game_type)
+            if payload is None:
+                if require_complete:
+                    missing_worklists.append(f"worklists/{season}/{game_type}.json")
+                continue
+            worklist_body_paths.append(body_path)
+            worklist_frames.append(
+                normalize_worklist_payload(payload, season=season, game_type=game_type)
+            )
+
+    if require_complete and missing_worklists:
+        raise PBPValidationError(
+            f"missing required worklist file(s): {sorted(missing_worklists)}"
+        )
+
+    if worklist_frames:
+        combined_worklist = pd.concat(worklist_frames, ignore_index=True)
+        if combined_worklist["game_id"].duplicated().any():
+            raise PBPValidationError(
+                "duplicate worklist game ids in cache tree: "
+                f"{_duplicate_values(combined_worklist['game_id'])}"
+            )
+        combined_worklist = combined_worklist.sort_values(
+            ["season", "game_date", "game_type", "game_id"], kind="stable"
+        ).reset_index(drop=True)
+    else:
+        combined_worklist = pd.DataFrame(columns=WORKLIST_COLUMNS)
+
+    games_info = _lstat_or_none(games_root)
+    if games_info is not None:
+        if not stat.S_ISDIR(games_info.st_mode):
+            raise PBPValidationError(
+                f"expected a directory at games, found an unsafe entry: "
+                f"{games_root}"
+            )
+        _require_allowed_entries(
+            games_root, {name: "dir" for name in required_season_names}, "games"
+        )
+
+    missing_games: list[str] = []
+    game_body_paths: list[Path] = []
+
+    for season in ordered_seasons:
+        season_rows = combined_worklist.loc[combined_worklist["season"].eq(season)]
+        season_dir = games_root / str(season)
+        season_info = _lstat_or_none(season_dir)
+        if season_info is None:
+            if require_complete:
+                missing_games.extend(
+                    f"games/{season}/{game_id}.json"
+                    for game_id in season_rows["game_id"]
+                )
+            continue
+        allowed_files = {}
+        for game_id in season_rows["game_id"]:
+            allowed_files[f"{game_id}.json"] = "file"
+            allowed_files[f"{game_id}.json.meta.json"] = "file"
+        _require_allowed_entries(season_dir, allowed_files, f"games/{season}")
+        for _, row in season_rows.iterrows():
+            game_id = row["game_id"]
+            game_type = row["game_type"]
+            body_path = season_dir / f"{game_id}.json"
+            payload = _read_game_pair(
+                body_path, season=season, game_type=game_type, game_id=game_id
+            )
+            if payload is None:
+                if require_complete:
+                    missing_games.append(f"games/{season}/{game_id}.json")
+                continue
+            game_body_paths.append(body_path)
+
+    if require_complete and missing_games:
+        raise PBPValidationError(
+            f"missing required game file(s): {sorted(missing_games)}"
+        )
+
+    return CacheInventory(
+        worklist_bodies=tuple(sorted(worklist_body_paths)),
+        game_bodies=tuple(sorted(game_body_paths)),
+        worklist=combined_worklist,
+    )
+
+
+def validate_cache_inventory(
+    data_dir: Path, *, required_seasons: Iterable[int], require_complete: bool
+) -> CacheInventory:
+    return validate_cache_tree(
+        Path(data_dir) / "raw/stats_nba/pbp",
+        required_seasons=required_seasons,
+        require_complete=require_complete,
+    )
