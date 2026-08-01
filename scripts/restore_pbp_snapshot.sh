@@ -219,7 +219,17 @@ cleanup() {
     rm -rf -- "$publication_stage"
   fi
 }
-trap cleanup INT TERM EXIT
+# A signal trap that does not itself call exit does not stop the script --
+# bash runs the trap body and then RESUMES execution at the interrupted
+# point. Registering `cleanup` directly against INT/TERM (as a combined
+# `trap cleanup INT TERM EXIT`) would run cleanup and then let the restore
+# continue to completion, silently ignoring a cancellation attempt (and
+# having already deleted staging the still-running script needs). The EXIT
+# trap and the INT/TERM traps are therefore kept separate: INT/TERM only
+# ever `exit 1`, and that explicit exit is what triggers the EXIT trap's
+# `cleanup` exactly once.
+trap cleanup EXIT
+trap 'exit 1' INT TERM
 
 raw_stage="$(mktemp -d "$raw_parent/.pbp-restore-raw.XXXXXX")"
 raw_stage_owned=1

@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -689,6 +690,59 @@ def test_archive_rejects_stale_staging_entry(tmp_path, golden_data_dir):
     assert [p.name for p in archive_root.iterdir()] == [stale.name]
 
 
+def test_archive_signal_termination_cleans_up_and_exits_nonzero(tmp_path, golden_data_dir):
+    """A signal trap that doesn't itself call exit lets bash resume after
+    running it -- the exact regression this test guards against: send
+    SIGTERM once staging exists and is blocked in (shimmed) rsync, and
+    require the script to actually terminate nonzero with staging cleaned
+    up, not silently finish the archive and exit 0."""
+    data_dir = tmp_path / "data"
+    shutil.copytree(golden_data_dir, data_dir)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    rsync_script = shim_dir / "rsync"
+    # A short, bounded block: bash defers a non-EXIT trap until the current
+    # foreground child returns, so the block must be short enough for the
+    # test to observe prompt-enough termination without simply waiting out
+    # a long sleep uninterrupted (single-PID signal delivery does not reach
+    # this child directly; see the fix report for the process-group nuance).
+    rsync_script.write_text("#!/usr/bin/env bash\nsleep 2\n")
+    rsync_script.chmod(0o755)
+
+    env = dict(os.environ)
+    env["NBA_PBP_DATA_DIR"] = str(data_dir)
+    env["NBA_PBP_ARCHIVE_ROOT"] = str(archive_root)
+    env["PATH"] = f"{shim_dir}:{env.get('PATH', '')}"
+
+    proc = subprocess.Popen(
+        [str(ARCHIVE_SCRIPT)], env=env, cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        staging_dirs = []
+        while time.monotonic() < deadline:
+            staging_dirs = list(archive_root.glob(".pbp-archive.*"))
+            if staging_dirs:
+                break
+            time.sleep(0.05)
+        assert staging_dirs, "staging directory never appeared"
+
+        proc.send_signal(signal.SIGTERM)
+        _stdout, _stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    assert proc.returncode is not None and proc.returncode != 0
+    assert list(archive_root.glob(".pbp-archive.*")) == []
+    assert list(archive_root.iterdir()) == []
+
+
 # ---------------------------------------------------------------------------
 # Restore behaviors
 # ---------------------------------------------------------------------------
@@ -909,6 +963,108 @@ def test_restore_rolls_back_raw_when_second_rename_fails(tmp_path, golden_data_d
         assert list(raw_parent.glob(".pbp-restore-raw.*")) == []
     finally:
         publication_parent.chmod(0o755)
+
+
+def test_restore_rolls_back_when_publication_destination_appears_before_check(
+    tmp_path, golden_data_dir
+):
+    """Covers the collapsed second_step_ok guard's *first* branch
+    specifically -- `[ -e "$publication_destination" ]` already true by the
+    time it is checked, before the du probe or mv2 are ever attempted --
+    which is distinct from (and, since the guard was collapsed, no longer
+    incidentally covered by) the mv2-itself-fails branch tested above."""
+    snapshot, manifest_sha256 = _fresh_snapshot(tmp_path, golden_data_dir)
+    raw_destination = tmp_path / "raw_dest"
+    publication_destination = tmp_path / "pub_dest"
+
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    real_mv = shutil.which("mv")
+    # mv1 (raw_stage -> raw_destination) is the last real command before
+    # the `[ -e "$publication_destination" ]` check; shimming it to plant
+    # publication_destination immediately *after* the real move completes
+    # lands the race exactly between mv1 and that check.
+    mv_script = shim_dir / "mv"
+    mv_script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{shlex.quote(real_mv)} \"$@\"\n"
+        "rc=$?\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = \"$PBP_TEST_RAW_DESTINATION\" ]; then\n"
+        "    mkdir -p -- \"$PBP_TEST_PUBLICATION_DESTINATION\"\n"
+        "  fi\n"
+        "done\n"
+        "exit \"$rc\"\n"
+    )
+    mv_script.chmod(0o755)
+
+    result = run_restore(
+        tmp_path / "unused", snapshot, manifest_sha256,
+        raw_destination=raw_destination,
+        publication_destination=publication_destination,
+        path_prefix=str(shim_dir),
+        extra_env={
+            "PBP_TEST_RAW_DESTINATION": str(raw_destination),
+            "PBP_TEST_PUBLICATION_DESTINATION": str(publication_destination),
+        },
+    )
+    assert result.returncode != 0
+    assert "rolled back" in result.stderr.lower()
+    assert not raw_destination.exists()
+    # The concurrently-appeared publication_destination is left exactly as
+    # it was found -- the script never touches something it didn't stage.
+    assert publication_destination.is_dir()
+    assert list(publication_destination.iterdir()) == []
+
+
+def test_restore_signal_termination_cleans_up_and_exits_nonzero(tmp_path, golden_data_dir):
+    """Same regression as the archive-side signal test, for restore: a
+    combined `trap cleanup INT TERM EXIT` would run cleanup on SIGTERM and
+    then resume/complete the restore instead of stopping."""
+    snapshot, manifest_sha256 = _fresh_snapshot(tmp_path, golden_data_dir)
+    raw_destination = tmp_path / "raw_dest"
+    publication_destination = tmp_path / "pub_dest"
+
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    rsync_script = shim_dir / "rsync"
+    rsync_script.write_text("#!/usr/bin/env bash\nsleep 2\n")
+    rsync_script.chmod(0o755)
+
+    env = dict(os.environ)
+    env["NBA_PBP_DATA_DIR"] = str(tmp_path / "unused")
+    env["NBA_PBP_SNAPSHOT"] = str(snapshot)
+    env["NBA_PBP_MANIFEST_SHA256"] = manifest_sha256
+    env["NBA_PBP_RAW_DESTINATION"] = str(raw_destination)
+    env["NBA_PBP_PUBLICATION_DESTINATION"] = str(publication_destination)
+    env["PATH"] = f"{shim_dir}:{env.get('PATH', '')}"
+
+    proc = subprocess.Popen(
+        [str(RESTORE_SCRIPT)], env=env, cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        raw_stage_dirs = []
+        while time.monotonic() < deadline:
+            raw_stage_dirs = list(tmp_path.glob(".pbp-restore-raw.*"))
+            if raw_stage_dirs:
+                break
+            time.sleep(0.05)
+        assert raw_stage_dirs, "raw staging directory never appeared"
+
+        proc.send_signal(signal.SIGTERM)
+        _stdout, _stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    assert proc.returncode is not None and proc.returncode != 0
+    assert list(tmp_path.glob(".pbp-restore-raw.*")) == []
+    assert list(tmp_path.glob(".pbp-restore-publication.*")) == []
+    assert not raw_destination.exists()
+    assert not publication_destination.exists()
 
 
 def test_restore_rollback_failure_retains_named_recovery_paths(tmp_path, golden_data_dir):
