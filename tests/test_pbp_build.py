@@ -957,6 +957,168 @@ def test_mutation_invariant_names_are_pairwise_distinguishable(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Curated terminal-score-mismatch allowlist
+#
+# Game 0029600001's committed fixture derives 98-107, matching the
+# worklist. ``_terminal_score_mismatch`` (defined above, near the parser
+# tests) mutates its final action's ``scoreHome`` to make the PBP-derived
+# terminal score 99-107 instead -- a stand-in for the real early-NBA class
+# of error (points misattributed between teams, combined total unchanged)
+# this allowlist exists for.
+# ---------------------------------------------------------------------------
+
+_MISMATCH_GAME_ID = "0029600001"
+_MISMATCH_WORKLIST_PAIR = (98, 107)
+_MISMATCH_DERIVED_PAIR = (99, 107)
+
+
+def seed_two_season_publication_with_terminal_mismatch(data_dir: Path) -> Path:
+    """Like ``seed_two_season_publication``, but the 1997 regular game's
+    cached PBP body derives 99-107 while its worklist row still says
+    98-107."""
+    raw_root = seed_two_season_publication(data_dir)
+    _publish_game(
+        data_dir, 1997, "regular", _MISMATCH_GAME_ID,
+        _document_bytes(_terminal_score_mismatch),
+    )
+    return raw_root
+
+
+def test_parse_game_payload_raises_structured_terminal_score_error():
+    with pytest.raises(pbp_build.PBPTerminalScoreError) as excinfo:
+        pbp_build.parse_game_payload(
+            _document_bytes(_terminal_score_mismatch), worklist_row()
+        )
+    error = excinfo.value
+    assert isinstance(error, pbp_build.PBPBuildError)
+    assert error.game_id == _MISMATCH_GAME_ID
+    assert error.worklist_pair == _MISMATCH_WORKLIST_PAIR
+    assert error.derived_pair == _MISMATCH_DERIVED_PAIR
+    assert error.frame["action_id"].tolist() == list(range(1, 9))
+    assert error.report["events"] == 8
+
+
+def test_build_tree_accepts_allowlisted_terminal_mismatch(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    raw_root = seed_two_season_publication_with_terminal_mismatch(data_dir)
+    monkeypatch.setitem(
+        pbp_build.SCORE_MISMATCH_ALLOWLIST, _MISMATCH_GAME_ID,
+        {
+            "worklist": _MISMATCH_WORKLIST_PAIR,
+            "derived": _MISMATCH_DERIVED_PAIR,
+        },
+    )
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+
+    manifest = pbp_build.build_tree(raw_root, stage_dir, seasons=[1997, 2026])
+
+    assert manifest["validation"]["terminal_mismatches"] == {
+        _MISMATCH_GAME_ID: {
+            "worklist": list(_MISMATCH_WORKLIST_PAIR),
+            "derived": list(_MISMATCH_DERIVED_PAIR),
+        },
+    }
+    record = manifest["validation"]["games"][_MISMATCH_GAME_ID]
+    # Events/scores are never rewritten: the recorded terminal score is the
+    # PBP-derived one, not silently patched to match the worklist.
+    assert record["terminal_home_score"] == _MISMATCH_DERIVED_PAIR[0]
+    assert record["terminal_away_score"] == _MISMATCH_DERIVED_PAIR[1]
+    table = pq.read_table(_partition_path(stage_dir, 1997))
+    assert table.column("score_home").to_pylist()[-1] == _MISMATCH_DERIVED_PAIR[0]
+
+    # Independent revalidation of the published tree must reach the same
+    # accepted, recorded conclusion -- not merely "build_tree happened to
+    # let it through".
+    report = pbp_build.validate_publication(raw_root, stage_dir)
+    assert report == manifest["validation"]
+
+
+def test_build_tree_rejects_non_allowlisted_terminal_mismatch(tmp_path):
+    data_dir = tmp_path / "data"
+    raw_root = seed_two_season_publication_with_terminal_mismatch(data_dir)
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+
+    with pytest.raises(
+        pbp_build.PBPBuildError,
+        match=(
+            rf"game {_MISMATCH_GAME_ID} terminal score "
+            rf"{_MISMATCH_DERIVED_PAIR[0]}-{_MISMATCH_DERIVED_PAIR[1]} does "
+            rf"not match worklist {_MISMATCH_WORKLIST_PAIR[0]}-"
+            rf"{_MISMATCH_WORKLIST_PAIR[1]}.*pbp_score_mismatches\.json"
+        ),
+    ):
+        pbp_build.build_tree(raw_root, stage_dir, seasons=[1997, 2026])
+
+
+def test_build_tree_rejects_allowlist_entry_with_wrong_recorded_pairs(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "data"
+    raw_root = seed_two_season_publication_with_terminal_mismatch(data_dir)
+    # Recorded derived pair does not match what this payload actually
+    # derives -- e.g. the allowlist entry was reviewed against a different
+    # (now-changed) body. Must still fail, naming the same invariant.
+    monkeypatch.setitem(
+        pbp_build.SCORE_MISMATCH_ALLOWLIST, _MISMATCH_GAME_ID,
+        {"worklist": _MISMATCH_WORKLIST_PAIR, "derived": (100, 107)},
+    )
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+
+    with pytest.raises(
+        pbp_build.PBPBuildError, match=f"game {_MISMATCH_GAME_ID} terminal score"
+    ):
+        pbp_build.build_tree(raw_root, stage_dir, seasons=[1997, 2026])
+
+
+def test_validate_publication_rejects_terminal_mismatch_removed_from_allowlist(
+    tmp_path, monkeypatch
+):
+    """A previously accepted mismatch must fail revalidation once its
+    allowlist entry is gone -- acceptance is never "sticky" in the
+    manifest; it is reproven on every independent validation."""
+    data_dir = tmp_path / "data"
+    raw_root = seed_two_season_publication_with_terminal_mismatch(data_dir)
+    monkeypatch.setitem(
+        pbp_build.SCORE_MISMATCH_ALLOWLIST, _MISMATCH_GAME_ID,
+        {
+            "worklist": _MISMATCH_WORKLIST_PAIR,
+            "derived": _MISMATCH_DERIVED_PAIR,
+        },
+    )
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    pbp_build.build_tree(raw_root, stage_dir, seasons=[1997, 2026])
+
+    monkeypatch.delitem(pbp_build.SCORE_MISMATCH_ALLOWLIST, _MISMATCH_GAME_ID)
+    with pytest.raises(
+        pbp_build.PBPBuildError, match=f"game {_MISMATCH_GAME_ID} terminal score"
+    ):
+        pbp_build.validate_publication(raw_root, stage_dir)
+
+
+def test_load_score_mismatch_allowlist_rejects_malformed_entries(tmp_path):
+    path = tmp_path / "pbp_score_mismatches.json"
+    path.write_text(
+        json.dumps({"0029600001": {"worklist": [98], "derived": [99, 107]}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(pbp_build.PBPBuildError, match="malformed"):
+        pbp_build._load_score_mismatch_allowlist(path)
+
+
+def test_committed_score_mismatch_allowlist_starts_empty():
+    assert (
+        json.loads(
+            pbp_build.SCORE_MISMATCH_ALLOWLIST_PATH.read_text(encoding="utf-8")
+        )
+        == {}
+    )
+
+
+# ---------------------------------------------------------------------------
 # Step 4: anomaly summary (Tukey fences) and audit rendering
 # ---------------------------------------------------------------------------
 
@@ -1004,7 +1166,7 @@ def test_event_count_distribution_matches_manual_tukey_fences():
     assert distribution["outliers"] == ["g6"]
 
 
-def _synthetic_manifest():
+def _synthetic_manifest(*, terminal_mismatches=None):
     spike_ids = list(pbp.SOURCE_SPIKE_GAME_IDS)
     games = {
         spike_ids[0]: {
@@ -1138,6 +1300,9 @@ def _synthetic_manifest():
                 for key in pbp_build.ACTION_SOURCE_KEYS
             },
             "games": games,
+            "terminal_mismatches": (
+                {} if terminal_mismatches is None else terminal_mismatches
+            ),
             "gates": {name: True for name in pbp_build._BUILD_GATES},
         },
     }
@@ -1188,6 +1353,7 @@ def test_render_audit_success_contains_every_required_section():
     assert "no Tukey outliers" in text
     assert "null=" in text and "blank=" in text
     assert "Early-zero-sentinel total:" in text
+    assert "## Source score mismatches (allowlisted)\nnone" in text
     for game_id in pbp.SOURCE_SPIKE_GAME_IDS:
         assert game_id in text
     for name in pbp_build._BUILD_GATES:
@@ -1200,6 +1366,27 @@ def test_render_audit_success_contains_every_required_section():
     assert f"Full manifest SHA-256: {'f' * 64}" in text
     assert "Immutable snapshot: pbp-archive-2026-abc123def456" in text
     assert "Restore verification: passed" in text
+
+
+def test_render_audit_lists_allowlisted_terminal_mismatches():
+    manifest = _synthetic_manifest(
+        terminal_mismatches={
+            "0029600070": {"worklist": [108, 79], "derived": [101, 86]},
+        }
+    )
+    evidence = pbp_build.AuditEvidence(
+        source_spike=_evidence_rows(manifest),
+        cross_source_validated=True,
+        reproducible_build=True,
+        snapshot_checksums_verified=True,
+        restore_verified=True,
+    )
+    text = pbp_build.render_audit(
+        manifest, evidence, manifest_sha256="f" * 64, snapshot_name="x"
+    )
+    assert "## Source score mismatches (allowlisted)" in text
+    assert "0029600070: worklist 108-79, derived 101-86" in text
+    assert "## Source score mismatches (allowlisted)\nnone" not in text
 
 
 def test_render_audit_rejects_missing_spike_id():

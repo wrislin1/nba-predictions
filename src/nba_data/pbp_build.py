@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
+from importlib import resources
 import importlib.metadata
 import json
 from pathlib import Path
@@ -24,6 +25,39 @@ from nba_data import cache, pbp, publication
 
 class PBPBuildError(ValueError):
     """Raised when a V3 play-by-play payload violates the fixed contract."""
+
+
+class PBPTerminalScoreError(PBPBuildError):
+    """Raised when only the PBP-derived terminal score disagrees with the
+    worklist -- a known, narrow class of early-source data error (points
+    misattributed between teams; totals still equal) distinct from every
+    other contract violation ``parse_game_payload`` checks.
+
+    Carries the structured ``(home, away)`` score pairs plus the fully
+    built ``frame``/``report`` so a caller can implement a curated
+    allowlist policy, or simply log-and-continue, without string-matching
+    the exception message or re-parsing the payload.
+    """
+
+    def __init__(
+        self,
+        *,
+        game_id: str,
+        worklist_pair: tuple[int, int],
+        derived_pair: tuple[int, int],
+        frame: pd.DataFrame,
+        report: dict,
+    ) -> None:
+        self.game_id = game_id
+        self.worklist_pair = worklist_pair
+        self.derived_pair = derived_pair
+        self.frame = frame
+        self.report = report
+        super().__init__(
+            f"game {game_id} terminal score "
+            f"{derived_pair[0]}-{derived_pair[1]} does not match worklist "
+            f"{worklist_pair[0]}-{worklist_pair[1]}"
+        )
 
 
 ACTION_SOURCE_KEYS = frozenset({
@@ -459,15 +493,14 @@ def parse_game_payload(
         f"periods must run 1..max(period) in order, got {periods_seen}",
     )
 
+    # Computed here (pre-sort) rather than after: for a single game, the
+    # last row in response/action-id order *is* the terminal row, and
+    # sorting by (game_id, action_id) below cannot reorder a single game's
+    # rows relative to each other.
     terminal_home = int(frame["score_home"].iloc[-1])
     terminal_away = int(frame["score_away"].iloc[-1])
     expected_home = int(worklist_row["home_pts"])
     expected_away = int(worklist_row["away_pts"])
-    _require(
-        (terminal_home, terminal_away) == (expected_home, expected_away),
-        f"terminal score {terminal_home}-{terminal_away} does not match "
-        f"worklist {expected_home}-{expected_away}",
-    )
 
     for column, dtype in _EVENT_COLUMN_DTYPES.items():
         frame[column] = frame[column].astype(dtype)
@@ -497,6 +530,24 @@ def parse_game_payload(
         "blank_score_pairs": int(blank_count),
         "field_reports": field_reports,
     }
+
+    # The terminal-score check is deliberately last: a mismatch here is a
+    # known, narrow class of early-source data error (points misattributed
+    # between teams, totals still equal) distinct from every other
+    # contract violation above. It raises a *structured* subclass carrying
+    # the fully built ``frame``/``report`` so a caller that wants to accept
+    # a specific, allowlisted mismatch (``pbp_build.build_tree``) or simply
+    # log-and-continue (``pbp.fetch_games``) never needs to re-parse the
+    # payload or string-match the message.
+    if (terminal_home, terminal_away) != (expected_home, expected_away):
+        raise PBPTerminalScoreError(
+            game_id=game_id,
+            worklist_pair=(expected_home, expected_away),
+            derived_pair=(terminal_home, terminal_away),
+            frame=frame,
+            report=report,
+        )
+
     return frame, report
 
 
@@ -521,11 +572,72 @@ _BUILD_GATES = (
     "primary_key_unique",
     "row_season_consistent",
     "worklist_membership_exact",
-    "terminal_scores_match",
+    "terminal_scores_verified",
     "zstd_compression_verified",
     "partition_checksums_verified",
     "manifest_json_canonical",
 )
+
+
+# ---------------------------------------------------------------------------
+# Curated terminal-score-mismatch allowlist
+#
+# A known, narrow class of early-source PBP error misattributes points
+# between the two teams while leaving the combined total (and therefore
+# every other invariant) correct. ``fetch-pbp`` logs and continues past
+# every such mismatch (see ``pbp.fetch_games``); publishing one requires an
+# explicit, human-reviewed entry here recording *both* the worklist pair
+# and the exact PBP-derived pair that was reviewed and accepted -- an
+# unreviewed or since-changed mismatch still blocks the build.
+# ---------------------------------------------------------------------------
+
+SCORE_MISMATCH_ALLOWLIST_PATH = resources.files("nba_data.reference").joinpath(
+    "pbp_score_mismatches.json"
+)
+
+
+def _load_score_mismatch_allowlist(
+    path: Path = SCORE_MISMATCH_ALLOWLIST_PATH,
+) -> dict[str, dict[str, tuple[int, int]]]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PBPBuildError(
+            f"score mismatch allowlist is not valid JSON: {path}"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise PBPBuildError(
+            f"score mismatch allowlist must contain an object: {path}"
+        )
+    allowlist: dict[str, dict[str, tuple[int, int]]] = {}
+    for game_id, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise PBPBuildError(
+                f"score mismatch allowlist entry for {game_id} must be "
+                "an object"
+            )
+        try:
+            worklist_pair = tuple(int(value) for value in entry["worklist"])
+            derived_pair = tuple(int(value) for value in entry["derived"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PBPBuildError(
+                f"score mismatch allowlist entry for {game_id} is "
+                "malformed: 'worklist'/'derived' must each be a "
+                "[home, away] integer pair"
+            ) from exc
+        if len(worklist_pair) != 2 or len(derived_pair) != 2:
+            raise PBPBuildError(
+                f"score mismatch allowlist entry for {game_id} is "
+                "malformed: 'worklist'/'derived' must each be a "
+                "[home, away] integer pair"
+            )
+        allowlist[str(game_id)] = {
+            "worklist": worklist_pair, "derived": derived_pair,
+        }
+    return allowlist
+
+
+SCORE_MISMATCH_ALLOWLIST = _load_score_mismatch_allowlist()
 
 
 @dataclass(frozen=True)
@@ -725,7 +837,11 @@ def _summarize_partition(
     uniqueness, row-level season consistency, worklist membership (both
     that every partition game is a known worklist game, and that it is
     filed under its true ending-season partition), worklist ``game_type``
-    agreement, and terminal-score agreement with the worklist.
+    agreement, and terminal-score agreement with the worklist -- except for
+    a game whose ``game_id`` appears in ``SCORE_MISMATCH_ALLOWLIST`` with
+    an exactly matching recorded worklist/derived pair, which is accepted
+    unchanged (events and PBP-derived running scores are never rewritten)
+    and reported under the returned ``terminal_mismatches``.
     """
     if table.schema.names != EVENT_COLUMNS:
         raise PBPBuildError(
@@ -768,6 +884,7 @@ def _summarize_partition(
         period_counts[int(value)] = period_counts.get(int(value), 0) + 1
 
     games_report: dict[str, dict] = {}
+    terminal_mismatches: dict[str, dict] = {}
     start = 0
     for index in range(1, n + 1):
         if index == n or game_ids[index] != game_ids[start]:
@@ -803,11 +920,26 @@ def _summarize_partition(
             expected_home = int(worklist_row["home_pts"])
             expected_away = int(worklist_row["away_pts"])
             if (terminal_home, terminal_away) != (expected_home, expected_away):
-                raise PBPBuildError(
-                    f"game {game_id} terminal score "
-                    f"{terminal_home}-{terminal_away} does not match "
-                    f"worklist {expected_home}-{expected_away}"
-                )
+                derived_pair = (terminal_home, terminal_away)
+                worklist_pair = (expected_home, expected_away)
+                allowed = SCORE_MISMATCH_ALLOWLIST.get(game_id)
+                if (
+                    allowed is None
+                    or allowed["worklist"] != worklist_pair
+                    or allowed["derived"] != derived_pair
+                ):
+                    raise PBPBuildError(
+                        f"game {game_id} terminal score "
+                        f"{terminal_home}-{terminal_away} does not match "
+                        f"worklist {expected_home}-{expected_away}; add a "
+                        "reviewed entry to "
+                        "src/nba_data/reference/pbp_score_mismatches.json "
+                        "to accept it"
+                    )
+                terminal_mismatches[game_id] = {
+                    "worklist": list(worklist_pair),
+                    "derived": list(derived_pair),
+                }
             games_report[game_id] = {
                 "season": season,
                 "game_type": game_type,
@@ -836,6 +968,7 @@ def _summarize_partition(
         "max_period": int(max(periods_col)),
         "period_counts": period_counts,
         "games": games_report,
+        "terminal_mismatches": terminal_mismatches,
         "field_reports": field_reports,
     }
 
@@ -916,6 +1049,7 @@ def _run_build(raw_root: Path, ordered_seasons: list[int], *, obtain_partition) 
     period_counts: dict[str, dict] = {}
     distributions: dict[str, dict] = {}
     games_validation: dict[str, dict] = {}
+    terminal_mismatches: dict[str, dict] = {}
     field_totals: dict[str, dict] = {}
 
     for season in ordered_seasons:
@@ -967,6 +1101,7 @@ def _run_build(raw_root: Path, ordered_seasons: list[int], *, obtain_partition) 
         if season_distributions:
             distributions[str(season)] = season_distributions
         games_validation.update(summary["games"])
+        terminal_mismatches.update(summary["terminal_mismatches"])
         for column, counts in summary["field_reports"].items():
             source_key = _EVENT_COLUMN_TO_SOURCE_KEY[column]
             bucket = field_totals.setdefault(
@@ -1010,6 +1145,10 @@ def _run_build(raw_root: Path, ordered_seasons: list[int], *, obtain_partition) 
             game_id: games_validation[game_id]
             for game_id in sorted(games_validation)
         },
+        "terminal_mismatches": {
+            game_id: terminal_mismatches[game_id]
+            for game_id in sorted(terminal_mismatches)
+        },
         "gates": gates,
     }
     return {
@@ -1052,7 +1191,19 @@ def build_tree(raw_root: Path, stage_dir: Path, *, seasons: Iterable[int]) -> di
                     path, game_id=game_id
                 ),
             )
-            frame, _report = parse_game_payload(payload, row.to_dict())
+            try:
+                frame, _report = parse_game_payload(payload, row.to_dict())
+            except PBPTerminalScoreError as exc:
+                # Accept the fully parsed frame regardless of allowlist
+                # status here: the frame/events themselves are never
+                # rewritten, and whether this specific mismatch is
+                # actually allowlisted is decided uniformly for both
+                # ``build_tree`` and ``validate_publication`` by
+                # ``_summarize_partition`` once the partition is written
+                # and reread -- raising here instead would make an
+                # unreviewed mismatch fail before a season-scoped, named
+                # error could ever be produced.
+                frame = exc.frame
             frames.append(frame)
         if not frames:
             raise PBPBuildError(
@@ -1514,6 +1665,22 @@ def render_audit(
         record["early_zero_sentinels"] for record in games.values()
     )
     lines.append(f"Early-zero-sentinel total: {early_zero_total}")
+    lines.append("")
+
+    lines.append("## Source score mismatches (allowlisted)")
+    terminal_mismatches = validation.get("terminal_mismatches", {})
+    if not terminal_mismatches:
+        lines.append("none")
+    else:
+        for game_id in sorted(terminal_mismatches):
+            record = terminal_mismatches[game_id]
+            worklist_pair = record["worklist"]
+            derived_pair = record["derived"]
+            lines.append(
+                f"- {game_id}: worklist {worklist_pair[0]}-"
+                f"{worklist_pair[1]}, derived {derived_pair[0]}-"
+                f"{derived_pair[1]}"
+            )
     lines.append("")
 
     lines.append("## Source spikes")

@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import functools
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,9 @@ from nba_api.stats.endpoints import LeagueGameFinder, PlayByPlayV3
 from nba_api.stats.library.http import NBAStatsHTTP
 
 from nba_data import cache, franchises, pbp_build, stats_nba
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PBPValidationError(ValueError):
@@ -1151,6 +1155,7 @@ def fetch_games(
     )
 
     preflight_done = False
+    terminal_mismatches: list[dict[str, object]] = []
     for _, row in ordered.iterrows():
         season = int(row["season"])
         game_type = str(row["game_type"])
@@ -1183,9 +1188,45 @@ def fetch_games(
         metadata = _expected_game_identity(season, game_type, game_id)
         publish_game_payload(destination, payload, metadata)
         # Run the fixed parser immediately after each transport-valid body
-        # publishes: schema drift raises here, after the raw body is
-        # already cached as evidence, and stops the fetch.
-        pbp_build.parse_game_payload(payload, row.to_dict())
+        # publishes: schema drift (or any other parse-contract violation)
+        # raises here, after the raw body is already cached as evidence,
+        # and stops the fetch. A *terminal-score-only* mismatch is a known,
+        # narrow class of early-source error (points misattributed between
+        # teams, combined total unchanged); it does not stop the fetch --
+        # it is logged, collected, and reported in the end-of-run summary
+        # below. Publishing it later still requires a human-reviewed
+        # allowlist entry (see ``pbp_build.build_tree``).
+        try:
+            pbp_build.parse_game_payload(payload, row.to_dict())
+        except pbp_build.PBPTerminalScoreError as exc:
+            _LOGGER.warning(
+                "PBP terminal score mismatch for game %s: worklist "
+                "%s-%s, derived %s-%s (raw evidence cached; fetch "
+                "continues)",
+                exc.game_id,
+                exc.worklist_pair[0], exc.worklist_pair[1],
+                exc.derived_pair[0], exc.derived_pair[1],
+            )
+            terminal_mismatches.append({
+                "game_id": exc.game_id,
+                "worklist": list(exc.worklist_pair),
+                "derived": list(exc.derived_pair),
+            })
+
+    if terminal_mismatches:
+        _LOGGER.warning(
+            "PBP fetch completed with %d terminal-score mismatch(es) "
+            "cached as evidence; review and add reviewed entries to "
+            "src/nba_data/reference/pbp_score_mismatches.json before "
+            "build-pbp can publish them: %s",
+            len(terminal_mismatches),
+            ", ".join(
+                f"{m['game_id']} (worklist {m['worklist'][0]}-"
+                f"{m['worklist'][1]}, derived {m['derived'][0]}-"
+                f"{m['derived'][1]})"
+                for m in terminal_mismatches
+            ),
+        )
 
 
 def _default_session() -> requests.Session:

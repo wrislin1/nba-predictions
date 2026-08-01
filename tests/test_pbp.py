@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import Mock, call
@@ -1957,6 +1958,41 @@ def test_fetch_games_schema_drift_response_cached_then_stops(tmp_path, monkeypat
     body_path = pbp.game_path(data_dir, 1997, "0029600001")
     assert body_path.read_bytes() == drift_payload
     assert not pbp.game_path(data_dir, 1997, "0049600001").exists()
+
+
+def test_fetch_games_continues_past_terminal_mismatch_and_reports_summary(
+    tmp_path, monkeypatch, caplog
+):
+    """A terminal-score-only mismatch (a known, narrow early-source error
+    class) does not stop the fetch: it is cached as raw evidence, logged,
+    and the run continues to request subsequent games. Publishing the
+    mismatched game later still requires a reviewed allowlist entry (see
+    ``pbp_build.build_tree``) -- fetch itself never consults the
+    allowlist, it only logs and collects."""
+    data_dir = tmp_path / "data"
+    worklist = _two_game_worklist()
+    monkeypatch.setattr(pbp.stats_nba, "preflight_dns", Mock(return_value=("1.2.3.4",)))
+    # 0029600001's worklist row expects 98-107; this body derives 99-107.
+    session = FakeSession([
+        FakeResponse(
+            200, _valid_game_payload("0029600001", home_pts=99, away_pts=107), {}
+        ),
+        FakeResponse(
+            200, _valid_game_payload("0049600001", home_pts=109, away_pts=99), {}
+        ),
+    ])
+    with caplog.at_level(logging.WARNING, logger="nba_data.pbp"):
+        pbp.fetch_games(data_dir, worklist, session=session, pacer=_no_wait_pacer())
+
+    assert session.calls == 2
+    assert pbp.game_path(data_dir, 1997, "0029600001").exists()
+    assert pbp.game_path(data_dir, 1997, "0049600001").exists()
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "0029600001" in messages
+    assert "98-107" in messages
+    assert "99-107" in messages
+    assert "1 terminal-score mismatch" in messages
 
 
 def test_fetch_games_resume_requests_only_remaining_game(tmp_path, monkeypatch):

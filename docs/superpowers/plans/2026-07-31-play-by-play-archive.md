@@ -31,6 +31,7 @@
 - The event primary key is `(game_id, action_id)`. `action_number` duplicates and non-monotonic values are valid source behavior.
 - Preserve the exact source score strings in `score_home_raw` and `score_away_raw`; derive non-null running scores separately.
 - The Parquet projection is fixed. A missing or additional V3 action key fails until the design, parser, and fixtures are reviewed together.
+- A PBP terminal-score mismatch against the worklist (a known, narrow class of early-source error: points misattributed between teams, combined total unchanged) does not stop `fetch-pbp`, which logs it and continues; publishing it still requires a human-reviewed entry in the committed `src/nba_data/reference/pbp_score_mismatches.json` allowlist recording both the worklist and PBP-derived pairs. Schema drift (a missing or additional V3 action key) still blocks both fetch continuation assumptions and publication exactly as before.
 - Write one deterministic `events.parquet` file for every `season=1997` through `season=2026`, with rows sorted by `game_id, action_id`.
 - `data/raw/stats_nba/pbp/` and `data/parquet-large/` remain gitignored. No raw response, PBP manifest, or PBP Parquet file is committed.
 - The repository's fresh-clone Git size remains below 100 MiB.
@@ -1354,7 +1355,10 @@ Test:
 4. capacity failure produces zero PlayByPlay requests;
 5. a complete valid game pair produces zero requests;
 6. two missing games produce two serialized requests and exact sidecars;
-7. a schema-drift response is cached and then stops the fetch; and
+7. a schema-drift response is cached and then stops the fetch, while a
+   terminal-score-only mismatch is cached, logged, does not stop the
+   fetch, and is reported in an end-of-run summary alongside subsequent
+   games still being requested; and
 8. rerunning after one completed game requests only the remaining game.
 
 Monkeypatch `stats_nba.preflight_dns` and assert it is called once before the
@@ -1428,7 +1432,11 @@ count missing game pairs without treating invalid pairs as missing
 enforce the byte capacity predicate
 preflight DNS again if worklist requests occurred and game requests remain
 fetch selected missing games in stable season/date/type/game_id order
-run the fixed parser immediately after each transport-valid body publishes
+run the fixed parser immediately after each transport-valid body publishes,
+    logging and continuing past a terminal-score-only mismatch (a
+    structured PBPTerminalScoreError) while still stopping on schema
+    drift or any other parse failure, and reporting a summary of every
+    collected mismatch at the end of the run
 revalidate the selected inventory
 ```
 
@@ -1694,6 +1702,9 @@ Require this deterministic content:
 - `validation.action_fields[source_key]` with null and blank counts;
 - `validation.games[game_id]` with season, game type, event count, max period,
   terminal home/away score, early-zero-sentinel count, and blank-score count;
+- `validation.terminal_mismatches[game_id]` with the allowlisted worklist and
+  PBP-derived score pairs for each accepted terminal-score mismatch (empty
+  object when none);
 - `validation.gates` with one explicit `true` value for every build gate; and
 - each `partitions[season]` entry's relative path, row count, game count, byte
   size, maximum period, Parquet SHA-256, and logical `row_sha256`.
@@ -1759,6 +1770,8 @@ one row per season with games, events, max period, and partition SHA-256
 source schema version and package versions
 anomaly summary and explicit no-outlier groups
 action-field availability and early-zero-sentinel totals
+source score mismatches (allowlisted), one line per accepted game with both
+    score pairs, and an explicit none line when empty
 all four source-spike IDs, response bytes, event counts, periods, and finals
 one passed row for every validation gate and execution-evidence flag
 full manifest SHA-256
