@@ -23,6 +23,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import time
 
 import pandas as pd
 import pytest
@@ -668,6 +669,26 @@ def test_archive_cleans_up_staging_after_prepublication_failure(tmp_path, golden
     assert list(archive_root.glob(".pbp-archive.*")) == []
 
 
+def test_archive_rejects_stale_staging_entry(tmp_path, golden_data_dir):
+    data_dir = tmp_path / "data"
+    shutil.copytree(golden_data_dir, data_dir)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    stale = archive_root / ".pbp-archive.stale123"
+    stale.mkdir()
+    (stale / "leftover.txt").write_text("from a crashed prior run\n")
+
+    result = run_archive(data_dir, archive_root)
+    assert result.returncode != 0
+    assert "stale" in result.stderr.lower()
+    # The stale entry is rejected, never silently absorbed or deleted.
+    assert stale.is_dir()
+    assert (stale / "leftover.txt").exists()
+    # And no *new* snapshot was produced alongside it.
+    assert [p.name for p in archive_root.iterdir()] == [stale.name]
+
+
 # ---------------------------------------------------------------------------
 # Restore behaviors
 # ---------------------------------------------------------------------------
@@ -891,6 +912,11 @@ def test_restore_rolls_back_raw_when_second_rename_fails(tmp_path, golden_data_d
 
 
 def test_restore_rollback_failure_retains_named_recovery_paths(tmp_path, golden_data_dir):
+    """A failure in *any* part of the second-destination step -- here, the
+    post-publish integrity probe on the raw destination itself failing
+    (simulating ENOENT/EACCES/a stalled mount) -- must still drive the
+    rollback attempt. When that rollback also fails (raw_parent is locked),
+    every retained path is named and nothing is deleted."""
     snapshot, manifest_sha256 = _fresh_snapshot(tmp_path, golden_data_dir)
     raw_parent = tmp_path / "raw_parent"
     publication_parent = tmp_path / "publication_parent"
@@ -907,8 +933,8 @@ def test_restore_rollback_failure_retains_named_recovery_paths(tmp_path, golden_
         "#!/usr/bin/env bash\n"
         "for arg in \"$@\"; do\n"
         "  if [ \"$arg\" = \"$PBP_TEST_RAW_DESTINATION\" ]; then\n"
-        "    mkdir -p -- \"$PBP_TEST_PUBLICATION_DESTINATION\"\n"
         "    chmod 555 -- \"$PBP_TEST_RAW_PARENT\"\n"
+        "    exit 1\n"
         "  fi\n"
         "done\n"
         f"exec {shlex.quote(real_du)} \"$@\"\n"
@@ -923,7 +949,6 @@ def test_restore_rollback_failure_retains_named_recovery_paths(tmp_path, golden_
             path_prefix=str(shim_dir),
             extra_env={
                 "PBP_TEST_RAW_DESTINATION": str(raw_destination),
-                "PBP_TEST_PUBLICATION_DESTINATION": str(publication_destination),
                 "PBP_TEST_RAW_PARENT": str(raw_parent),
             },
         )
@@ -932,8 +957,51 @@ def test_restore_rollback_failure_retains_named_recovery_paths(tmp_path, golden_
         assert "do not delete" in result.stderr
         assert str(raw_destination) in result.stderr
         assert str(publication_destination) in result.stderr
+        # Nothing was deleted: the raw destination (published, then an
+        # unrelated failure blocked rollback) is still exactly there.
+        assert raw_destination.is_dir()
     finally:
         raw_parent.chmod(0o755)
+
+
+def test_restore_probe_failure_alone_triggers_rollback_not_a_bare_abort(
+    tmp_path, golden_data_dir
+):
+    """The narrowest regression case: the post-publish probe on the raw
+    destination fails, raw_parent is otherwise perfectly writable, and
+    nothing else is wrong. The rollback must still be attempted (and here,
+    succeed cleanly) rather than the script aborting mid-flight under
+    set -e with the raw destination left half-published and unguided."""
+    snapshot, manifest_sha256 = _fresh_snapshot(tmp_path, golden_data_dir)
+    raw_destination = tmp_path / "raw_dest"
+    publication_destination = tmp_path / "pub_dest"
+
+    shim_dir = tmp_path / "shims"
+    shim_dir.mkdir()
+    real_du = shutil.which("du")
+    du_script = shim_dir / "du"
+    du_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  if [ \"$arg\" = \"$PBP_TEST_RAW_DESTINATION\" ]; then\n"
+        "    exit 1\n"
+        "  fi\n"
+        "done\n"
+        f"exec {shlex.quote(real_du)} \"$@\"\n"
+    )
+    du_script.chmod(0o755)
+
+    result = run_restore(
+        tmp_path / "unused", snapshot, manifest_sha256,
+        raw_destination=raw_destination,
+        publication_destination=publication_destination,
+        path_prefix=str(shim_dir),
+        extra_env={"PBP_TEST_RAW_DESTINATION": str(raw_destination)},
+    )
+    assert result.returncode != 0
+    assert "rolled back" in result.stderr.lower()
+    assert not raw_destination.exists()
+    assert not publication_destination.exists()
 
 
 def test_rebuild_compare_rejects_version_mismatch(tmp_path, golden_data_dir):
@@ -1065,20 +1133,102 @@ def test_write_audit_rejects_missing_source_spike_game(tmp_path, golden_data_dir
 
 
 def test_write_audit_rejects_cross_source_mismatch(tmp_path, spike_snapshot):
-    data_dir, snapshot, manifest_sha256 = spike_snapshot
+    # spike_snapshot is module-scoped and reused by other tests in this
+    # file; copy its data_dir into this test's own tmp_path before
+    # mutating anything so no other test ever observes the corruption.
+    original_data_dir, snapshot, manifest_sha256 = spike_snapshot
+    original_games_bytes = (original_data_dir / "parquet/games.parquet").read_bytes()
+    data_dir = tmp_path / "data"
+    shutil.copytree(original_data_dir, data_dir)
+
     games_path = data_dir / "parquet/games.parquet"
     frame = pd.read_parquet(games_path)
     frame.loc[frame.index[0], "home_pts"] = int(frame.loc[frame.index[0], "home_pts"]) + 1
     frame.to_parquet(games_path)
 
     output = tmp_path / "audit.md"
-    try:
-        with pytest.raises(pbp.PBPValidationError):
-            pbp_snapshot.write_audit(
-                data_dir, snapshot, manifest_sha256, output,
-                reproducible_build_verified=True, restore_verified=True,
-            )
-        assert not output.exists()
-    finally:
-        frame.loc[frame.index[0], "home_pts"] = int(frame.loc[frame.index[0], "home_pts"]) - 1
-        frame.to_parquet(games_path)
+    with pytest.raises(pbp.PBPValidationError):
+        pbp_snapshot.write_audit(
+            data_dir, snapshot, manifest_sha256, output,
+            reproducible_build_verified=True, restore_verified=True,
+        )
+    assert not output.exists()
+    # The shared module-scoped fixture's own copy is provably untouched.
+    assert (
+        original_data_dir / "parquet/games.parquet"
+    ).read_bytes() == original_games_bytes
+
+
+# ---------------------------------------------------------------------------
+# Performance regression guard: SHA256SUMS grammar validation must be
+# linear, not quadratic, at real-archive scale (tens of thousands of
+# files). This extracts the actual function body out of the live script
+# (never a hand-duplicated copy, so it can't silently drift from what
+# production runs) and times it standalone against a large synthetic
+# SHA256SUMS.
+# ---------------------------------------------------------------------------
+
+
+def _extract_bash_function(script_path: Path, function_name: str) -> str:
+    text = script_path.read_text()
+    start = text.index(f"{function_name}() {{")
+    depth = 0
+    end = None
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    assert end is not None, f"could not find end of function {function_name!r}"
+    return text[start:end]
+
+
+def test_sha256sums_grammar_validation_is_linear(tmp_path):
+    function_source = _extract_bash_function(
+        RESTORE_SCRIPT, "validate_sha256sums_grammar"
+    )
+
+    snapshot = tmp_path / "bench_snapshot"
+    snapshot.mkdir()
+    count = 8000
+    lines = []
+    for index in range(count):
+        relative = f"file_{index:06d}.bin"
+        payload = str(index).encode("utf-8")
+        (snapshot / relative).write_bytes(payload)
+        digest = hashlib.sha256(payload).hexdigest()
+        lines.append(f"{digest}  {relative}")
+    (snapshot / "SHA256SUMS").write_text("\n".join(lines) + "\n")
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "export LC_ALL=C\n"
+        + function_source
+        + "\n"
+        'validate_sha256sums_grammar "$1"\n'
+    )
+    harness.chmod(0o755)
+
+    start = time.monotonic()
+    result = subprocess.run(
+        ["bash", str(harness), str(snapshot)],
+        capture_output=True, text=True, timeout=60,
+    )
+    elapsed = time.monotonic() - start
+    assert result.returncode == 0, result.stderr
+    # The reviewer benchmarked the pre-fix (quadratic-ish) implementation at
+    # 4,000 lines -> 4.8s, 16,000 -> 38s (~n^1.9); extrapolated, 8,000 lines
+    # would take roughly 18s there. The linear rewrite should clear this in
+    # a couple of seconds. A generous-but-discriminating bound keeps this
+    # from being flaky on a loaded machine while still catching a
+    # regression back to quadratic behavior.
+    assert elapsed < 12, (
+        f"SHA256SUMS grammar validation took {elapsed:.1f}s for {count} "
+        "lines -- expected linear-time behavior"
+    )

@@ -80,13 +80,25 @@ cleanup() {
     rm -rf -- "$staging"
   fi
 }
-trap cleanup EXIT
+trap cleanup INT TERM EXIT
 
 test ! -L "$archive_root" && test -d "$archive_root" || {
   printf 'missing or unsafe PBP archive root: %s\n' "$archive_root" >&2
   exit 1
 }
 archive_root="$(cd "$archive_root" && pwd -P)"
+
+# A stale staging entry left behind by a previous crashed/killed run is
+# never silently ignored or reused: it is rejected outright, since it may
+# hold a partial or unsafe copy and mktemp would only ever create a new,
+# differently named sibling next to it.
+stale_staging="$(
+  find "$archive_root" -mindepth 1 -maxdepth 1 -name '.pbp-archive.*' -print -quit
+)"
+if [ -n "$stale_staging" ]; then
+  printf 'refusing to archive: stale staging entry present: %s\n' "$stale_staging" >&2
+  exit 1
+fi
 
 # Delegate every JSON/Parquet semantic question about the live source to the
 # dedicated offline module; this script only ever orchestrates the

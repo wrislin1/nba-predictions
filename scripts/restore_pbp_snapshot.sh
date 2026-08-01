@@ -81,15 +81,22 @@ require_exact_snapshot_layout "$snapshot"
 validate_sha256sums_grammar() {
   local dir="$1"
   local sums="$dir/SHA256SUMS"
-  local inventory listed line_count path parts part bad
+  local inventory listed line_count path part bad
+  local -a parts
+  # Membership/dedup uses a bash associative array (O(1) per line) instead
+  # of re-scanning an ever-growing string with a forked grep per line: the
+  # latter is quadratic and, at real archive scale (tens of thousands of
+  # files), turns this offline check into a multi-minute hang on the sole
+  # recovery path. Grammar matching uses bash's own `=~` (no fork) for the
+  # same reason.
+  local -A seen=()
 
   inventory="$(cd "$dir" && find . -type f ! -name SHA256SUMS -printf '%P\n' | LC_ALL=C sort)"
 
   line_count=0
-  listed=""
   while IFS= read -r line || [ -n "$line" ]; do
     line_count=$((line_count + 1))
-    if ! printf '%s\n' "$line" | grep -Eq '^[0-9a-f]{64}  [^[:space:]].*$'; then
+    if [[ ! "$line" =~ ^[0-9a-f]{64}\ \ [^[:space:]] ]]; then
       printf 'malformed SHA256SUMS line %d: %s\n' "$line_count" "$line" >&2
       return 1
     fi
@@ -119,15 +126,14 @@ validate_sha256sums_grammar() {
       printf 'unsafe SHA256SUMS path component at line %d: %s\n' "$line_count" "$path" >&2
       return 1
     fi
-    if printf '%s\n' "$listed" | grep -Fxq -- "$path"; then
+    if [ -n "${seen[$path]+x}" ]; then
       printf 'duplicate SHA256SUMS entry: %s\n' "$path" >&2
       return 1
     fi
-    listed="$listed
-$path"
+    seen[$path]=1
   done < "$sums"
 
-  listed="$(printf '%s\n' "$listed" | sed '/^$/d' | LC_ALL=C sort)"
+  listed="$(printf '%s\n' "${!seen[@]}" | LC_ALL=C sort)"
   if [ "$listed" != "$inventory" ]; then
     printf 'SHA256SUMS entries do not match the on-disk inventory\n' >&2
     return 1
@@ -213,7 +219,7 @@ cleanup() {
     rm -rf -- "$publication_stage"
   fi
 }
-trap cleanup EXIT
+trap cleanup INT TERM EXIT
 
 raw_stage="$(mktemp -d "$raw_parent/.pbp-restore-raw.XXXXXX")"
 raw_stage_owned=1
@@ -252,45 +258,35 @@ if [ -d "$raw_stage" ]; then
 fi
 raw_stage_owned=0
 
-# A post-publish integrity probe on the freshly published raw destination.
-# This is a real defensive check (confirm the destination landed before
-# publishing the second half of the pair) and is also the last hook point
-# before the second rename below.
-du -sB1 "$raw_destination" >/dev/null
-
+# Every way the second half of the publish can fail -- the destination
+# appearing concurrently, the post-publish integrity probe on the raw
+# destination failing (ENOENT/EACCES/a stalled mount/anything), or the
+# rename itself failing or silently no-op'ing -- funnels into the exact
+# same rollback attempt below. Nothing in this span may abort the script
+# on its own: an unguarded failure here would leave the raw destination
+# published, the publication destination unpublished, and no rollback
+# attempted at all, which is precisely the half-published state this
+# state machine exists to prevent.
+second_step_ok=1
 if [ -e "$publication_destination" ] || [ -L "$publication_destination" ]; then
-  if mv -T -n "$raw_destination" "$raw_stage_original" \
-    && [ ! -e "$raw_destination" ] \
-    && [ -d "$raw_stage_original" ]
-  then
-    raw_stage="$raw_stage_original"
-    raw_stage_owned=1
-    printf 'publication destination appeared concurrently; rolled back raw destination: %s\n' \
-      "$publication_destination" >&2
-    exit 1
+  second_step_ok=0
+elif ! du -sB1 "$raw_destination" >/dev/null; then
+  second_step_ok=0
+else
+  mv -T -n "$publication_stage" "$publication_destination" || true
+  if [ -d "$publication_stage" ]; then
+    second_step_ok=0
   fi
-  raw_stage_owned=0
-  publication_stage_owned=0
-  {
-    printf 'FATAL: restore rollback failed after the raw destination was published.\n'
-    printf 'Every retained path below requires manual operator review; nothing was deleted.\n'
-    printf '  raw destination (state unknown, do not delete): %s\n' "$raw_destination"
-    printf '  raw rollback target (state unknown, do not delete): %s\n' "$raw_stage_original"
-    printf '  publication destination (state unknown, do not delete): %s\n' "$publication_destination"
-    printf '  publication staging (not yet published): %s\n' "$publication_stage"
-  } >&2
-  exit 1
 fi
 
-mv -T -n "$publication_stage" "$publication_destination" || true
-if [ -d "$publication_stage" ]; then
+if [ "$second_step_ok" -ne 1 ]; then
   if mv -T -n "$raw_destination" "$raw_stage_original" \
     && [ ! -e "$raw_destination" ] \
     && [ -d "$raw_stage_original" ]
   then
     raw_stage="$raw_stage_original"
     raw_stage_owned=1
-    printf 'publication rename failed; rolled back raw destination: %s\n' \
+    printf 'second-destination publish failed; rolled back raw destination: %s\n' \
       "$raw_destination" >&2
     exit 1
   fi
