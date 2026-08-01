@@ -185,7 +185,13 @@ def _derive_running_scores_detailed(
         )
     home_out: list[int] = []
     away_out: list[int] = []
-    current: tuple[int, int] | None = None
+    # Running scores start implicitly at 0-0. Real 1996-97 games (e.g.
+    # 0029600490) open with any number of blank period-start/Jump Ball
+    # pairs before the first made shot, so leading (and later interleaved)
+    # blank pairs simply carry this implicit start forward rather than
+    # being rejected for having no prior established score.
+    current: tuple[int, int] = (0, 0)
+    seen_numeric_pair = False
     sentinel_count = 0
     blank_count = 0
     for index, (raw_home, raw_away) in enumerate(
@@ -199,7 +205,7 @@ def _derive_running_scores_detailed(
         home_blank = raw_home == ""
         away_blank = raw_away == ""
         if home_blank or away_blank:
-            if not (home_blank and away_blank) or current is None:
+            if not (home_blank and away_blank):
                 raise PBPBuildError(
                     f"invalid raw score pair at index {index}: "
                     f"{raw_home!r}/{raw_away!r}"
@@ -218,13 +224,20 @@ def _derive_running_scores_detailed(
             )
         home_value = int(raw_home)
         away_value = int(raw_away)
-        if current is None:
-            if (home_value, away_value) != (0, 0):
+        if not seen_numeric_pair:
+            # This is the first numeric pair in the whole action sequence.
+            # When it is also the game's very first action (no leading
+            # blanks), it must anchor the game at 0-0, same as before.
+            # When leading blanks preceded it, the implicit 0-0 start
+            # already anchored the game, so this first numeric pair may
+            # be any value.
+            if index == 0 and (home_value, away_value) != (0, 0):
                 raise PBPBuildError(
                     f"invalid raw score pair at index {index}: "
                     f"first score must be 0-0, got {raw_home!r}/{raw_away!r}"
                 )
-            current = (0, 0)
+            current = (home_value, away_value)
+            seen_numeric_pair = True
         elif home_value == 0 and away_value == 0 and current != (0, 0):
             # Historical zero sentinel: a "0"/"0" pair after scoring has
             # started means "unknown", not "reset to 0-0". Carry forward.
@@ -241,13 +254,16 @@ def derive_running_scores(
 ) -> tuple[list[int], list[int]]:
     """Turn raw V3 score strings into non-null running home/away scores.
 
-    Paired ``"0"``/``"0"`` values are the true game start only when no
-    running score has been established yet; once a nonzero score is
-    running, a later ``"0"``/``"0"`` pair is a historical "unknown" sentinel
-    and the previous running score is carried forward. Paired blank
-    strings carry the running score forward the same way. One-sided
-    blanks, non-integer strings, negative values, and a first pair other
-    than ``0``-``0`` are all contract violations.
+    Running scores start implicitly at 0-0. Paired blank strings — at
+    any position, including any number of leading pairs before the first
+    numeric pair — carry that running score forward. The first numeric
+    pair in the sequence must equal 0-0 only when it is also the game's
+    very first action; if leading blanks preceded it, the implicit 0-0
+    start already anchored the game, so that first numeric pair may be
+    any value. After that, a later ``"0"``/``"0"`` pair is a historical
+    "unknown" sentinel once a nonzero score is running, and the previous
+    running score is carried forward instead. One-sided blanks,
+    non-integer strings, and negative values are all contract violations.
     """
     home_out, away_out, _, _ = _derive_running_scores_detailed(
         list(score_home_raw), list(score_away_raw)

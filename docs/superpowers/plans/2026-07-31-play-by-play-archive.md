@@ -554,9 +554,13 @@ def test_running_scores_carry_modern_blanks():
     assert away == [0, 0, 0]
 ```
 
-Also test one-sided blanks, negative scores, non-integer scores, and a first
-valid pair other than 0–0. Each raises `PBPBuildError` with the game-independent
-message fragment `invalid raw score pair`.
+Also test one-sided blanks, negative scores, non-integer scores, a game whose
+very first action is numeric and not 0–0, leading blank pairs followed by an
+arbitrary first numeric pair, and a mostly-blank game shape (blanks
+interleaved with real scoring, no explicit `"0"`/`"0"` pair anywhere). Each
+rejection raises `PBPBuildError` with the game-independent message fragment
+`invalid raw score pair`; the leading-blank and mostly-blank cases are
+accepted, not rejected.
 
 - [ ] **Step 3: Run the narrow tests to verify failure**
 
@@ -598,9 +602,14 @@ def parse_clock(clock: str, period: int) -> float:
 ```
 
 Implement score derivation as an explicit state machine. Reject booleans and
-whitespace variants rather than coercing them. Treat paired `"0"`/`"0"` as
-missing only after either current score is nonzero. Allow later numeric pairs
-to decrease.
+whitespace variants rather than coercing them. Running scores start
+implicitly at 0-0; any number of leading (or later interleaved) blank pairs
+carry that implicit start forward, and the first numeric pair must equal 0-0
+only when it is also the game's very first action — real 1996-97 games (e.g.
+0029600490) open with blank period-start/Jump Ball pairs before the first
+made shot, so a leading-blanks game may present any value at its first
+numeric pair. Treat paired `"0"`/`"0"` as missing only after either current
+score is nonzero. Allow later numeric pairs to decrease.
 
 - [ ] **Step 5: Write failing fixed-schema and per-game tests**
 

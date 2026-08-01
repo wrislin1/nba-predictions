@@ -68,6 +68,30 @@ def test_running_scores_carry_modern_blanks():
     assert away == [0, 0, 0]
 
 
+def test_running_scores_carry_implicit_start_through_leading_blanks():
+    # Leading blank pairs (period-start / Jump Ball actions with no score
+    # yet) carry the implicit 0-0 start forward; the first numeric pair
+    # need not itself be 0-0 once blanks have already anchored the game.
+    home, away = pbp_build.derive_running_scores(
+        ["", "", "2"],
+        ["", "", "0"],
+    )
+    assert home == [0, 0, 2]
+    assert away == [0, 0, 0]
+
+
+def test_running_scores_carry_implicit_start_through_mostly_blank_game():
+    # Modeled on 1996-97 game 0029600490: long runs of blank pairs on
+    # period-start/Jump Ball actions, interleaved with real scoring, and
+    # no action ever presents an explicit "0"/"0" pair.
+    home, away = pbp_build.derive_running_scores(
+        ["", "", "", "2", "", "", "4", "4"],
+        ["", "", "", "0", "", "", "0", "2"],
+    )
+    assert home == [0, 0, 0, 2, 2, 2, 4, 4]
+    assert away == [0, 0, 0, 0, 0, 0, 0, 2]
+
+
 @pytest.mark.parametrize(
     ("home_raw", "away_raw"),
     [
@@ -75,7 +99,7 @@ def test_running_scores_carry_modern_blanks():
         (["0", "5"], ["0", ""]),  # one-sided blank (away blank, home not)
         (["0", "-5"], ["0", "3"]),  # negative score
         (["0", "12.5"], ["0", "9"]),  # non-integer score
-        (["5"], ["3"]),  # first valid pair other than 0-0
+        (["5"], ["3"]),  # game's first action is numeric and not 0-0
     ],
     ids=[
         "one-sided-blank-home",
