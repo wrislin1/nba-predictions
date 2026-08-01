@@ -233,13 +233,53 @@ def normalize_worklist_payload(
         )
 
     matchup = raw["MATCHUP"].astype(str)
-    is_home = matchup.str.contains(r"\svs\.\s", regex=True)
-    is_away = matchup.str.contains(r"\s@\s", regex=True)
-    if not (is_home ^ is_away).all():
+    team_abbr = raw["TEAM_ABBREVIATION"].astype(str).str.strip()
+
+    # NBA Cup finals and neutral-site games (Paris/Mexico City), observed
+    # starting in ending season 2025, can report BOTH team rows in away
+    # form -- e.g. the home SAS row itself reads "IND @ SAS", identical to
+    # IND's own row -- so MATCHUP text alone no longer determines home vs.
+    # away. Derive each row's role positionally instead: parse MATCHUP as
+    # "<AWAY> @ <HOME>" or "<HOME> vs. <AWAY>" and pick whichever side
+    # equals the row's own TEAM_ABBREVIATION. Bidirectional
+    # cross-validation against the publications (cross_validate_worklist)
+    # remains the correctness net regardless of this parsing.
+    away_extract = matchup.str.extract(r"^(?P<left>\S+)\s@\s(?P<right>\S+)$")
+    home_extract = matchup.str.extract(r"^(?P<left>\S+)\svs\.\s(?P<right>\S+)$")
+    matched_away = away_extract["left"].notna()
+    matched_home = home_extract["left"].notna()
+    if not (matched_away | matched_home).all():
+        bad = sorted(
+            matchup.loc[~(matched_away | matched_home)].unique().tolist()
+        )[:5]
         raise PBPValidationError(
-            "worklist MATCHUP must indicate exactly one of home ('vs.') "
-            "or away ('@')"
+            "worklist MATCHUP does not match '<AWAY> @ <HOME>' or "
+            f"'<HOME> vs. <AWAY>': {bad}"
         )
+    if (matched_away & matched_home).any():
+        # The two literal delimiters (" @ " vs. " vs. ") cannot both match
+        # a well-formed value; guard anyway rather than assume.
+        raise PBPValidationError(
+            "worklist MATCHUP ambiguously matches both '@' and 'vs.' forms"
+        )
+    matchup_home_abbr = away_extract["right"].where(
+        matched_away, home_extract["left"]
+    )
+    matchup_away_abbr = away_extract["left"].where(
+        matched_away, home_extract["right"]
+    )
+
+    is_home_side = team_abbr.eq(matchup_home_abbr)
+    is_away_side = team_abbr.eq(matchup_away_abbr)
+    if not (is_home_side ^ is_away_side).all():
+        bad_abbrs = sorted(
+            team_abbr.loc[~(is_home_side ^ is_away_side)].unique().tolist()
+        )[:5]
+        raise PBPValidationError(
+            "worklist TEAM_ABBREVIATION does not appear on exactly one "
+            f"side of its own MATCHUP: {bad_abbrs}"
+        )
+    is_home = is_home_side
 
     pts_raw = raw["PTS"]
     if pts_raw.map(lambda value: isinstance(value, bool)).any():
@@ -265,6 +305,8 @@ def normalize_worklist_payload(
         "is_home": is_home,
         "franchise_id": franchise_id,
         "pts": points,
+        "matchup_home_abbr": matchup_home_abbr,
+        "matchup_away_abbr": matchup_away_abbr,
     })
 
     rows = []
@@ -273,6 +315,17 @@ def normalize_worklist_payload(
             raise PBPValidationError(
                 f"worklist game {game_id_value} has {len(group)} team "
                 "rows, expected 2"
+            )
+        team_pairs = {
+            tuple(sorted((home_abbr, away_abbr)))
+            for home_abbr, away_abbr in zip(
+                group["matchup_home_abbr"], group["matchup_away_abbr"]
+            )
+        }
+        if len(team_pairs) != 1:
+            raise PBPValidationError(
+                f"worklist game {game_id_value} rows disagree on MATCHUP "
+                f"team pair: {sorted(team_pairs)}"
             )
         home_rows = group.loc[group["is_home"]]
         if len(home_rows) != 1:

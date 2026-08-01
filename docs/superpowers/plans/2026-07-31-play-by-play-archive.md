@@ -872,8 +872,6 @@ Normalize with these rules:
 ```python
 ending_season = (pd.to_numeric(raw["SEASON_ID"], errors="raise") % 10_000) + 1
 game_id = raw["GAME_ID"].astype(str).str.zfill(10)
-is_home = raw["MATCHUP"].str.contains(r"\svs\.\s", regex=True)
-is_away = raw["MATCHUP"].str.contains(r"\s@\s", regex=True)
 points = pd.to_numeric(raw["PTS"], errors="raise")
 ```
 
@@ -881,6 +879,20 @@ points = pd.to_numeric(raw["PTS"], errors="raise")
 play-in) followed by the four-digit starting year, so `% 10_000` recovers the
 starting year for all three request types; require the leading digit to agree
 with the requested game type.
+
+Derive each row's home/away role positionally rather than from MATCHUP text
+alone: parse `MATCHUP` as `<AWAY> @ <HOME>` or `<HOME> vs. <AWAY>`, and take
+whichever side equals that row's own `TEAM_ABBREVIATION`. Reject a `MATCHUP`
+matching neither format, and a row whose own abbreviation matches neither
+side. Require both rows of a game to agree on the unordered team-abbreviation
+pair before applying the existing "two home rows"/"no home row" pairing
+checks. NBA Cup finals and neutral-site (Paris/Mexico City) games starting in
+ending season 2025 can report **both** team rows in away form (e.g. the home
+team's own row also reads `"AWAY @ HOME"`), so plain `MATCHUP.str.contains("vs.")`
+no longer reliably identifies the home row; bidirectional cross-validation
+against the `games.parquet`/`playoff_games.parquet` publications
+(`cross_validate_worklist`) remains the correctness net regardless of how
+this positional parsing behaves.
 
 Reject booleans and fractional/negative points before converting to `int64`.
 Resolve franchises from `TEAM_NAME` and ending season. Pair exactly one home

@@ -189,8 +189,22 @@ def _invalid_pts(document):
 
 def _same_franchise_both_sides(document):
     row = document["resultSets"][0]["rowSet"][0]
+    # Only mutate TEAM_NAME. TEAM_ABBREVIATION (row[3], "CHI") must stay
+    # consistent with this row's own MATCHUP token ("CHI @ BOS") -- role
+    # derivation is now positional (TEAM_ABBREVIATION vs. MATCHUP), so
+    # changing the abbreviation here would instead trip the "home rows"
+    # pairing check rather than the same-franchise check this test targets.
     row[2] = "Boston Celtics"
-    row[3] = "BOS"
+
+
+def _matchup_format_not_recognized(document):
+    document["resultSets"][0]["rowSet"][0][6] = "CHI - BOS"
+
+
+def _abbreviation_matches_neither_side(document):
+    # MATCHUP stays well-formed ("CHI @ BOS"), but this row's own
+    # TEAM_ABBREVIATION no longer names either side of it.
+    document["resultSets"][0]["rowSet"][0][3] = "GSW"
 
 
 @pytest.mark.parametrize(
@@ -240,6 +254,14 @@ def _same_franchise_both_sides(document):
             lambda: _document(rows=PLAYOFF_1997_ROWS), _identity,
             1997, "exhibition", "unknown game type",
         ),
+        (
+            _document, _matchup_format_not_recognized,
+            1997, "regular", r"does not match '<AWAY> @ <HOME>'",
+        ),
+        (
+            _document, _abbreviation_matches_neither_side,
+            1997, "regular", "does not appear on exactly one side",
+        ),
     ],
     ids=[
         "wrong-result-set-name",
@@ -253,6 +275,8 @@ def _same_franchise_both_sides(document):
         "same-franchise-both-sides",
         "wrong-ending-season",
         "unknown-game-type",
+        "matchup-format-not-recognized",
+        "abbreviation-matches-neither-side",
     ],
 )
 def test_normalize_worklist_payload_rejects_invalid_payloads(
@@ -276,6 +300,79 @@ def test_normalize_worklist_payload_rejects_wrong_game_id_prefix():
     with pytest.raises(pbp.PBPValidationError, match="GAME_ID prefix mismatch"):
         pbp.normalize_worklist_payload(
             _payload(document), season=1997, game_type="playoff"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plan amendment: positional home/away derivation for the 2024-25+
+# neutral-site/NBA-Cup-final source anomaly, where LeagueGameFinder can
+# report BOTH team rows in the same ("@" or "vs.") MATCHUP form. Real
+# example: ending season 2025, game 0022400633 (2025-01-25) -- San
+# Antonio's own row reads "IND @ SAS", identical in form to Indiana's row.
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_worklist_derives_home_role_positionally_for_double_away_matchup():
+    rows = [
+        ["22024", 1610612754, "Indiana Pacers", "IND", "0022400633",
+         "2025-01-25", "IND @ SAS", "L", 122],
+        ["22024", 1610612759, "San Antonio Spurs", "SAS", "0022400633",
+         "2025-01-25", "IND @ SAS", "W", 127],
+    ]
+    document = _document(rows=rows)
+    frame = pbp.normalize_worklist_payload(
+        _payload(document), season=2025, game_type="regular"
+    )
+    row = frame.iloc[0]
+    assert [
+        row["game_id"],
+        row["away_franchise_id"],
+        row["home_franchise_id"],
+        row["away_pts"],
+        row["home_pts"],
+    ] == ["0022400633", "IND", "SAS", 122, 127]
+
+
+def test_normalize_worklist_derives_home_role_positionally_for_double_vs_matchup():
+    # Mirror form of the same anomaly: both rows report MATCHUP in home
+    # ("vs.") form instead. Position within the (shared, identical) string
+    # must decide the role, not which literal each row happens to hold.
+    rows = [
+        ["22024", 1610612759, "San Antonio Spurs", "SAS", "0022400633",
+         "2025-01-25", "SAS vs. IND", "W", 127],
+        ["22024", 1610612754, "Indiana Pacers", "IND", "0022400633",
+         "2025-01-25", "SAS vs. IND", "L", 122],
+    ]
+    document = _document(rows=rows)
+    frame = pbp.normalize_worklist_payload(
+        _payload(document), season=2025, game_type="regular"
+    )
+    row = frame.iloc[0]
+    assert [
+        row["game_id"],
+        row["away_franchise_id"],
+        row["home_franchise_id"],
+        row["away_pts"],
+        row["home_pts"],
+    ] == ["0022400633", "IND", "SAS", 122, 127]
+
+
+def test_normalize_worklist_rejects_matchup_team_pair_disagreement():
+    # Defends against two unrelated games' rows accidentally sharing one
+    # GAME_ID: without this check, the home/away-count check alone could
+    # silently accept a nonsensical cross-game pairing.
+    rows = [
+        ["21996", 1610612741, "Chicago Bulls", "CHI", "0029600001",
+         "1996-11-01", "CHI @ BOS", "W", 107],
+        ["21996", 1610612747, "Los Angeles Lakers", "LAL", "0029600001",
+         "1996-11-01", "LAL @ MIA", "W", 100],
+    ]
+    document = _document(rows=rows)
+    with pytest.raises(
+        pbp.PBPValidationError, match="disagree on MATCHUP team pair"
+    ):
+        pbp.normalize_worklist_payload(
+            _payload(document), season=1997, game_type="regular"
         )
 
 
