@@ -1,5 +1,16 @@
 # Play-by-Play Archive Implementation Plan
 
+> **Status: COMPLETE (2026-08-02).** All ten tasks executed and reviewed. Full
+> acquisition: 38,023 games / 18,303,908 events (ending seasons 1997–2026);
+> two byte-identical builds; immutable snapshot `pbp-archive-2026-e6c0a2518673`
+> (manifest SHA-256 `e6c0a2518673ea14ce15caf3184dc9d11b26b1ac1c4a6e1f2a881fe3df06b0de`)
+> with independently verified restore. Acceptance record:
+> `docs/audits/2026-07-31-play-by-play-archive.md`. Four reviewed amendments
+> landed during acquisition: positional MATCHUP home/away derivation
+> (`8d7b0be`), reviewed terminal-score-mismatch allowlist (`75c0716`,
+> populated `6b71ecc`), implicit 0-0 running-score start (`9c814b6`), and any
+> first numeric score pair (`4299948`).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Acquire, normalize, validate, publish, and recovery-test every NBA regular-season, playoff, and play-in `PlayByPlayV3` response for ending seasons 1997–2026.
@@ -456,7 +467,7 @@ acquisition artifact: the final audit and its documentation links.
 - Produces: `parse_clock`, `derive_running_scores`, and
   `parse_game_payload` with the exact Shared Contracts signatures.
 
-- [ ] **Step 1: Add exact representative fixture extracts**
+- [x] **Step 1: Add exact representative fixture extracts**
 
 Create each JSON body with outer shape:
 
@@ -504,7 +515,7 @@ modern team fields on the final score to Oklahoma City's
 `1610612760`/`OKC`. This preserves realistic scalar types without committing
 the full source responses.
 
-- [ ] **Step 2: Write failing clock and score-normalization tests**
+- [x] **Step 2: Write failing clock and score-normalization tests**
 
 Add:
 
@@ -564,7 +575,7 @@ the game-independent message fragment `invalid raw score pair`; the
 leading-blank, mostly-blank, arbitrary-first-pair, and missing-opener cases
 are all accepted, not rejected.
 
-- [ ] **Step 3: Run the narrow tests to verify failure**
+- [x] **Step 3: Run the narrow tests to verify failure**
 
 Run:
 
@@ -577,7 +588,7 @@ Run:
 
 Expected: FAIL during import because `nba_data.pbp_build` does not exist.
 
-- [ ] **Step 4: Implement clock and running-score normalization**
+- [x] **Step 4: Implement clock and running-score normalization**
 
 Create `PBPBuildError(ValueError)`. Parse clocks with:
 
@@ -615,7 +626,7 @@ source response), and downstream period-contiguity and terminal-score checks
 games without this guard. Treat paired `"0"`/`"0"` as missing only after
 either current score is nonzero. Allow later numeric pairs to decrease.
 
-- [ ] **Step 5: Write failing fixed-schema and per-game tests**
+- [x] **Step 5: Write failing fixed-schema and per-game tests**
 
 Load both fixtures as bytes and add:
 
@@ -684,7 +695,7 @@ terminal score unequal to worklist
 Each failure asserts a specific `PBPBuildError` fragment naming the violated
 contract.
 
-- [ ] **Step 6: Run the parser tests to verify failure**
+- [x] **Step 6: Run the parser tests to verify failure**
 
 Run:
 
@@ -695,7 +706,7 @@ Run:
 Expected: normalization tests pass; parser tests FAIL because
 `parse_game_payload` and schema constants are absent.
 
-- [ ] **Step 7: Implement fixed-schema parsing**
+- [x] **Step 7: Implement fixed-schema parsing**
 
 Decode UTF-8 JSON with `allow_nan` irrelevant because JSON parsing rejects
 nonstandard values. Require outer keys `game` and `game.gameId`, and require
@@ -720,7 +731,7 @@ For each action:
 Do not sort before validating source order. After validation, sort by
 `game_id, action_id` with `kind="stable"` and reset the index.
 
-- [ ] **Step 8: Run Task 1 tests**
+- [x] **Step 8: Run Task 1 tests**
 
 Run:
 
@@ -730,7 +741,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 1**
+- [x] **Step 9: Commit Task 1**
 
 ```bash
 git add \
@@ -757,7 +768,7 @@ git commit -m "feat: normalize play-by-play events"
 - Produces: path/constants contracts, `normalize_worklist_payload`,
   `load_worklist`, and `cross_validate_worklist`.
 
-- [ ] **Step 1: Add exact two-team worklist fixtures**
+- [x] **Step 1: Add exact two-team worklist fixtures**
 
 Each fixture has:
 
@@ -806,7 +817,7 @@ PLAY_IN_2020_ROWS = [
 ]
 ```
 
-- [ ] **Step 2: Write failing normalization and identity tests**
+- [x] **Step 2: Write failing normalization and identity tests**
 
 Add:
 
@@ -863,7 +874,7 @@ row width, one/three team rows, two home rows, no home row, invalid PTS,
 same franchise on both sides, wrong ending season, wrong ID prefix, unknown
 game type, and duplicate game IDs.
 
-- [ ] **Step 3: Run normalization tests to verify failure**
+- [x] **Step 3: Run normalization tests to verify failure**
 
 Run:
 
@@ -875,7 +886,7 @@ Run:
 
 Expected: FAIL because `nba_data.pbp` does not exist.
 
-- [ ] **Step 4: Implement worklist normalization**
+- [x] **Step 4: Implement worklist normalization**
 
 Create the constants and path helpers from Shared Contracts. Decode exactly
 one `LeagueGameFinderResults` result set and require
@@ -913,7 +924,7 @@ Resolve franchises from `TEAM_NAME` and ending season. Pair exactly one home
 and one away row per game and return stable ordering by
 `season, game_date, game_type, game_id`.
 
-- [ ] **Step 5: Write failing cross-source equality tests**
+- [x] **Step 5: Write failing cross-source equality tests**
 
 Create temporary regular and playoff Parquet fixtures with the exact columns
 consumed by the comparator. Add:
@@ -950,7 +961,7 @@ counts are exactly
 `{2020: 1, 2021: 6, 2022: 6, 2023: 6, 2024: 6, 2025: 6, 2026: 6}`
 when those seasons are selected.
 
-- [ ] **Step 6: Run cross-source tests to verify failure**
+- [x] **Step 6: Run cross-source tests to verify failure**
 
 Run:
 
@@ -961,7 +972,7 @@ Run:
 Expected: normalization tests pass; cross-source tests FAIL because the
 comparison functions are absent.
 
-- [ ] **Step 7: Implement bidirectional equality**
+- [x] **Step 7: Implement bidirectional equality**
 
 For regular seasons, compare:
 
@@ -997,7 +1008,7 @@ samples, and a message that states which side contains each unmatched row.
 Require global worklist game-ID uniqueness and no cross-type duplication
 before either publication comparison.
 
-- [ ] **Step 8: Run Task 2 tests**
+- [x] **Step 8: Run Task 2 tests**
 
 Run:
 
@@ -1007,7 +1018,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 2**
+- [x] **Step 9: Commit Task 2**
 
 ```bash
 git add \
@@ -1033,7 +1044,7 @@ git commit -m "feat: build exact play-by-play worklists"
   `load_worklist`, `validate_cache_tree`, and `validate_cache_inventory`
   with the exact Shared Contracts signatures.
 
-- [ ] **Step 1: Write failing exact-metadata tests**
+- [x] **Step 1: Write failing exact-metadata tests**
 
 Create a helper the later tests reuse:
 
@@ -1093,7 +1104,7 @@ Test game metadata requires:
 For each identity field, mutate the value and its type separately and assert
 `cache.CacheIntegrityError` with `PBP cache metadata mismatch`.
 
-- [ ] **Step 2: Write failing transport/schema-separation tests**
+- [x] **Step 2: Write failing transport/schema-separation tests**
 
 Add:
 
@@ -1125,7 +1136,7 @@ Transport validation rejects malformed JSON, a missing/non-object `game`,
 wrong `gameId`, a missing/non-list `actions`, empty actions, or non-object
 action elements before the body becomes a complete cache pair.
 
-- [ ] **Step 3: Write failing recursive inventory tests**
+- [x] **Step 3: Write failing recursive inventory tests**
 
 Seed two valid worklists and two valid game pairs. Parameterize mutations:
 
@@ -1151,7 +1162,7 @@ every game named by the full normalized worklist. Run the same valid case throug
 `validate_cache_inventory` with `data_dir`, the same season arguments, and
 the same completeness flag; require an equal result.
 
-- [ ] **Step 4: Run the new tests to verify failure**
+- [x] **Step 4: Run the new tests to verify failure**
 
 Run:
 
@@ -1161,7 +1172,7 @@ Run:
 
 Expected: prior tests pass; exact cache/inventory tests FAIL.
 
-- [ ] **Step 5: Implement transport validators and exact sidecars**
+- [x] **Step 5: Implement transport validators and exact sidecars**
 
 Create:
 
@@ -1205,7 +1216,7 @@ Read sidecars only after checksum/transport validation. Compare the exact
 identity subset and require `type(observed[key]) is type(expected[key])`.
 Ignore only cache-managed `fetched_at`, `content_length`, and `sha256`.
 
-- [ ] **Step 6: Implement safe recursive inventory validation**
+- [x] **Step 6: Implement safe recursive inventory validation**
 
 Use `Path.lstat()` plus `stat.S_ISREG`/`stat.S_ISDIR`. Never follow symlinks.
 Derive all valid paths from:
@@ -1225,7 +1236,7 @@ For `require_complete=False`, missing known pairs are allowed, but existing
 pairs must be complete and exact. For `require_complete=True`, required
 seasons must have all worklist types and every expected game pair.
 
-- [ ] **Step 7: Run Task 3 tests**
+- [x] **Step 7: Run Task 3 tests**
 
 Run:
 
@@ -1235,7 +1246,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Task 3**
+- [x] **Step 8: Commit Task 3**
 
 ```bash
 git add src/nba_data/pbp.py tests/test_pbp.py
@@ -1256,7 +1267,7 @@ git commit -m "feat: validate play-by-play cache inventory"
 - Produces: `RequestPacer`, `_request_bytes`, `fetch_worklists`,
   `fetch_games`, and `fetch`.
 
-- [ ] **Step 1: Write failing request-pacer tests**
+- [x] **Step 1: Write failing request-pacer tests**
 
 Use a deterministic clock:
 
@@ -1290,7 +1301,7 @@ def test_request_pacer_enforces_start_to_start_spacing():
 
 Reject intervals below 1.5 seconds at construction.
 
-- [ ] **Step 2: Write failing retry-classification tests**
+- [x] **Step 2: Write failing retry-classification tests**
 
 Create fake responses with `status_code`, `content`, and `headers`, plus a fake
 session whose `get` returns queued responses or raises queued
@@ -1335,7 +1346,7 @@ Assert the terminal exhausted-retry failure message names the season, game
 type, game ID (for game requests), attempt count, and final status or
 exception class.
 
-- [ ] **Step 3: Write failing capacity tests**
+- [x] **Step 3: Write failing capacity tests**
 
 Expose `available_bytes(path: Path) -> int` and
 `require_fetch_capacity(data_dir: Path, uncached_game_count: int) -> None`.
@@ -1354,7 +1365,7 @@ required = (
 `required - 1` raises `PBPValidationError` containing required and available
 bytes; `required` passes.
 
-- [ ] **Step 4: Write failing worklist-first and resume tests**
+- [x] **Step 4: Write failing worklist-first and resume tests**
 
 Test:
 
@@ -1380,7 +1391,7 @@ zero session calls.
 Assert every fake-session URL parses to hostname `stats.nba.com` and no URL,
 redirect target, or preflight references `stats-prod.nba.com`.
 
-- [ ] **Step 5: Run acquisition tests to verify failure**
+- [x] **Step 5: Run acquisition tests to verify failure**
 
 Run:
 
@@ -1390,7 +1401,7 @@ Run:
 
 Expected: cache/inventory tests pass; pacing/retry/fetch tests FAIL.
 
-- [ ] **Step 6: Implement the raw HTTP wrapper**
+- [x] **Step 6: Implement the raw HTTP wrapper**
 
 Use endpoint classes only to construct canonical parameters:
 
@@ -1431,7 +1442,7 @@ integer; an invalid value stops with `SourceAccessError`. Every terminal
 `SourceAccessError` names the season, game type, game ID (for game
 requests), attempt count, and the final HTTP status or exception class.
 
-- [ ] **Step 7: Implement worklist-first orchestration**
+- [x] **Step 7: Implement worklist-first orchestration**
 
 `fetch(data_dir, seasons)` performs:
 
@@ -1456,7 +1467,7 @@ revalidate the selected inventory
 Use one pacer across worklist and game requests so the boundary between the
 two phases also respects 1.5 seconds.
 
-- [ ] **Step 8: Run Task 4 tests**
+- [x] **Step 8: Run Task 4 tests**
 
 Run:
 
@@ -1469,7 +1480,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 4**
+- [x] **Step 9: Commit Task 4**
 
 ```bash
 git add src/nba_data/pbp.py tests/test_pbp.py
@@ -1489,7 +1500,7 @@ git commit -m "feat: fetch resumable play-by-play archive"
 - Returns `None` after a successful publication and cleanup, or the retained
   recovery directory when publication succeeded but old-tree cleanup failed.
 
-- [ ] **Step 1: Write failing first-publication and replacement tests**
+- [x] **Step 1: Write failing first-publication and replacement tests**
 
 Add helpers that create a staged tree containing `_manifest.json` and two
 season partitions. Verify:
@@ -1522,7 +1533,7 @@ the implementation's `.{output_dir.name}.rollback-<hex>` naming. When
 Assert the operation uses renames within one parent filesystem, not
 file-by-file replacement.
 
-- [ ] **Step 2: Write failing safety and rollback tests**
+- [x] **Step 2: Write failing safety and rollback tests**
 
 Cover each precondition and failure point:
 
@@ -1553,7 +1564,7 @@ test. Assert:
   rollback path, and never deletes it; and
 - no error path follows or removes a symlink.
 
-- [ ] **Step 3: Run the tree-publication tests to verify failure**
+- [x] **Step 3: Run the tree-publication tests to verify failure**
 
 Run:
 
@@ -1564,7 +1575,7 @@ Run:
 Expected: existing pair-publication tests pass; new tests FAIL because
 `publish_tree` and `TreePublicationError` do not exist.
 
-- [ ] **Step 4: Implement safe tree inspection and replacement**
+- [x] **Step 4: Implement safe tree inspection and replacement**
 
 Add a private recursive lstat walker. Accept only regular files and real
 directories; reject symlinks and every special inode before the first rename.
@@ -1593,7 +1604,7 @@ Wrap filesystem errors in `TreePublicationError` with the label, operation,
 and relevant paths. Do not catch `BaseException`. Preserve the original
 exception as `__cause__`.
 
-- [ ] **Step 5: Run Task 5 tests**
+- [x] **Step 5: Run Task 5 tests**
 
 Run:
 
@@ -1603,7 +1614,7 @@ Run:
 
 Expected: PASS, including all pre-existing `publish_pair` tests.
 
-- [ ] **Step 6: Commit Task 5**
+- [x] **Step 6: Commit Task 5**
 
 ```bash
 git add src/nba_data/publication.py tests/test_publication.py
@@ -1623,7 +1634,7 @@ git commit -m "feat: publish data directory trees transactionally"
 - Produces: `build_tree`, `validate_publication`, `run`, and `render_audit`
   from Shared Contracts.
 
-- [ ] **Step 1: Write failing deterministic partition tests**
+- [x] **Step 1: Write failing deterministic partition tests**
 
 Seed a complete two-season test inventory with the committed raw fixtures and
 matching exact sidecars. Call:
@@ -1652,7 +1663,7 @@ Assert:
 Instrument `parse_game_payload` in the streaming test and fail if a 2026 game
 is parsed before the 1997 table has been written and released.
 
-- [ ] **Step 2: Write failing manifest provenance tests**
+- [x] **Step 2: Write failing manifest provenance tests**
 
 Assert the manifest contains:
 
@@ -1725,7 +1736,7 @@ Require this deterministic content:
 Reject absolute paths, timestamps, hostnames, UUIDs, process IDs, and any
 sidecar whose declared checksum or content length differs from the body.
 
-- [ ] **Step 3: Write failing publication-validation tests**
+- [x] **Step 3: Write failing publication-validation tests**
 
 For a valid staged publication, assert:
 
@@ -1757,7 +1768,7 @@ manifest validation total mismatch
 
 Each mutation raises `PBPBuildError` naming the failed invariant.
 
-- [ ] **Step 4: Write failing anomaly-summary and audit tests**
+- [x] **Step 4: Write failing anomaly-summary and audit tests**
 
 For each game, compute event count. For each `(season, game_type)` group with
 at least four games, define outliers by Tukey fences:
@@ -1799,7 +1810,7 @@ source lengths and per-game validation records. It rejects a missing/extra
 spike ID or any false evidence flag, so the final audit cannot claim an
 unverified cross-source gate, reproducibility gate, snapshot, or restore.
 
-- [ ] **Step 5: Run build tests to verify failure**
+- [x] **Step 5: Run build tests to verify failure**
 
 Run:
 
@@ -1810,7 +1821,7 @@ Run:
 Expected: parser tests pass; partition, manifest, validation, and audit tests
 FAIL because their implementations are absent.
 
-- [ ] **Step 6: Implement one-season-at-a-time deterministic building**
+- [x] **Step 6: Implement one-season-at-a-time deterministic building**
 
 At the start of `build_tree`:
 
@@ -1849,7 +1860,7 @@ newline, and `allow_nan=False`. Create `_manifest.json` only after every
 partition passes validation. Never include a stage/output path or current
 time.
 
-- [ ] **Step 7: Implement whole-publication validation and publication**
+- [x] **Step 7: Implement whole-publication validation and publication**
 
 `validate_publication` independently walks the publication without following
 symlinks, requires exactly one manifest plus one partition for every season
@@ -1875,7 +1886,7 @@ publication has exactly 31 regular files and 30 expected season directories.
 On failures before publication, remove only the exact temporary stage after
 verifying it is a real directory created by this run.
 
-- [ ] **Step 8: Run Task 6 tests**
+- [x] **Step 8: Run Task 6 tests**
 
 Run:
 
@@ -1888,7 +1899,7 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 6**
+- [x] **Step 9: Commit Task 6**
 
 ```bash
 git add src/nba_data/pbp_build.py tests/test_pbp_build.py
@@ -1910,7 +1921,7 @@ git commit -m "feat: build deterministic play-by-play publication"
   `python -m nba_data build-pbp`.
 - Requires the exact `.gitignore` entry `data/parquet-large/`.
 
-- [ ] **Step 1: Write failing CLI dispatch tests**
+- [x] **Step 1: Write failing CLI dispatch tests**
 
 Add tests equivalent to:
 
@@ -1971,7 +1982,7 @@ Assert argparse rejects 1996, 2027, nonintegers, and `--season` on
 `build-pbp`. Assert duplicate season flags normalize to stable unique order.
 Patch every network entry point in the build test to raise if invoked.
 
-- [ ] **Step 2: Write failing repository-protection tests**
+- [x] **Step 2: Write failing repository-protection tests**
 
 Add `data/parquet-large/` to the expected exact ignore-rule set in
 `tests/test_verify_repository.py`. In `tests/test_repository_layout.py`,
@@ -1987,7 +1998,7 @@ assert both generated roots are gitignored:
 Assert neither path is tracked by `git ls-files`. Do not require the final
 audit until Task 10.
 
-- [ ] **Step 3: Run the new tests to verify failure**
+- [x] **Step 3: Run the new tests to verify failure**
 
 Run:
 
@@ -2001,7 +2012,7 @@ Run:
 
 Expected: FAIL because the commands and large-Parquet ignore rule are absent.
 
-- [ ] **Step 4: Implement CLI dispatch and ignore protections**
+- [x] **Step 4: Implement CLI dispatch and ignore protections**
 
 Import `pbp` and `pbp_build` in `src/nba_data/__main__.py`. Add subparsers:
 
@@ -2023,7 +2034,7 @@ data/parquet-large/
 Update `REQUIRED_GITIGNORE_RULES` in `scripts/verify_repository.py`; do not
 weaken the existing fresh-clone, large-file, or generated-data checks.
 
-- [ ] **Step 5: Run Task 7 tests and repository verification**
+- [x] **Step 5: Run Task 7 tests and repository verification**
 
 Run:
 
@@ -2038,7 +2049,7 @@ Run:
 
 Expected: both commands PASS.
 
-- [ ] **Step 6: Commit Task 7**
+- [x] **Step 6: Commit Task 7**
 
 ```bash
 git add \
@@ -2083,7 +2094,7 @@ git commit -m "feat: expose play-by-play archive commands"
   snapshot facts, derives the source-spike evidence, and writes the final
   deterministic Markdown.
 
-- [ ] **Step 1: Write failing archive-script tests**
+- [x] **Step 1: Write failing archive-script tests**
 
 Use subprocess tests with temporary data/archive roots and a programmatically
 generated all-30-season complete fixture inventory/publication. Keep each
@@ -2106,7 +2117,7 @@ stage cleanup after pre-publication failure
 The test passes a command-scoped `PATH` containing deterministic `df`, `du`,
 and `rsync` shims only where exact boundary/error injection is required.
 
-- [ ] **Step 2: Write failing restore and inverse tests**
+- [x] **Step 2: Write failing restore and inverse tests**
 
 Cover:
 
@@ -2140,7 +2151,7 @@ For the success case:
 
 Patch DNS and all request methods to raise throughout restore tests.
 
-- [ ] **Step 3: Run script tests to verify failure**
+- [x] **Step 3: Run script tests to verify failure**
 
 Run:
 
@@ -2150,7 +2161,7 @@ Run:
 
 Expected: FAIL because the scripts do not exist.
 
-- [ ] **Step 4: Implement archive preflight and immutable publication**
+- [x] **Step 4: Implement archive preflight and immutable publication**
 
 In `scripts/archive_pbp_snapshot.sh`, use `set -euo pipefail`, resolve the
 repository root from the script path, set `LC_ALL=C` and `umask 077`, and
@@ -2198,7 +2209,7 @@ digest. Return success only when it matches the stage exactly by
 For a new snapshot, recheck destination absence and atomically rename the
 stage. Never modify a published snapshot.
 
-- [ ] **Step 5: Implement trusted, absent-target restore**
+- [x] **Step 5: Implement trusted, absent-target restore**
 
 In `scripts/restore_pbp_snapshot.sh`:
 
@@ -2234,7 +2245,7 @@ every retained path; never delete ambiguous recovery data. Cleanup traps may
 remove only exact staging paths created by the current process and only after
 lstat confirms real directories.
 
-- [ ] **Step 6: Validate shell syntax and run Task 8 tests**
+- [x] **Step 6: Validate shell syntax and run Task 8 tests**
 
 Run:
 
@@ -2250,7 +2261,7 @@ bash -n scripts/restore_pbp_snapshot.sh
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 8**
+- [x] **Step 7: Commit Task 8**
 
 ```bash
 chmod +x scripts/archive_pbp_snapshot.sh scripts/restore_pbp_snapshot.sh
@@ -2274,7 +2285,7 @@ git commit -m "feat: archive and restore play-by-play snapshots"
 - Produces the complete local raw inventory and a twice-reproduced active
   publication.
 
-- [ ] **Step 1: Confirm prerequisites before any NBA request**
+- [x] **Step 1: Confirm prerequisites before any NBA request**
 
 Run:
 
@@ -2296,7 +2307,7 @@ test -f data/parquet/playoff_games_manifest.json
 Expected: status is clean and every test/check passes. Stop if the
 post-integration artifacts or publication module are absent.
 
-- [ ] **Step 2: Fetch all dedicated worklists before the PBP source spike**
+- [x] **Step 2: Fetch all dedicated worklists before the PBP source spike**
 
 Run:
 
@@ -2341,7 +2352,7 @@ no unmatched regular or postseason publication rows
 
 Do not fetch any game body if cross-validation fails.
 
-- [ ] **Step 3: Fetch and parse the four representative games**
+- [x] **Step 3: Fetch and parse the four representative games**
 
 Select exactly `pbp.SOURCE_SPIKE_GAME_IDS` from the cross-validated worklist,
 call `pbp.fetch_games`, then parse each cached body with its worklist row.
@@ -2413,7 +2424,7 @@ print(reports)
 PY
 ```
 
-- [ ] **Step 4: Run the long resumable acquisition**
+- [x] **Step 4: Run the long resumable acquisition**
 
 Run:
 
@@ -2426,7 +2437,7 @@ pace. Keep only one fetch process running. If interrupted, rerun the same
 command; valid complete pairs must be skipped. On any failure, preserve the
 raw body/sidecar evidence and diagnose before continuing.
 
-- [ ] **Step 5: Validate the complete inventory offline**
+- [x] **Step 5: Validate the complete inventory offline**
 
 Run:
 
@@ -2459,7 +2470,7 @@ PY
 Print total games by season/type and compare the worklist bidirectionally
 again. Expected: no missing, orphaned, unsafe, or mismatched cache pair.
 
-- [ ] **Step 6: Build twice and prove byte reproducibility**
+- [x] **Step 6: Build twice and prove byte reproducibility**
 
 Run:
 
@@ -2486,7 +2497,7 @@ cmp "$PBP_BASELINE_PARENT/pbp/_manifest.json" \
 Expected: `rsync` prints no changes and `cmp` exits 0. Remove only the exact
 temporary baseline after successful comparison.
 
-- [ ] **Step 7: Checkpoint Task 9**
+- [x] **Step 7: Checkpoint Task 9**
 
 Run:
 
@@ -2510,7 +2521,7 @@ commit.
 - Produces one immutable NAS snapshot, an independently verified restore, and
   the committed audit/documentation record.
 
-- [ ] **Step 1: Archive the complete recovery unit**
+- [x] **Step 1: Archive the complete recovery unit**
 
 Run:
 
@@ -2531,7 +2542,7 @@ published snapshot is immutable by process convention
 Do not edit or replace an existing snapshot. If a same-name snapshot differs,
 stop for operator review.
 
-- [ ] **Step 2: Independently restore into absent temporary destinations**
+- [x] **Step 2: Independently restore into absent temporary destinations**
 
 Create a unique temporary parent on a filesystem that passes the restore
 capacity predicate. Set:
@@ -2560,7 +2571,7 @@ rsync -a --checksum --delete --dry-run \
 Expected: both commands print no changes. Remove only this exact verified
 temporary restore tree.
 
-- [ ] **Step 3: Render the final audit from validated facts**
+- [x] **Step 3: Render the final audit from validated facts**
 
 Run:
 
@@ -2584,7 +2595,7 @@ inventory, and only then passes a fully true `AuditEvidence` to
 The committed audit contains no credentials, local absolute source paths, raw
 responses, or transient staging paths.
 
-- [ ] **Step 4: Write failing documentation/layout tests**
+- [x] **Step 4: Write failing documentation/layout tests**
 
 Extend `tests/test_repository_layout.py` to require:
 
@@ -2608,7 +2619,7 @@ Run:
 
 Expected: FAIL until README and data dictionary are updated.
 
-- [ ] **Step 5: Document the completed archive**
+- [x] **Step 5: Document the completed archive**
 
 In `docs/data-dictionary.md`, add:
 
@@ -2626,7 +2637,7 @@ In `README.md`, add the ignored large-data layout, current archive status, and
 links to the data dictionary and final audit. State that a clone does not
 contain raw PBP or large Parquet data.
 
-- [ ] **Step 6: Run the full acceptance suite**
+- [x] **Step 6: Run the full acceptance suite**
 
 Run:
 
@@ -2651,7 +2662,7 @@ git diff --check prints nothing
 only README, data dictionary, final audit, and layout-test changes are pending
 ```
 
-- [ ] **Step 7: Commit the acceptance record**
+- [x] **Step 7: Commit the acceptance record**
 
 ```bash
 git add \
@@ -2662,7 +2673,7 @@ git add \
 git commit -m "docs: record verified play-by-play archive"
 ```
 
-- [ ] **Step 8: Leave the branch ready for review**
+- [x] **Step 8: Leave the branch ready for review**
 
 Run:
 
