@@ -1192,8 +1192,9 @@ def fetch_games(
         # raises here, after the raw body is already cached as evidence,
         # and stops the fetch. A *terminal-score-only* mismatch is a known,
         # narrow class of early-source error (points misattributed between
-        # teams, combined total unchanged); it does not stop the fetch --
-        # it is logged, collected, and reported in the end-of-run summary
+        # teams, or events dropped/truncated by the source); it does not
+        # stop the fetch -- it is logged, collected, and reported in the
+        # end-of-run summary
         # below. Publishing it later still requires a human-reviewed
         # allowlist entry (see ``pbp_build.build_tree``).
         try:

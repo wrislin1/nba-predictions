@@ -30,8 +30,9 @@ class PBPBuildError(ValueError):
 class PBPTerminalScoreError(PBPBuildError):
     """Raised when only the PBP-derived terminal score disagrees with the
     worklist -- a known, narrow class of early-source data error (points
-    misattributed between teams; totals still equal) distinct from every
-    other contract violation ``parse_game_payload`` checks.
+    misattributed between teams, or events dropped/truncated by the source)
+    distinct from every other contract violation ``parse_game_payload``
+    checks.
 
     Carries the structured ``(home, away)`` score pairs plus the fully
     built ``frame``/``report`` so a caller can implement a curated
@@ -543,8 +544,9 @@ def parse_game_payload(
 
     # The terminal-score check is deliberately last: a mismatch here is a
     # known, narrow class of early-source data error (points misattributed
-    # between teams, totals still equal) distinct from every other
-    # contract violation above. It raises a *structured* subclass carrying
+    # between teams, or events dropped/truncated by the source) distinct
+    # from every other contract violation above. It raises a *structured*
+    # subclass carrying
     # the fully built ``frame``/``report`` so a caller that wants to accept
     # a specific, allowlisted mismatch (``pbp_build.build_tree``) or simply
     # log-and-continue (``pbp.fetch_games``) never needs to re-parse the
@@ -593,8 +595,9 @@ _BUILD_GATES = (
 # Curated terminal-score-mismatch allowlist
 #
 # A known, narrow class of early-source PBP error misattributes points
-# between the two teams while leaving the combined total (and therefore
-# every other invariant) correct. ``fetch-pbp`` logs and continues past
+# between the two teams, or drops/truncates events -- in either case the
+# PBP-derived terminal score can disagree with the worklist while every
+# other invariant still holds. ``fetch-pbp`` logs and continues past
 # every such mismatch (see ``pbp.fetch_games``); publishing one requires an
 # explicit, human-reviewed entry here recording *both* the worklist pair
 # and the exact PBP-derived pair that was reviewed and accepted -- an
