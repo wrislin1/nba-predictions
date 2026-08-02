@@ -1,0 +1,42 @@
+{
+  "resultSets": [
+    {
+      "name": "LeagueGameFinderResults",
+      "headers": [
+        "SEASON_ID",
+        "TEAM_ID",
+        "TEAM_NAME",
+        "TEAM_ABBREVIATION",
+        "GAME_ID",
+        "GAME_DATE",
+        "MATCHUP",
+        "WL",
+        "PTS"
+      ],
+      "rowSet": [
+        [
+          "21996",
+          1610612741,
+          "Chicago Bulls",
+          "CHI",
+          "0029600001",
+          "1996-11-01",
+          "CHI @ BOS",
+          "W",
+          107
+        ],
+        [
+          "21996",
+          1610612738,
+          "Boston Celtics",
+          "BOS",
+          "0029600001",
+          "1996-11-01",
+          "BOS vs. CHI",
+          "L",
+          98
+        ]
+      ]
+    }
+  ]
+}

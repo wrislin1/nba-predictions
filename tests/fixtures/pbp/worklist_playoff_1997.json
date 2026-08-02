@@ -1,0 +1,42 @@
+{
+  "resultSets": [
+    {
+      "name": "LeagueGameFinderResults",
+      "headers": [
+        "SEASON_ID",
+        "TEAM_ID",
+        "TEAM_NAME",
+        "TEAM_ABBREVIATION",
+        "GAME_ID",
+        "GAME_DATE",
+        "MATCHUP",
+        "WL",
+        "PTS"
+      ],
+      "rowSet": [
+        [
+          "41996",
+          1610612766,
+          "Charlotte Hornets",
+          "CHH",
+          "0049600001",
+          "1997-04-24",
+          "CHH @ NYK",
+          "L",
+          99
+        ],
+        [
+          "41996",
+          1610612752,
+          "New York Knicks",
+          "NYK",
+          "0049600001",
+          "1997-04-24",
+          "NYK vs. CHH",
+          "W",
+          109
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "resultSets": [
+    {
+      "name": "LeagueGameFinderResults",
+      "headers": [
+        "SEASON_ID",
+        "TEAM_ID",
+        "TEAM_NAME",
+        "TEAM_ABBREVIATION",
+        "GAME_ID",
+        "GAME_DATE",
+        "MATCHUP",
+        "WL",
+        "PTS"
+      ],
+      "rowSet": [
+        [
+          "52019",
+          1610612757,
+          "Portland Trail Blazers",
+          "POR",
+          "0051900111",
+          "2020-08-15",
+          "POR vs. MEM",
+          "W",
+          126
+        ],
+        [
+          "52019",
+          1610612763,
+          "Memphis Grizzlies",
+          "MEM",
+          "0051900111",
+          "2020-08-15",
+          "MEM @ POR",
+          "L",
+          122
+        ]
+      ]
+    }
+  ]
+}

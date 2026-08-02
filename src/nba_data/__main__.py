@@ -7,6 +7,8 @@ from nba_data import (
     historical_bref,
     historical_build,
     hoopr,
+    pbp,
+    pbp_build,
     playoff_bref,
     playoff_build,
     stats_nba,
@@ -52,6 +54,14 @@ def main() -> None:
     commands.add_parser("build")
     commands.add_parser("build-historical")
     commands.add_parser("build-playoffs")
+    fetch_pbp = commands.add_parser("fetch-pbp")
+    fetch_pbp.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        choices=pbp.SEASONS,
+    )
+    commands.add_parser("build-pbp")
     args = parser.parse_args()
     if args.data_dir is None:
         data = _source_checkout_data_dir()
@@ -89,6 +99,13 @@ def main() -> None:
         playoff_bref.fetch(raw, selected)
     elif args.command == "build-playoffs":
         playoff_build.run(data)
+    elif args.command == "fetch-pbp":
+        selected = (
+            tuple(dict.fromkeys(args.season)) if args.season else pbp.SEASONS
+        )
+        pbp.fetch(data, selected)
+    elif args.command == "build-pbp":
+        pbp_build.run(data)
 
 
 if __name__ == "__main__":

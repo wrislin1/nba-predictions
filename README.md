@@ -34,6 +34,9 @@ audit.
 - `data/parquet/` — curated, reproducible analytical tables.
 - `data/reference/` — reviewed mappings, expected counts, and correction
   ledgers used by validation.
+- `data/raw/` and `data/parquet-large/` — gitignored raw provider caches and
+  the large play-by-play Parquet publication; absent from a fresh clone and
+  recovered only from the independent NAS snapshots described below.
 - `analysis/covid_hca/` — the delivered 1947–2026 descriptive home-court
   trend and the planned COVID-era causal analysis.
 - `tests/` — repository and pipeline contracts.
@@ -133,6 +136,42 @@ restore it with `bash scripts/restore_historical_raw.sh` before running
 `restore_playoff_raw.sh`. See the data dictionary for the exact schema,
 source ownership, validation keys, deterministic rebuild contract, recovery
 checks, and scope limitations.
+
+## Play-by-play archive
+
+`data/parquet-large/pbp/` is a separate, independently published event-level
+archive of play-by-play actions (one `events.parquet` per ending season,
+primary key `(game_id, action_id)`), sourced from the NBA Stats V3
+`PlayByPlayV3` endpoint. It is not a modeling input and does not change any
+of the game-results publications. Its raw cache
+(`data/raw/stats_nba/pbp/`) and its Parquet publication
+(`data/parquet-large/`) are both gitignored; a repository clone contains no
+raw PBP responses and no large play-by-play Parquet data, only the code and
+this documentation.
+
+The archive is verified complete for ending seasons 1997–2026, all three
+game types (`regular`, `playoff`, `play_in`), 38,023 games, and 18,303,908
+events. It has been independently restored into an absent temporary
+destination and offline-rebuilt byte-identical to the immutable NAS
+snapshot `pbp-archive-2026-e6c0a2518673`. See the
+[play-by-play data dictionary section](docs/data-dictionary.md#play-by-play-archive)
+for the full `events.parquet` schema, score-sentinel and running-score
+semantics, worklist cross-validation, and recovery contract, and the
+[final audit](docs/audits/2026-07-31-play-by-play-archive.md) for the
+verified per-season totals, anomaly summary, and execution evidence.
+
+```bash
+# Networked and rate-limited; resumable full acquisition or one season.
+python -m nba_data fetch-pbp --season 2026
+python -m nba_data fetch-pbp
+
+# Strictly offline deterministic publication.
+python -m nba_data build-pbp
+
+# Independent immutable combined raw-plus-Parquet NAS recovery.
+scripts/archive_pbp_snapshot.sh
+scripts/restore_pbp_snapshot.sh
+```
 
 ## Revival roadmap
 

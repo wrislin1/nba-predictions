@@ -1,0 +1,167 @@
+{
+  "0020300778": {
+    "derived": [
+      120,
+      101
+    ],
+    "note": "3 pts misattributed between teams",
+    "worklist": [
+      120,
+      98
+    ]
+  },
+  "0021301006": {
+    "derived": [
+      115,
+      111
+    ],
+    "note": "2 home pts missing from PBP",
+    "worklist": [
+      117,
+      111
+    ]
+  },
+  "0021500916": {
+    "derived": [
+      114,
+      112
+    ],
+    "note": "3 pts missing each side",
+    "worklist": [
+      117,
+      115
+    ]
+  },
+  "0021700025": {
+    "derived": [
+      103,
+      124
+    ],
+    "note": "start-truncated source PBP (first events missing)",
+    "worklist": [
+      120,
+      128
+    ]
+  },
+  "0021700211": {
+    "derived": [
+      85,
+      89
+    ],
+    "note": "end-truncated source PBP",
+    "worklist": [
+      116,
+      125
+    ]
+  },
+  "0022100028": {
+    "derived": [
+      100,
+      91
+    ],
+    "note": "2 home pts missing from PBP",
+    "worklist": [
+      102,
+      91
+    ]
+  },
+  "0022100298": {
+    "derived": [
+      114,
+      118
+    ],
+    "note": "2 away pts missing from PBP",
+    "worklist": [
+      114,
+      120
+    ]
+  },
+  "0022301202": {
+    "derived": [
+      119,
+      112
+    ],
+    "note": "3 home pts missing from PBP",
+    "worklist": [
+      122,
+      112
+    ]
+  },
+  "0022500232": {
+    "derived": [
+      60,
+      55
+    ],
+    "note": "roughly half the game missing from source PBP",
+    "worklist": [
+      112,
+      123
+    ]
+  },
+  "0029600070": {
+    "derived": [
+      101,
+      86
+    ],
+    "note": "7 pts misattributed between teams",
+    "worklist": [
+      108,
+      79
+    ]
+  },
+  "0029600332": {
+    "derived": [
+      123,
+      81
+    ],
+    "note": "2 away pts missing from PBP",
+    "worklist": [
+      123,
+      83
+    ]
+  },
+  "0029600370": {
+    "derived": [
+      91,
+      76
+    ],
+    "note": "2-3 pts missing each side",
+    "worklist": [
+      93,
+      79
+    ]
+  },
+  "0029800661": {
+    "derived": [
+      101,
+      93
+    ],
+    "note": "4 away pts missing from PBP",
+    "worklist": [
+      101,
+      97
+    ]
+  },
+  "0049600063": {
+    "derived": [
+      0,
+      3
+    ],
+    "note": "source PBP contains almost no scoring events",
+    "worklist": [
+      99,
+      96
+    ]
+  },
+  "0049700045": {
+    "derived": [
+      3,
+      0
+    ],
+    "note": "source PBP contains almost no scoring events",
+    "worklist": [
+      76,
+      78
+    ]
+  }
+}

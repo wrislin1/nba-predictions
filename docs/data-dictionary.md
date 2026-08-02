@@ -593,3 +593,226 @@ existing destination. It does not attest other filesystem entry types.
 Neither recovery path substitutes for the other: the historical scripts
 operate only on `historical_bref`, while `scripts/restore_raw.sh` remains the
 Slice 2A modern restore.
+
+## Play-by-play archive
+
+`data/parquet-large/pbp/` is an independently published, unjoined event-level
+archive built from the NBA Stats V3 `PlayByPlayV3` endpoint. It is not a
+modeling input, does not change `games.parquet`, `team_games.parquet`,
+`historical_games.parquet`, or `playoff_games.parquet`, and both its raw
+cache and its Parquet publication are gitignored and never committed; a
+repository clone does not contain raw PBP responses or the large
+play-by-play Parquet partitions. The verified production archive covers
+ending seasons 1997–2026, game types `regular`, `playoff`, and `play_in`
+(play-in only for 2020–2026), 38,023 games, and 18,303,908 events. The
+committed [final audit](audits/2026-07-31-play-by-play-archive.md) records
+the exact per-season totals, anomaly summary, action-field availability, the
+reviewed score-mismatch allowlist, source-spike evidence, build gates, and
+the independent restore/reproducibility verification for that archive.
+
+### `events.parquet`
+
+One row per play-by-play action. The primary key is `(game_id, action_id)`;
+`action_number` duplicates and non-monotonic values are valid source
+behavior and are not part of the key. Rows are sorted by
+`(game_id, action_id)`. Publication writes exactly one deterministic,
+ZSTD-compressed `events.parquet` file per ending season under
+`data/parquet-large/pbp/season=<ending season>/events.parquet`, for every
+season `1997` through `2026`, alongside one `_manifest.json` at
+`data/parquet-large/pbp/_manifest.json`. These are the exact
+`EVENT_COLUMNS`/`PBP_ARROW_SCHEMA` columns and physical types, in
+publication order:
+
+| Column | Type | Nullable | Origin | Meaning |
+|---|---|---|---|---|
+| `game_id` | large_string | no | derived | Canonical NBA Stats `GAME_ID`, taken from the payload and cross-checked against the worklist |
+| `action_id` | int64 | no | source | V3 `actionId`; positive and strictly increasing within one game's response order |
+| `action_number` | int64 | no | source | V3 `actionNumber`; duplicates and non-monotonic values are valid source behavior |
+| `season` | int64 | no | derived | Ending season, from the worklist row that identified this game |
+| `game_type` | large_string | no | derived | `regular`, `playoff`, or `play_in`, from the worklist row |
+| `clock` | large_string | no | source | V3 `PTxxMxx.xxxS` period-clock string |
+| `clock_seconds` | double | no | derived | `clock` parsed to elapsed-remaining seconds (`parse_clock`); `0`–`720` in regulation, `0`–`300` in overtime |
+| `period` | int64 | no | source | V3 `period`; a game's periods must run `1..max(period)` in order |
+| `team_id` | int64 | yes | source | V3 `teamId` |
+| `team_tricode` | large_string | yes | source | V3 `teamTricode` |
+| `person_id` | int64 | yes | source | V3 `personId` |
+| `player_name` | large_string | yes | source | V3 `playerName` |
+| `player_name_i` | large_string | yes | source | V3 `playerNameI` |
+| `x_legacy` | int64 | yes | source | V3 `xLegacy` |
+| `y_legacy` | int64 | yes | source | V3 `yLegacy` |
+| `shot_distance` | int64 | yes | source | V3 `shotDistance` |
+| `shot_result` | large_string | yes | source | V3 `shotResult` |
+| `is_field_goal` | int64 | yes | source | V3 `isFieldGoal` |
+| `shot_value` | int64 | yes | source | V3 `shotValue` |
+| `score_home_raw` | large_string | no | source | Exact source score string from V3 `scoreHome`, including empty-string blanks; never rewritten |
+| `score_away_raw` | large_string | no | source | Exact source score string from V3 `scoreAway`, including empty-string blanks; never rewritten |
+| `score_home` | int64 | no | derived | Non-null running home score derived from `score_home_raw`/`score_away_raw` (see below) |
+| `score_away` | int64 | no | derived | Non-null running away score derived from `score_home_raw`/`score_away_raw` (see below) |
+| `points_total` | int64 | yes | source | V3 `pointsTotal` |
+| `location` | large_string | yes | source | V3 `location` |
+| `description` | large_string | yes | source | V3 `description` |
+| `action_type` | large_string | yes | source | V3 `actionType` |
+| `sub_type` | large_string | yes | source | V3 `subType` |
+| `video_available` | int64 | yes | source | V3 `videoAvailable` |
+
+#### Score sentinel and running-score semantics
+
+`score_home_raw`/`score_away_raw` preserve the exact source score string for
+every action, including the empty-string blanks the modern V3 feed emits for
+many non-scoring actions; these two columns are never rewritten. `score_home`
+and `score_away` are separately derived, always-non-null running scores
+(`derive_running_scores`). Running scores start implicitly at `0`-`0`. A
+paired blank `score_home_raw`/`score_away_raw` — at any position, including
+any number of leading pairs before the first numeric pair — carries the
+current running score forward rather than being rejected for lacking a prior
+established score. The first numeric pair encountered in a game's action
+sequence may be any value: the implicit `0`-`0` start already covers the
+pre-scoring portion of the game, and real full-corpus evidence includes
+games whose first numeric pair is not `0`-`0` (a missing opener row, or a
+start-truncated source response). After that first numeric pair, a later
+`"0"`/`"0"` pair once a nonzero score is running is the historical "unknown"
+zero sentinel and does not reset the running score; the audit's
+`Early-zero-sentinel total` counts these. One-sided blanks, non-integer
+strings, and negative values are all source contract violations and fail
+the build.
+
+A known, narrow class of early-source PBP error misattributes points between
+the two teams (or drops/truncates events) while every other invariant still
+holds; `fetch-pbp` logs and continues past such a mismatch. Publishing a
+game whose PBP-derived terminal score disagrees with the worklist requires
+an explicit, human-reviewed entry in
+[`src/nba_data/reference/pbp_score_mismatches.json`](../src/nba_data/reference/pbp_score_mismatches.json)
+recording both the exact worklist pair and the exact derived pair that was
+reviewed and accepted; an unreviewed or since-changed mismatch still blocks
+`build-pbp`. Events and PBP-derived running scores are never rewritten to
+force agreement. The production archive has exactly 15 such reviewed
+entries, reproduced in the manifest's `validation.terminal_mismatches` and
+listed in the final audit's `Source score mismatches (allowlisted)` section.
+
+#### Source schema and the 23-key contract
+
+Each V3 `actions[]` element must have exactly the 23 keys in
+`ACTION_SOURCE_KEYS` (`actionId`, `actionNumber`, `actionType`, `clock`,
+`description`, `isFieldGoal`, `location`, `period`, `personId`,
+`playerName`, `playerNameI`, `pointsTotal`, `scoreAway`, `scoreHome`,
+`shotDistance`, `shotResult`, `shotValue`, `subType`, `teamId`,
+`teamTricode`, `videoAvailable`, `xLegacy`, `yLegacy`) — a fixed 23-key
+projection. A missing or additional key on any action is V3 schema drift:
+the raw response remains cached as evidence, but publication fails until
+the design, parser, and fixtures are reviewed together. The twelve integer
+keys must be non-boolean integers; `clock`, `scoreHome`, and `scoreAway`
+must never be null; every other string key may be null.
+
+#### Worklist construction and cross-validation
+
+Every ending season's play-by-play acquisition first fetches its dedicated
+`LeagueGameFinderResults` worklists: `Regular Season` and `Playoffs` for all
+30 seasons (1997–2026) plus `PlayIn` for 2020–2026, 67 dedicated worklists in
+total, cached under `data/raw/stats_nba/pbp/worklists/<season>/<game_type>.json`
+and normalized to `WORKLIST_COLUMNS`. Home/away roles are derived
+positionally from each row's `MATCHUP` string rather than from `TEAM_ID`
+ordering, because 2024-25-and-later neutral-site games can carry a
+double-`@` `MATCHUP` anomaly that ordering alone does not resolve.
+`cross_validate_worklist` independently rebuilds two distinct comparison
+keys from the integrated regular (`games.parquet`) and postseason
+(`playoff_games.parquet`) publications. The regular comparison key is
+`(game_id, season, game_date, away_franchise_id, home_franchise_id,
+away_pts, home_pts)`; the postseason comparison key is `(season, game_date,
+game_type, away_franchise_id, home_franchise_id, away_pts, home_pts)`. Both
+require bidirectional equality with the fetched worklist before any PBP
+game is requested.
+
+#### Game types, season scope, key, ordering, and partition layout
+
+Game types are exactly `regular`, `playoff`, and `play_in` (`play_in` only
+for ending seasons 2020–2026). Ending seasons are exactly the integers
+`1997` through `2026`. The event primary key is `(game_id, action_id)`.
+Rows within a partition are sorted by `(game_id, action_id)`. Publication
+writes one `events.parquet` partition per ending season under
+`season=<ending season>/` — never one file per game or per game type.
+
+#### Manifest and provenance guarantees
+
+`data/parquet-large/pbp/_manifest.json` is deterministic JSON: `schema_version`,
+`scope` (`ending_seasons`, `game_types`), the ordered `schema` (name, Arrow
+type, nullability, `source`/`derived` origin for every `EVENT_COLUMNS`
+entry), `sources.worklists`/`sources.games` (sorted relative cache body and
+sidecar paths plus independently recomputed SHA-256 and content-length
+attestations), `versions` (`nba_api`, `numpy`, `pandas`, `pyarrow`, `python`),
+per-season `partitions` (byte and logical-row SHA-256, row/game counts, max
+period), and a full `validation` report (worklist/game/event counts, period
+counts, per-`(season, game_type)` event-count distributions with Tukey
+outliers, action-field null/blank availability, per-game terminal scores and
+sentinel/blank counts, the `terminal_mismatches` allowlist ledger, and named
+build gates: `arrow_schema_exact`, `primary_key_sorted`,
+`primary_key_unique`, `row_season_consistent`, `worklist_membership_exact`,
+`terminal_scores_verified`, `zstd_compression_verified`,
+`partition_checksums_verified`, `manifest_json_canonical`). Absolute paths,
+build times, hostnames, and other volatile execution data must never appear.
+`validate_publication` independently recomputes this entire report from the
+published tree — never trusting the stored manifest — and requires an exact
+match; two consecutive offline `build-pbp` runs must reproduce every
+`events.parquet` partition and `_manifest.json` byte for byte.
+
+### Commands
+
+```bash
+# Networked and rate-limited (>= 1.5s between requests, 5 attempts,
+# 5/10/20/40s retry delays); resumable full acquisition or one season.
+python -m nba_data fetch-pbp --season 2026
+python -m nba_data fetch-pbp
+
+# Strictly offline deterministic publication of every events.parquet
+# partition plus _manifest.json.
+python -m nba_data build-pbp
+
+# Independent immutable combined raw-plus-Parquet NAS recovery.
+scripts/archive_pbp_snapshot.sh
+scripts/restore_pbp_snapshot.sh
+```
+
+`fetch-pbp` is the only PBP network path; `build-pbp`, unit tests,
+integration tests, audit rendering, archive validation, and restore
+validation are all offline. The only source request host is
+`stats.nba.com`. Complete valid raw cache body/sidecar pairs are never
+silently overwritten or re-fetched.
+
+### Immutable snapshot and recovery contract
+
+The immutable combined snapshot root is
+`/mnt/nas/llm/documents/nba-predictions-archive/pbp-archive-2026-<first-12-hex-of-manifest-sha256>/`,
+overridable with `NBA_PBP_ARCHIVE_ROOT`/`NBA_PBP_DATA_DIR`. A snapshot
+combines both the raw cache (`raw/stats_nba/pbp/`) and the active Parquet
+publication (`parquet-large/pbp/`) under one name, plus a `SHA256SUMS`
+covering every regular file. `scripts/archive_pbp_snapshot.sh` validates the
+live source, stages a checksummed copy, and publishes it atomically; an
+existing same-name snapshot is accepted only if it already matches the
+freshly staged copy exactly, and is never modified otherwise.
+
+`scripts/restore_pbp_snapshot.sh` requires `NBA_PBP_SNAPSHOT` (the exact
+snapshot directory) and `NBA_PBP_MANIFEST_SHA256` (the trusted full
+manifest SHA-256 to pin against), and restores into
+`NBA_PBP_RAW_DESTINATION`/`NBA_PBP_PUBLICATION_DESTINATION` (defaulting to
+`data/raw/stats_nba/pbp` and `data/parquet-large/pbp`), both of which must
+be absent. It verifies the snapshot's `SHA256SUMS` inventory and manifest
+pin, stages a checksummed copy, and delegates every JSON/Parquet semantic
+question to `python -m nba_data.pbp_snapshot`:
+
+- `validate-layout` fully revalidates one raw/publication pair (cache tree
+  plus publication) offline, optionally pinning the manifest SHA-256;
+- `rebuild-compare` deterministically rebuilds the raw cache into a
+  temporary stage and requires an exact, byte-for-byte match against the
+  already-published tree, after first requiring the installed
+  Python/package versions to equal the manifest's pinned `versions`;
+- `write-audit` independently reverifies the snapshot checksum inventory
+  and manifest pin, revalidates the live cache/publication and its
+  cross-source worklist equality, derives the four source-spike evidence
+  rows straight from the live raw cache, and only then renders the final
+  Markdown audit via `render_audit`.
+
+Restore performs the checksum verification, the `validate-layout` semantic
+check, and `rebuild-compare`'s offline rebuild-and-byte-compare before an
+atomic two-destination publish with explicit rollback on partial failure.
+The [final audit](audits/2026-07-31-play-by-play-archive.md) was rendered
+only after an independently restored, absent-target copy of this exact
+snapshot passed every one of these checks.

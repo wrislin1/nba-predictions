@@ -11,6 +11,7 @@ import shutil
 import stat
 import tempfile
 from typing import NamedTuple
+import uuid
 
 
 class PairPublicationError(ValueError):
@@ -791,3 +792,165 @@ def publish_pair(
             manifest_table=manifest_table,
             precommit=precommit,
         )
+
+
+class TreePublicationError(RuntimeError):
+    """Raised when a staged directory tree cannot be published transactionally."""
+
+
+def _require_tree_root(
+    path: Path,
+    *,
+    label: str,
+    role: str,
+) -> os.stat_result | None:
+    """Return the lstat of ``path`` as a tree root, or ``None`` if absent.
+
+    Raises :class:`TreePublicationError` if ``path`` exists but is a symlink
+    or is not a directory.
+    """
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise TreePublicationError(
+            f"{label} could not inspect {role} {path}"
+        ) from exc
+    if stat.S_ISLNK(observed.st_mode):
+        raise TreePublicationError(f"{label} {role} is a symlink: {path}")
+    if not stat.S_ISDIR(observed.st_mode):
+        raise TreePublicationError(
+            f"{label} {role} is not a directory: {path}"
+        )
+    return observed
+
+
+def _require_safe_stage_tree(root: Path, *, label: str) -> None:
+    """Recursively lstat ``root``, rejecting anything but files and dirs.
+
+    Accepts only regular files and real directories; rejects symlinks and
+    every special inode (FIFOs, sockets, devices). This runs to completion
+    before any rename is attempted.
+    """
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir())
+        except OSError as exc:
+            raise TreePublicationError(
+                f"{label} could not inspect stage entry {current}"
+            ) from exc
+        for child in children:
+            try:
+                observed = child.lstat()
+            except OSError as exc:
+                raise TreePublicationError(
+                    f"{label} could not inspect stage entry {child}"
+                ) from exc
+            if stat.S_ISDIR(observed.st_mode):
+                stack.append(child)
+            elif stat.S_ISREG(observed.st_mode):
+                continue
+            else:
+                raise TreePublicationError(
+                    f"{label} stage tree contains an unsupported entry: "
+                    f"{child}"
+                )
+
+
+def publish_tree(
+    stage_dir: Path,
+    output_dir: Path,
+    *,
+    label: str,
+) -> Path | None:
+    """Publish a staged directory tree into place transactionally.
+
+    The staged tree at ``stage_dir`` is validated (no symlinks or special
+    inodes, distinct from ``output_dir`` but sharing its parent filesystem),
+    then swapped into place with directory-level renames rather than
+    file-by-file replacement: any existing ``output_dir`` is first renamed
+    to a sibling rollback directory, ``stage_dir`` is renamed to
+    ``output_dir``, and the rollback directory is removed once the new
+    publication is in place. If the second rename fails, the rollback
+    directory is renamed back to ``output_dir`` to restore the prior
+    publication.
+
+    Returns ``None`` after a successful publication and cleanup, or the
+    retained rollback directory when publication succeeded but removing
+    the prior tree failed.
+    """
+    stage_dir = Path(stage_dir)
+    output_dir = Path(output_dir)
+
+    stage_observed = _require_tree_root(stage_dir, label=label, role="stage")
+    if stage_observed is None:
+        raise TreePublicationError(f"{label} stage does not exist: {stage_dir}")
+    _require_safe_stage_tree(stage_dir, label=label)
+
+    if stage_dir.parent != output_dir.parent:
+        raise TreePublicationError(
+            f"{label} stage {stage_dir} and output {output_dir} must "
+            "share a parent directory"
+        )
+    if stage_dir.resolve() == output_dir.resolve():
+        raise TreePublicationError(
+            f"{label} stage and output must be distinct: {stage_dir}"
+        )
+
+    output_observed = _require_tree_root(output_dir, label=label, role="output")
+
+    rollback_dir = output_dir.parent / (
+        f".{output_dir.name}.rollback-{uuid.uuid4().hex}"
+    )
+    try:
+        rollback_dir.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise TreePublicationError(
+            f"{label} could not inspect rollback destination {rollback_dir}"
+        ) from exc
+    else:
+        raise TreePublicationError(
+            f"{label} rollback destination already exists: {rollback_dir}"
+        )
+
+    moved_output = output_observed is not None
+    if moved_output:
+        try:
+            output_dir.replace(rollback_dir)
+        except OSError as exc:
+            raise TreePublicationError(
+                f"{label} failed to move prior tree {output_dir} to "
+                f"rollback {rollback_dir}"
+            ) from exc
+
+    try:
+        stage_dir.replace(output_dir)
+    except OSError as exc:
+        if moved_output:
+            try:
+                rollback_dir.replace(output_dir)
+            except OSError as restore_exc:
+                raise TreePublicationError(
+                    f"{label} failed to publish {output_dir} from "
+                    f"{stage_dir} and failed to restore the prior tree; "
+                    f"rollback retained at {rollback_dir}"
+                ) from restore_exc
+            raise TreePublicationError(
+                f"{label} failed to publish {output_dir} from "
+                f"{stage_dir}; restored the prior tree"
+            ) from exc
+        raise TreePublicationError(
+            f"{label} failed to publish {output_dir} from {stage_dir}"
+        ) from exc
+
+    if moved_output:
+        try:
+            shutil.rmtree(rollback_dir)
+        except OSError:
+            return rollback_dir
+    return None

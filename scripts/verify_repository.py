@@ -47,6 +47,7 @@ REQUIRED_GITIGNORE_RULES = {
     "venv/",
     "data/raw/",
     "data/.parquet-publication.lock",
+    "data/parquet-large/",
     "nba-stats/",
     "*.duckdb",
     ".serena/",
