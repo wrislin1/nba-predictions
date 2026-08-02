@@ -1150,9 +1150,11 @@ def test_pbp_documentation_matches_the_delivered_contract() -> None:
     # Data dictionary lists all EVENT_COLUMNS, in exact order, with the
     # exact Arrow type/nullability/origin from PBP_ARROW_SCHEMA.
     heading = "### `events.parquet`"
+    next_heading = "### Commands"
     assert heading in dictionary
+    assert next_heading in dictionary
     section = dictionary.split(heading, maxsplit=1)[1]
-    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    section = section.split(next_heading, maxsplit=1)[0]
     documented_columns: list[str] = []
     documented_rows: dict[str, list[str]] = {}
     for line in section.splitlines():

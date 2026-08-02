@@ -699,7 +699,7 @@ Each V3 `actions[]` element must have exactly the 23 keys in
 `teamTricode`, `videoAvailable`, `xLegacy`, `yLegacy`) — a fixed 23-key
 projection. A missing or additional key on any action is V3 schema drift:
 the raw response remains cached as evidence, but publication fails until
-the design, parser, and fixtures are reviewed together. The eleven integer
+the design, parser, and fixtures are reviewed together. The twelve integer
 keys must be non-boolean integers; `clock`, `scoreHome`, and `scoreAway`
 must never be null; every other string key may be null.
 
@@ -713,11 +713,14 @@ and normalized to `WORKLIST_COLUMNS`. Home/away roles are derived
 positionally from each row's `MATCHUP` string rather than from `TEAM_ID`
 ordering, because 2024-25-and-later neutral-site games can carry a
 double-`@` `MATCHUP` anomaly that ordering alone does not resolve.
-`cross_validate_worklist` independently rebuilds the same `(game_id, season,
-game_type, away_franchise_id, home_franchise_id, away_pts, home_pts)` tuples
-from the integrated regular (`games.parquet`) and postseason
-(`playoff_games.parquet`) publications and requires bidirectional equality
-with the fetched worklist before any PBP game is requested.
+`cross_validate_worklist` independently rebuilds two distinct comparison
+keys from the integrated regular (`games.parquet`) and postseason
+(`playoff_games.parquet`) publications. The regular comparison key is
+`(game_id, season, game_date, away_franchise_id, home_franchise_id,
+away_pts, home_pts)`; the postseason comparison key is `(season, game_date,
+game_type, away_franchise_id, home_franchise_id, away_pts, home_pts)`. Both
+require bidirectional equality with the fetched worklist before any PBP
+game is requested.
 
 #### Game types, season scope, key, ordering, and partition layout
 
