@@ -1152,13 +1152,48 @@ def test_load_score_mismatch_allowlist_rejects_malformed_entries(tmp_path):
         pbp_build._load_score_mismatch_allowlist(path)
 
 
-def test_committed_score_mismatch_allowlist_starts_empty():
+# The complete, human-reviewed classification pass over the finished
+# acquisition (38,023/38,023 games) found exactly these 15 terminal-score
+# mismatches; the human partner approved allowlisting all 15. Pinned here
+# so an accidental edit to the committed file is caught by name and by
+# exact recorded pair, not just by count.
+_COMMITTED_MISMATCHES = {
+    "0020300778": {"worklist": (120, 98), "derived": (120, 101)},
+    "0021301006": {"worklist": (117, 111), "derived": (115, 111)},
+    "0021500916": {"worklist": (117, 115), "derived": (114, 112)},
+    "0021700025": {"worklist": (120, 128), "derived": (103, 124)},
+    "0021700211": {"worklist": (116, 125), "derived": (85, 89)},
+    "0022100028": {"worklist": (102, 91), "derived": (100, 91)},
+    "0022100298": {"worklist": (114, 120), "derived": (114, 118)},
+    "0022301202": {"worklist": (122, 112), "derived": (119, 112)},
+    "0022500232": {"worklist": (112, 123), "derived": (60, 55)},
+    "0029600070": {"worklist": (108, 79), "derived": (101, 86)},
+    "0029600332": {"worklist": (123, 83), "derived": (123, 81)},
+    "0029600370": {"worklist": (93, 79), "derived": (91, 76)},
+    "0029800661": {"worklist": (101, 97), "derived": (101, 93)},
+    "0049600063": {"worklist": (99, 96), "derived": (0, 3)},
+    "0049700045": {"worklist": (76, 78), "derived": (3, 0)},
+}
+
+
+def test_committed_score_mismatch_allowlist_records_the_reviewed_15():
+    loaded = pbp_build._load_score_mismatch_allowlist()
+    assert set(loaded) == set(_COMMITTED_MISMATCHES)
+    assert loaded == _COMMITTED_MISMATCHES
+    # The module-level constant is loaded once at import time from the
+    # same committed file; it must reflect the same reviewed content.
+    assert pbp_build.SCORE_MISMATCH_ALLOWLIST == _COMMITTED_MISMATCHES
+
+
+def test_committed_score_mismatch_allowlist_is_canonical_json():
+    text = pbp_build.SCORE_MISMATCH_ALLOWLIST_PATH.read_text(encoding="utf-8")
+    reloaded = json.loads(text)
     assert (
-        json.loads(
-            pbp_build.SCORE_MISMATCH_ALLOWLIST_PATH.read_text(encoding="utf-8")
-        )
-        == {}
-    )
+        json.dumps(reloaded, sort_keys=True, indent=2) + "\n" == text
+    ), "committed allowlist must be sorted-key, indent=2, one trailing newline"
+    for game_id, entry in reloaded.items():
+        assert set(entry) == {"worklist", "derived", "note"}
+        assert isinstance(entry["note"], str) and entry["note"]
 
 
 # ---------------------------------------------------------------------------
