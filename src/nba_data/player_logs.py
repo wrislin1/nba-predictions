@@ -247,29 +247,31 @@ def _retry_delay(exc: requests.RequestException, attempt: int) -> float:
     if response is not None:
         header = response.headers.get("Retry-After")
         if header is not None:
-            if not header.strip().isdigit():
-                raise cache.SourceAccessError(
-                    f"LeagueGameLog request failed: invalid Retry-After {header!r}"
-                )
-            retry_after = float(header.strip())
-            if retry_after > MAX_RETRY_AFTER_S:
-                raise cache.SourceAccessError(
-                    "LeagueGameLog request failed: Retry-After "
-                    f"{int(retry_after)} exceeds {int(MAX_RETRY_AFTER_S)}"
-                )
+            if header.strip().isdigit():
+                retry_after = float(header.strip())
+                if retry_after > MAX_RETRY_AFTER_S:
+                    raise cache.SourceAccessError(
+                        "LeagueGameLog request failed: Retry-After "
+                        f"{int(retry_after)} exceeds {int(MAX_RETRY_AFTER_S)}"
+                    )
     delay = RETRY_DELAYS_S[attempt - 1]
     return max(delay, retry_after) if retry_after is not None else delay
 
 
-def _request_league_game_log(endpoint: LeagueGameLog) -> bytes:
+def _request_league_game_log(endpoint: LeagueGameLog, before_request) -> bytes:
     """Send one LeagueGameLog HTTP request without letting nba_api parse errors hide status."""
+    url = NBAStatsHTTP.base_url.format(
+        endpoint=getattr(endpoint, "endpoint", "leaguegamelog")
+    )
+    params = sorted(getattr(endpoint, "parameters", {}).items())
+    headers = dict(NBAStatsHTTP.headers)
+    timeout = getattr(endpoint, "timeout", 90)
+    before_request()
     response = requests.get(
-        NBAStatsHTTP.base_url.format(
-            endpoint=getattr(endpoint, "endpoint", "leaguegamelog")
-        ),
-        params=sorted(getattr(endpoint, "parameters", {}).items()),
-        headers=dict(NBAStatsHTTP.headers),
-        timeout=getattr(endpoint, "timeout", 90),
+        url,
+        params=params,
+        headers=headers,
+        timeout=timeout,
     )
     if response.status_code != 200:
         raise requests.HTTPError(response=response)
@@ -288,11 +290,27 @@ def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
     preflight_done = False
     last_request_start: float | None = None
 
+    def request_payload(endpoint: LeagueGameLog) -> bytes:
+        nonlocal last_request_start
+        def pace_request() -> None:
+            nonlocal last_request_start
+            now = time.monotonic()
+            if last_request_start is not None:
+                wait = last_request_start + MIN_REQUEST_INTERVAL_S - now
+                if wait > 0:
+                    time.sleep(wait)
+            last_request_start = time.monotonic()
+
+        return _request_league_game_log(endpoint, pace_request)
+
+    uncached = []
     for season in ordered_seasons:
         for game_type in applicable_game_types(season):
             destination = cache_path(data_dir, season, game_type)
-            if read_cached(data_dir, season, game_type) is not None:
-                continue
+            if read_cached(data_dir, season, game_type) is None:
+                uncached.append((season, game_type, destination))
+
+    for season, game_type, destination in uncached:
             if not capacity_checked:
                 capacity_path = _nearest_existing_ancestor(raw_root)
                 available = available_bytes(capacity_path)
@@ -307,13 +325,6 @@ def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
                 preflight_done = True
 
             for attempt in range(1, len(RETRY_DELAYS_S) + 2):
-                now = time.monotonic()
-                if last_request_start is not None:
-                    wait = last_request_start + MIN_REQUEST_INTERVAL_S - now
-                    if wait > 0:
-                        time.sleep(wait)
-                        now = time.monotonic()
-                last_request_start = now
                 try:
                     endpoint = LeagueGameLog(
                         league_id="00",
@@ -325,7 +336,7 @@ def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
                         timeout=90,
                         get_request=False,
                     )
-                    payload = _request_league_game_log(endpoint)
+                    payload = request_payload(endpoint)
                 except requests.RequestException as exc:
                     if attempt == len(RETRY_DELAYS_S) + 1:
                         raise cache.SourceAccessError(

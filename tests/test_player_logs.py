@@ -248,6 +248,18 @@ def test_read_cached_rejects_content_length_mismatch(tmp_path):
         player_logs.read_cached(tmp_path, 1984, "regular")
 
 
+def test_read_cached_rejects_a_stable_body_sidecar_sha_mismatch(tmp_path):
+    """Would fail if a persisted body mutation did not invalidate its sidecar."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    destination.write_bytes(_payload(REGULAR_ROWS) + b" ")
+
+    with pytest.raises(cache.CacheIntegrityError, match="SHA-256 mismatch"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
 @pytest.mark.parametrize("unsafe_kind", ["symlink", "fifo"])
 def test_read_cached_rejects_symlink_and_special_body_entries(tmp_path, unsafe_kind):
     """Would fail if an unsafe filesystem entry were opened as cache data."""
@@ -353,6 +365,38 @@ def test_validate_cache_inventory_root_rejects_an_unexpected_file(tmp_path):
     """Would fail if an unrecognized cache file were silently ignored."""
     root, _ = _seed_full_player_log_cache(tmp_path)
     (root / "season=1984" / "extra.json").write_bytes(b"unexpected")
+
+    with pytest.raises(cache.CacheIntegrityError, match="unexpected"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+@pytest.mark.parametrize("missing", ["body", "sidecar"])
+def test_validate_cache_inventory_root_rejects_missing_expected_pair_member(
+    tmp_path, missing
+):
+    """Would fail if a missing exact inventory member were treated as complete."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    destination = root / "season=1984" / "regular.json"
+    target = destination if missing == "body" else destination.with_name(
+        destination.name + ".meta.json"
+    )
+    target.unlink()
+
+    with pytest.raises(cache.CacheIntegrityError, match="missing"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+@pytest.mark.parametrize("renamed", ["body", "sidecar"])
+def test_validate_cache_inventory_root_rejects_renamed_expected_pair_member(
+    tmp_path, renamed
+):
+    """Would fail if a renamed exact inventory member were treated as complete."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    destination = root / "season=1984" / "regular.json"
+    target = destination if renamed == "body" else destination.with_name(
+        destination.name + ".meta.json"
+    )
+    target.rename(target.with_name("renamed-" + target.name))
 
     with pytest.raises(cache.CacheIntegrityError, match="unexpected"):
         player_logs.validate_cache_inventory_root(root)
@@ -554,12 +598,21 @@ def test_fetch_spaces_request_starts_at_least_1_5_seconds(monkeypatch, tmp_path)
 
     class FakeLeagueGameLog:
         def __init__(self, **kwargs):
-            starts.append(FakeTime.monotonic())
+            pass
 
         def get_json(self):
             return _payload(REGULAR_ROWS).decode()
 
+    def raw_response(*args, **kwargs):
+        starts.append(FakeTime.monotonic())
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        return response
+
     monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs.requests, "get", raw_response)
     monkeypatch.setattr(player_logs, "time", FakeTime)
     monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular", "playoff"))
     monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
@@ -569,6 +622,57 @@ def test_fetch_spaces_request_starts_at_least_1_5_seconds(monkeypatch, tmp_path)
 
     assert starts == [10.0, 11.5]
     assert sleeps == [1.5]
+
+
+def test_fetch_spaces_raw_http_request_starts_at_least_1_5_seconds(
+    monkeypatch, tmp_path
+):
+    """Would fail if constructor time were mistaken for the HTTP request start."""
+    starts = []
+
+    class FakeTime:
+        now = 10.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        constructed = 0
+
+        def __init__(self, **kwargs):
+            type(self).constructed += 1
+            if type(self).constructed == 1:
+                FakeTime.now += 1.4
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    def raw_response(*args, **kwargs):
+        starts.append(FakeTime.monotonic())
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        return response
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs, "requests", type(
+        "Requests", (), {"get": staticmethod(raw_response), "RequestException": requests.RequestException,
+                            "HTTPError": requests.HTTPError}
+    ))
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular", "playoff"))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert starts[1] - starts[0] >= 1.5
 
 
 def test_fetch_honors_numeric_retry_after_through_120(monkeypatch, tmp_path):
@@ -619,6 +723,54 @@ def test_fetch_honors_numeric_retry_after_through_120(monkeypatch, tmp_path):
 
     assert len(attempts) == 2
     assert sleeps == [120.0]
+
+
+def test_fetch_ignores_nonnumeric_retry_after_and_uses_fixed_backoff(
+    monkeypatch, tmp_path
+):
+    """Would fail if a malformed transient Retry-After stopped acquisition."""
+    sleeps = []
+    responses = []
+    for status, retry_after in ((503, "soon"), (200, None)):
+        response = requests.Response()
+        response.status_code = status
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        responses.append(response)
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            assert kwargs["get_request"] is False
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(
+        player_logs.requests, "get", lambda *args, **kwargs: responses.pop(0)
+    )
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert sleeps == [5.0]
 
 
 def test_fetch_stops_on_retry_after_over_120(monkeypatch, tmp_path):
@@ -687,6 +839,37 @@ def test_fetch_does_not_replace_invalid_existing_pair(monkeypatch, tmp_path):
 
     with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
         player_logs.fetch(tmp_path, [1984])
+
+
+def test_fetch_validates_every_selected_cache_pair_before_any_acquisition(
+    monkeypatch, tmp_path
+):
+    """Would fail if an early miss fetched before a later invalid selected pair."""
+    invalid = player_logs.cache_path(tmp_path, 1984, "playoff")
+    invalid.parent.mkdir(parents=True)
+    invalid.write_bytes(_payload(REGULAR_ROWS))
+    constructors = []
+    published = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            constructors.append(kwargs)
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(
+        player_logs, "applicable_game_types", lambda _: ("regular", "playoff")
+    )
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.cache, "publish_bytes", lambda *args: published.append(args))
+
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        player_logs.fetch(tmp_path, [1984])
+
+    assert constructors == []
+    assert published == []
 
 
 def test_fetch_requires_five_gibibytes_free_before_first_uncached_request(
