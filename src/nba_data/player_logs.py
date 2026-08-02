@@ -53,10 +53,23 @@ REQUIRED_HEADERS = {
 }
 
 _RESULT_SET_NAME = "LeagueGameLog"
+_INT64_MIN = -(2 ** 63)
+_INT64_MAX = 2 ** 63 - 1
 
 
 class PlayerLogValidationError(ValueError):
     """Raised when a player game-log source response violates its contract."""
+
+
+def _decode_payload(payload: bytes) -> object:
+    """Decode strict JSON, rejecting non-standard numeric constants."""
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON numeric constant: {value}")
+
+    try:
+        return json.loads(payload, parse_constant=reject_constant)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise PlayerLogValidationError(f"invalid player-log JSON: {exc}") from exc
 
 
 def season_label(season: int) -> str:
@@ -91,10 +104,7 @@ def cache_path(data_dir: Path, season: int, game_type: str) -> Path:
 
 def validate_payload_bytes(payload: bytes) -> None:
     """Validate the source envelope before normalization."""
-    try:
-        document = json.loads(payload)
-    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
-        raise PlayerLogValidationError(f"invalid player-log JSON: {exc}") from exc
+    document = _decode_payload(payload)
     if not isinstance(document, Mapping):
         raise PlayerLogValidationError("player-log payload must be a JSON object")
 
@@ -143,9 +153,11 @@ def _exact_integer_series(
     values: pd.Series, source_name: str, *, nullable: bool = False
 ) -> pd.Series:
     """Return source integers while rejecting coercion and truncation."""
+    normalized: list[int | None] = []
     for value in values:
         if pd.isna(value):
             if nullable:
+                normalized.append(None)
                 continue
             raise PlayerLogValidationError(
                 f"{source_name} must be an exact integer, not null"
@@ -159,14 +171,20 @@ def _exact_integer_series(
                 raise PlayerLogValidationError(
                     f"{source_name} must be an exact integer"
                 )
-            continue
-        if not isinstance(value, numbers.Real) or not math.isfinite(value):
+            integer = int(value)
+        elif not isinstance(value, numbers.Real) or not math.isfinite(value):
             raise PlayerLogValidationError(f"{source_name} must be an exact integer")
-        if isinstance(value, float) and not value.is_integer():
+        elif isinstance(value, float) and not value.is_integer():
             raise PlayerLogValidationError(f"{source_name} must be an exact integer")
+        else:
+            integer = int(value)
+        if not _INT64_MIN <= integer <= _INT64_MAX:
+            raise PlayerLogValidationError(f"{source_name} must be an exact integer")
+        normalized.append(integer)
 
-    numeric = pd.to_numeric(values, errors="raise")
-    return numeric.astype("Int64" if nullable else "int64")
+    return pd.Series(normalized, index=values.index, dtype=(
+        "Int64" if nullable else "int64"
+    ))
 
 
 def _box_column(values: pd.Series, source_name: str) -> pd.Series:
@@ -195,7 +213,8 @@ def normalize_payload(
             f"game type {game_type!r} is not applicable to season {season}"
         )
     validate_payload_bytes(payload)
-    result_set = json.loads(payload)["resultSets"][0]
+    document = _decode_payload(payload)
+    result_set = document["resultSets"][0]
     raw = pd.DataFrame(result_set["rowSet"], columns=result_set["headers"])
 
     required_strings = (
@@ -269,6 +288,8 @@ def normalize_payload(
         "team_name_raw": raw["TEAM_NAME"],
         "team_abbreviation_raw": raw["TEAM_ABBREVIATION"],
         "matchup_raw": raw["MATCHUP"],
+        "matchup_home_abbreviation": matchup_home_abbr,
+        "matchup_away_abbreviation": matchup_away_abbr,
         "franchise_id": raw["TEAM_NAME"].map(
             lambda name: franchises.resolve(str(name), season)
         ),
@@ -295,6 +316,30 @@ def normalize_payload(
             raise PlayerLogValidationError(
                 f"game {game_id_value} has {len(identities)} team identities, "
                 "expected 2"
+            )
+        matchup_pairs = {
+            tuple(sorted((home_abbreviation, away_abbreviation)))
+            for home_abbreviation, away_abbreviation in zip(
+                group["matchup_home_abbreviation"],
+                group["matchup_away_abbreviation"],
+            )
+        }
+        if len(matchup_pairs) != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id_value} rows disagree on MATCHUP team pair: "
+                f"{sorted(matchup_pairs)}"
+            )
+        identity_columns = [
+            "nba_team_id", "team_name_raw", "team_abbreviation_raw",
+        ]
+        home_identities = group.loc[group["is_home"], identity_columns]
+        home_identity_count = len(home_identities.drop_duplicates())
+        away_identities = group.loc[~group["is_home"], identity_columns]
+        away_identity_count = len(away_identities.drop_duplicates())
+        if home_identity_count != 1 or away_identity_count != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id_value} has {home_identity_count} home team "
+                "identities, expected 1"
             )
         franchise_ids = group["franchise_id"].unique().tolist()
         if len(franchise_ids) != 2:

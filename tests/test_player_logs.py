@@ -211,3 +211,31 @@ def test_normalize_payload_assigns_neutral_style_rows_by_each_players_position()
     frame = player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
     assert set(frame.loc[frame.is_home, "franchise_id"]) == {"BOS"}
     assert set(frame.loc[~frame.is_home, "franchise_id"]) == {"CHI"}
+
+
+def test_normalize_payload_rejects_identifier_outside_signed_int64_range():
+    rows = _rows_with("PLAYER_ID", 1e20)
+    with pytest.raises(ValueError, match="PLAYER_ID must be an exact integer"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_non_standard_json_numeric_constants():
+    rows = _rows_with("PTS", float("nan"))
+    with pytest.raises(ValueError, match="invalid player-log JSON"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_team_rows_that_disagree_on_matchup_pair():
+    rows = [list(row) for row in REGULAR_ROWS]
+    rows[3][HEADERS.index("MATCHUP")] = "BOS vs. NYK"
+    with pytest.raises(ValueError, match="rows disagree on MATCHUP team pair"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_requires_exactly_one_home_team_identity():
+    rows = [list(row) for row in REGULAR_ROWS]
+    for row in rows:
+        if row[HEADERS.index("TEAM_ABBREVIATION")] == "CHI":
+            row[HEADERS.index("MATCHUP")] = "CHI vs. BOS"
+    with pytest.raises(ValueError, match="has 2 home team identities, expected 1"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
