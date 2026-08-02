@@ -554,13 +554,15 @@ def test_running_scores_carry_modern_blanks():
     assert away == [0, 0, 0]
 ```
 
-Also test one-sided blanks, negative scores, non-integer scores, a game whose
-very first action is numeric and not 0–0, leading blank pairs followed by an
-arbitrary first numeric pair, and a mostly-blank game shape (blanks
-interleaved with real scoring, no explicit `"0"`/`"0"` pair anywhere). Each
-rejection raises `PBPBuildError` with the game-independent message fragment
-`invalid raw score pair`; the leading-blank and mostly-blank cases are
-accepted, not rejected.
+Also test one-sided blanks, negative scores, non-integer scores, leading
+blank pairs followed by an arbitrary first numeric pair, a mostly-blank game
+shape (blanks interleaved with real scoring, no explicit `"0"`/`"0"` pair
+anywhere), a game whose first action already carries an arbitrary numeric
+pair with no leading blanks (e.g. `"5"`/`"3"`), and a missing-opener-row
+shape (first action `"0"`/`"1"`). Each rejection raises `PBPBuildError` with
+the game-independent message fragment `invalid raw score pair`; the
+leading-blank, mostly-blank, arbitrary-first-pair, and missing-opener cases
+are all accepted, not rejected.
 
 - [ ] **Step 3: Run the narrow tests to verify failure**
 
@@ -604,12 +606,14 @@ def parse_clock(clock: str, period: int) -> float:
 Implement score derivation as an explicit state machine. Reject booleans and
 whitespace variants rather than coercing them. Running scores start
 implicitly at 0-0; any number of leading (or later interleaved) blank pairs
-carry that implicit start forward, and the first numeric pair must equal 0-0
-only when it is also the game's very first action — real 1996-97 games (e.g.
-0029600490) open with blank period-start/Jump Ball pairs before the first
-made shot, so a leading-blanks game may present any value at its first
-numeric pair. Treat paired `"0"`/`"0"` as missing only after either current
-score is nonzero. Allow later numeric pairs to decrease.
+carry that implicit start forward. The first numeric pair in the sequence may
+be any value, with no 0-0 requirement even when it is the game's very first
+action — full-corpus evidence found only 2 of 31,438 real games with a
+non-0-0 first numeric pair (a missing opener row and a start-truncated
+source response), and downstream period-contiguity and terminal-score checks
+(the latter routing into the reviewed allowlist) already catch truncated
+games without this guard. Treat paired `"0"`/`"0"` as missing only after
+either current score is nonzero. Allow later numeric pairs to decrease.
 
 - [ ] **Step 5: Write failing fixed-schema and per-game tests**
 

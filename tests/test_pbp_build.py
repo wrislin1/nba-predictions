@@ -92,6 +92,27 @@ def test_running_scores_carry_implicit_start_through_mostly_blank_game():
     assert away == [0, 0, 0, 0, 0, 0, 0, 2]
 
 
+def test_running_scores_accept_any_first_numeric_pair():
+    # Full-corpus evidence (31,438 real games): a game's first numeric
+    # pair need not be 0-0. It is simply adopted as the running score;
+    # the implicit 0-0 start covers whatever precedes it.
+    home, away = pbp_build.derive_running_scores(["5"], ["3"])
+    assert home == [5]
+    assert away == [3]
+
+
+def test_running_scores_accept_missing_opener_row_shape():
+    # Modeled on 2021-22 game 0022100016: its first action already
+    # carries a numeric "0"/"1" pair (a missing 0-0 opener row), which
+    # must be adopted directly rather than rejected.
+    home, away = pbp_build.derive_running_scores(
+        ["0", "2"],
+        ["1", "1"],
+    )
+    assert home == [0, 2]
+    assert away == [1, 1]
+
+
 @pytest.mark.parametrize(
     ("home_raw", "away_raw"),
     [
@@ -99,14 +120,12 @@ def test_running_scores_carry_implicit_start_through_mostly_blank_game():
         (["0", "5"], ["0", ""]),  # one-sided blank (away blank, home not)
         (["0", "-5"], ["0", "3"]),  # negative score
         (["0", "12.5"], ["0", "9"]),  # non-integer score
-        (["5"], ["3"]),  # game's first action is numeric and not 0-0
     ],
     ids=[
         "one-sided-blank-home",
         "one-sided-blank-away",
         "negative-score",
         "non-integer-score",
-        "first-pair-not-zero-zero",
     ],
 )
 def test_running_scores_reject_invalid_pairs(home_raw, away_raw):

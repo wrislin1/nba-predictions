@@ -226,16 +226,11 @@ def _derive_running_scores_detailed(
         away_value = int(raw_away)
         if not seen_numeric_pair:
             # This is the first numeric pair in the whole action sequence.
-            # When it is also the game's very first action (no leading
-            # blanks), it must anchor the game at 0-0, same as before.
-            # When leading blanks preceded it, the implicit 0-0 start
-            # already anchored the game, so this first numeric pair may
-            # be any value.
-            if index == 0 and (home_value, away_value) != (0, 0):
-                raise PBPBuildError(
-                    f"invalid raw score pair at index {index}: "
-                    f"first score must be 0-0, got {raw_home!r}/{raw_away!r}"
-                )
+            # It may be any value: the implicit 0-0 start already covers
+            # the pre-scoring portion of the game (whether that's zero
+            # leading blanks or several), and real full-corpus evidence
+            # includes games whose first numeric pair is not 0-0 (e.g. a
+            # missing opener row, or a start-truncated source response).
             current = (home_value, away_value)
             seen_numeric_pair = True
         elif home_value == 0 and away_value == 0 and current != (0, 0):
@@ -257,10 +252,9 @@ def derive_running_scores(
     Running scores start implicitly at 0-0. Paired blank strings — at
     any position, including any number of leading pairs before the first
     numeric pair — carry that running score forward. The first numeric
-    pair in the sequence must equal 0-0 only when it is also the game's
-    very first action; if leading blanks preceded it, the implicit 0-0
-    start already anchored the game, so that first numeric pair may be
-    any value. After that, a later ``"0"``/``"0"`` pair is a historical
+    pair in the sequence may be any value (running scores legitimately
+    jump between scoring events; the implicit 0-0 start still applies
+    before it). After that, a later ``"0"``/``"0"`` pair is a historical
     "unknown" sentinel once a nonzero score is running, and the previous
     running score is carried forward instead. One-sided blanks,
     non-integer strings, and negative values are all contract violations.
