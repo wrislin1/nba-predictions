@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pandas as pd
 import pytest
 
 from nba_data import cache, player_games_build, player_logs
@@ -467,3 +468,568 @@ def test_load_exceptions_rejects_duplicate_semantic_identities(tmp_path):
         match="duplicate semantic identity",
     ):
         player_games_build.load_exceptions(path)
+
+
+def _player_game_rows():
+    games = [
+        (
+            "0028300001", 1984, "regular", "1983-10-28",
+            "BOS", "CHI", 108, 107,
+        ),
+        (
+            "0048300001", 1984, "playoff", "1984-04-20",
+            "BOS", "CHI", 110, 100,
+        ),
+        (
+            "0051900001", 2020, "play_in", "2020-08-15",
+            "LAL", "POR", 126, 122,
+        ),
+    ]
+    rows = []
+    person_id = 1
+    for game_id, season, game_type, game_date, home, away, home_pts, away_pts in games:
+        for franchise_id, opponent_id, is_home, total in (
+            (home, away, True, home_pts),
+            (away, home, False, away_pts),
+        ):
+            rows.extend(
+                {
+                    "game_id": game_id,
+                    "person_id": person_id + offset,
+                    "season": season,
+                    "game_type": game_type,
+                    "game_date": pd.Timestamp(game_date).date(),
+                    "franchise_id": franchise_id,
+                    "opponent_franchise_id": opponent_id,
+                    "is_home": is_home,
+                    "min": 120,
+                    "pts": points,
+                }
+                for offset, points in enumerate((total // 2, total - total // 2))
+            )
+            person_id += 2
+    return pd.DataFrame(rows)
+
+
+def _coverage_references():
+    games = pd.DataFrame(
+        [{
+            "game_id": "0028300001",
+            "season": 1984,
+            "game_date": pd.Timestamp("1983-10-28").date(),
+            "home_franchise_id": "BOS",
+            "away_franchise_id": "CHI",
+            "home_pts": 108,
+            "away_pts": 107,
+        }]
+    )
+    team_games = pd.DataFrame(
+        [
+            {
+                "game_id": "0028300001", "season": 1984,
+                "game_date": pd.Timestamp("1983-10-28").date(),
+                "franchise_id": "BOS", "opponent_franchise_id": "CHI",
+                "is_home": True, "pts": 108,
+            },
+            {
+                "game_id": "0028300001", "season": 1984,
+                "game_date": pd.Timestamp("1983-10-28").date(),
+                "franchise_id": "CHI", "opponent_franchise_id": "BOS",
+                "is_home": False, "pts": 107,
+            },
+        ]
+    )
+    playoff_games = pd.DataFrame(
+        [
+            {
+                "game_id": "bref-198404200BOS", "season": 1984,
+                "game_date": pd.Timestamp("1984-04-20").date(),
+                "game_type": "playoff", "home_franchise_id": "BOS",
+                "away_franchise_id": "CHI", "home_pts": 110,
+                "away_pts": 100, "overtime_periods": 0,
+            },
+            {
+                "game_id": "bref-202008150LAL", "season": 2020,
+                "game_date": pd.Timestamp("2020-08-15").date(),
+                "game_type": "play_in", "home_franchise_id": "LAL",
+                "away_franchise_id": "POR", "home_pts": 126,
+                "away_pts": 122, "overtime_periods": 0,
+            },
+            {
+                "game_id": "bref-198404190NYK", "season": 1984,
+                "game_date": pd.Timestamp("1984-04-19").date(),
+                "game_type": "voided", "home_franchise_id": "NYK",
+                "away_franchise_id": "PHI", "home_pts": 0,
+                "away_pts": 0, "overtime_periods": 0,
+            },
+        ]
+    )
+    return games, team_games, playoff_games
+
+
+def _validated_coverage():
+    aggregates = player_games_build.aggregate_team_games(_player_game_rows())
+    return player_games_build.cross_validate_coverage(
+        aggregates, *_coverage_references()
+    )
+
+
+def test_exact_regular_and_postseason_coverage_succeeds():
+    """Would fail if valid team rows were lost or source IDs were joined across providers."""
+    validated = _validated_coverage()
+
+    assert validated[["game_id", "franchise_id"]].to_records(index=False).tolist() == [
+        ("0028300001", "BOS"),
+        ("0028300001", "CHI"),
+        ("0048300001", "BOS"),
+        ("0048300001", "CHI"),
+        ("0051900001", "LAL"),
+        ("0051900001", "POR"),
+    ]
+    assert validated["published_total"].tolist() == [108, 107, 110, 100, 126, 122]
+
+
+def test_regular_coverage_rejects_missing_player_game():
+    """Would fail if an outer-join publication-only row were discarded."""
+    aggregates = player_games_build.aggregate_team_games(_player_game_rows())
+    aggregates = aggregates.loc[
+        ~(
+            aggregates["game_id"].eq("0028300001")
+            & aggregates["franchise_id"].eq("CHI")
+        )
+    ]
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0028300001\|CHI",
+    ):
+        player_games_build.cross_validate_coverage(
+            aggregates, *_coverage_references()
+        )
+
+
+def test_regular_coverage_rejects_extra_player_game():
+    """Would fail if an outer-join player-only row were discarded."""
+    aggregates = player_games_build.aggregate_team_games(_player_game_rows())
+    extra = aggregates.iloc[[0]].copy()
+    extra["game_id"] = "0028300999"
+    aggregates = pd.concat([aggregates, extra], ignore_index=True)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0028300999\|BOS",
+    ):
+        player_games_build.cross_validate_coverage(
+            aggregates, *_coverage_references()
+        )
+
+
+def test_regular_coverage_rejects_team_game_identity_drift():
+    """Would fail if the team-game opponent identity were not checked."""
+    games, team_games, playoff_games = _coverage_references()
+    team_games.loc[team_games["franchise_id"].eq("BOS"), "opponent_franchise_id"] = "NYK"
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0028300001\|BOS",
+    ):
+        player_games_build.cross_validate_coverage(
+            player_games_build.aggregate_team_games(_player_game_rows()),
+            games,
+            team_games,
+            playoff_games,
+        )
+
+
+def test_regular_coverage_duplicate_game_reports_identity():
+    """Would fail if duplicate diagnostics assumed a postseason key shape."""
+    games, team_games, playoff_games = _coverage_references()
+    games = pd.concat([games, games], ignore_index=True)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"duplicate regular game identity.*0028300001",
+    ):
+        player_games_build.cross_validate_coverage(
+            player_games_build.aggregate_team_games(_player_game_rows()),
+            games,
+            team_games,
+            playoff_games,
+        )
+
+
+def test_postseason_coverage_joins_without_source_game_id():
+    """Would fail if NBA Stats postseason IDs were compared with Basketball Reference IDs."""
+    validated = _validated_coverage()
+
+    assert set(validated.loc[validated["game_type"].ne("regular"), "game_id"]) == {
+        "0048300001", "0051900001",
+    }
+
+
+def test_postseason_coverage_rejects_duplicate_composite_key():
+    """Would fail if an ambiguous Basketball Reference composite identity were accepted."""
+    games, team_games, playoff_games = _coverage_references()
+    playoff_games = pd.concat(
+        [playoff_games, playoff_games.iloc[[0]]], ignore_index=True
+    )
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"1984.*1984-04-20.*BOS.*CHI",
+    ):
+        player_games_build.cross_validate_coverage(
+            player_games_build.aggregate_team_games(_player_game_rows()),
+            games,
+            team_games,
+            playoff_games,
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("game_date", pd.Timestamp("1984-04-21").date()),
+        ("home_franchise_id", "NYK"),
+        ("away_franchise_id", "PHI"),
+    ],
+)
+def test_postseason_coverage_rejects_home_away_or_date_drift(column, value):
+    """Would fail if any field in the postseason composite identity were ignored."""
+    games, team_games, playoff_games = _coverage_references()
+    playoff_games.loc[playoff_games["game_type"].eq("playoff"), column] = value
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0048300001|1984.*1984-04-20.*BOS.*CHI",
+    ):
+        player_games_build.cross_validate_coverage(
+            player_games_build.aggregate_team_games(_player_game_rows()),
+            games,
+            team_games,
+            playoff_games,
+        )
+
+
+def _approved(observed):
+    return {
+        section: {
+            key: {**entry, "note": "Reviewed against the published box score."}
+            for key, entry in entries.items()
+        }
+        for section, entries in observed.items()
+    }
+
+
+def _regular_discrepancy_frame(home_minutes=240, away_minutes=240):
+    frame = _validated_coverage().loc[
+        lambda rows: rows["game_id"].eq("0028300001")
+    ].copy()
+    frame.loc[frame["franchise_id"].eq("BOS"), "minute_total"] = home_minutes
+    frame.loc[frame["franchise_id"].eq("CHI"), "minute_total"] = away_minutes
+    frame["minutes_complete"] = frame["minute_total"].notna()
+    return frame
+
+
+def test_point_discrepancies_are_empty_for_exact_totals():
+    """Would fail if exact published/player point equality became review noise."""
+    assert player_games_build.collect_discrepancies(_validated_coverage())["points"] == {}
+
+
+def test_point_discrepancy_rejects_unlisted_mismatch_with_both_totals():
+    """Would fail if an observed point mismatch could bypass review."""
+    validated = _regular_discrepancy_frame()
+    validated.loc[validated["franchise_id"].eq("BOS"), "player_total"] = 108
+    validated.loc[validated["franchise_id"].eq("BOS"), "published_total"] = 107
+    observed = player_games_build.collect_discrepancies(validated)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0028300001\|BOS.*108.*107",
+    ):
+        player_games_build.validate_exceptions(observed, _ledger())
+
+
+def test_point_discrepancy_accepts_exact_approved_mismatch():
+    """Would fail if an exactly reviewed mismatch were rejected."""
+    validated = _regular_discrepancy_frame()
+    validated.loc[validated["franchise_id"].eq("BOS"), "player_total"] = 108
+    validated.loc[validated["franchise_id"].eq("BOS"), "published_total"] = 107
+    observed = player_games_build.collect_discrepancies(validated)
+
+    player_games_build.validate_exceptions(observed, _approved(observed))
+
+
+def test_point_discrepancy_rejects_approved_value_drift():
+    """Would fail if review approval applied after either total changed."""
+    validated = _regular_discrepancy_frame()
+    validated.loc[validated["franchise_id"].eq("BOS"), "player_total"] = 108
+    validated.loc[validated["franchise_id"].eq("BOS"), "published_total"] = 107
+    observed = player_games_build.collect_discrepancies(validated)
+    approved = _approved(observed)
+    approved["points"]["0028300001|BOS"]["player_total"] = 109
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"0028300001\|BOS.*108.*107.*109",
+    ):
+        player_games_build.validate_exceptions(observed, approved)
+
+
+def test_point_discrepancy_rejects_stale_approved_key():
+    """Would fail if obsolete point exceptions remained silently approved."""
+    approved = _ledger(points={"0028300001|BOS": _points_exception()})
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"stale.*0028300001\|BOS",
+    ):
+        player_games_build.validate_exceptions(_ledger(), approved)
+
+
+def test_validate_exceptions_validates_approved_ledger_first():
+    """Would fail if malformed observed candidates hid an invalid reviewed ledger."""
+    approved_entry = _points_exception()
+    approved_entry["note"] = " "
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"requires a non-empty note",
+    ):
+        player_games_build.validate_exceptions(
+            _ledger(points={"0028300001|BOS": {"game_id": "bad"}}),
+            _ledger(points={"0028300001|BOS": approved_entry}),
+        )
+
+
+def test_null_player_points_become_a_canonical_discrepancy():
+    """Would fail if incomplete player scoring were summed as zero or discarded."""
+    rows = _player_game_rows()
+    rows.loc[
+        rows["game_id"].eq("0028300001")
+        & rows["franchise_id"].eq("BOS")
+        & rows.index.to_series().eq(0),
+        "pts",
+    ] = None
+    validated = player_games_build.cross_validate_coverage(
+        player_games_build.aggregate_team_games(rows), *_coverage_references()
+    )
+
+    assert player_games_build.collect_discrepancies(validated)["points"] == {
+        "0028300001|BOS": {
+            "game_id": "0028300001",
+            "franchise_id": "BOS",
+            "player_total": None,
+            "published_total": 108,
+            "season": 1984,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("total", "expected_overtime", "expected_residual"),
+    [
+        (240, 0, 0),
+        (241, 0, 1),
+        (263, 1, 2),
+        (265, 1, 0),
+        (290, 2, 0),
+    ],
+)
+def test_minute_inference_uses_nearest_explicit_candidate(
+    total, expected_overtime, expected_residual,
+):
+    """Would fail if minute inference used rounding or a non-deterministic tie path."""
+    assert player_games_build._infer_overtime(total) == (
+        expected_overtime,
+        expected_residual,
+    )
+
+
+def test_null_minutes_become_a_canonical_discrepancy():
+    """Would fail if incomplete minutes were summed as zero or discarded."""
+    rows = _player_game_rows()
+    rows.loc[0, "min"] = None
+    validated = player_games_build.cross_validate_coverage(
+        player_games_build.aggregate_team_games(rows), *_coverage_references()
+    )
+
+    assert player_games_build.collect_discrepancies(validated)["minutes"][
+        "0028300001|BOS"
+    ] == {
+        "game_id": "0028300001",
+        "franchise_id": "BOS",
+        "player_total": None,
+        "opponent_total": 240,
+        "inferred_overtime_periods": None,
+        "published_overtime_periods": None,
+        "reason": "player minute total is incomplete",
+        "season": 1984,
+    }
+
+
+def test_277_minute_residual_becomes_a_discrepancy():
+    """Would fail if a residual beyond five minutes were considered normal."""
+    observed = player_games_build.collect_discrepancies(
+        _regular_discrepancy_frame(277, 277)
+    )
+
+    assert observed["minutes"]["0028300001|BOS"] == {
+        "game_id": "0028300001",
+        "franchise_id": "BOS",
+        "player_total": 277,
+        "opponent_total": 277,
+        "inferred_overtime_periods": 1,
+        "published_overtime_periods": None,
+        "reason": "minute total residual 12 exceeds tolerance 5",
+        "season": 1984,
+    }
+
+
+def test_opposing_teams_inferring_different_overtime_counts_are_discrepancies():
+    """Would fail if overtime inference agreement were checked team-by-team."""
+    minutes = player_games_build.collect_discrepancies(
+        _regular_discrepancy_frame(240, 265)
+    )["minutes"]
+
+    assert list(minutes) == ["0028300001|BOS", "0028300001|CHI"]
+    assert {entry["inferred_overtime_periods"] for entry in minutes.values()} == {0, 1}
+    assert all(
+        entry["reason"] == "opposing teams infer different overtime periods"
+        for entry in minutes.values()
+    )
+
+
+def test_minute_total_beyond_six_overtimes_becomes_a_discrepancy():
+    """Would fail if inference silently extended beyond the declared ceiling."""
+    minutes = player_games_build.collect_discrepancies(
+        _regular_discrepancy_frame(400, 400)
+    )["minutes"]
+
+    assert minutes["0028300001|BOS"]["inferred_overtime_periods"] == 6
+    assert minutes["0028300001|BOS"]["reason"] == (
+        "minute total exceeds six-overtime ceiling"
+    )
+
+
+def test_postseason_inferred_and_published_overtime_disagreement_is_a_discrepancy():
+    """Would fail if postseason published overtime evidence were ignored."""
+    validated = _validated_coverage()
+    validated = validated.loc[validated["game_id"].eq("0048300001")].copy()
+    validated["published_overtime_periods"] = 1
+    minutes = player_games_build.collect_discrepancies(validated)["minutes"]
+
+    assert list(minutes) == ["0048300001|BOS", "0048300001|CHI"]
+    assert all(
+        entry["reason"] == "inferred/published overtime periods disagree"
+        for entry in minutes.values()
+    )
+
+
+def test_minute_discrepancy_accepts_exact_approved_exception():
+    """Would fail if a reviewed minute discrepancy could never clear validation."""
+    observed = player_games_build.collect_discrepancies(
+        _regular_discrepancy_frame(277, 277)
+    )
+
+    player_games_build.validate_exceptions(observed, _approved(observed))
+
+
+def test_minute_discrepancy_rejects_value_drift_and_stale_exception():
+    """Would fail if minute approvals were not exact, bidirectional equality."""
+    observed = player_games_build.collect_discrepancies(
+        _regular_discrepancy_frame(277, 277)
+    )
+    approved = _approved(observed)
+    approved["minutes"]["0028300001|BOS"]["opponent_total"] = 276
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"drift.*0028300001\|BOS.*277.*276",
+    ):
+        player_games_build.validate_exceptions(observed, approved)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"stale.*0028300001\|CHI",
+    ):
+        player_games_build.validate_exceptions(
+            _ledger(minutes={"0028300001|BOS": observed["minutes"]["0028300001|BOS"]}),
+            approved,
+        )
+
+
+def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_path):
+    """Would fail if Task 5 had to reread source data to render review evidence."""
+    _use_tiny_scope(monkeypatch)
+    _publish_scope(tmp_path)
+    parquet_dir = tmp_path / "parquet"
+    parquet_dir.mkdir()
+    regular_games = []
+    regular_team_games = []
+    postseason_games = []
+    for season in (1984, 1985):
+        year = season - 1
+        game_date = pd.Timestamp(f"{year}-10-28").date()
+        regular_id = f"002{str(year)[-2:]}00001"
+        playoff_id = f"004{str(year)[-2:]}00001"
+        regular_games.append({
+            "game_id": regular_id,
+            "season": season,
+            "game_date": game_date,
+            "home_franchise_id": "BOS",
+            "away_franchise_id": "CHI",
+            "home_pts": 2,
+            "away_pts": 2,
+        })
+        regular_team_games.extend([
+            {
+                "game_id": regular_id, "season": season,
+                "game_date": game_date, "franchise_id": "BOS",
+                "opponent_franchise_id": "CHI", "is_home": True,
+                "pts": 2,
+            },
+            {
+                "game_id": regular_id, "season": season,
+                "game_date": game_date, "franchise_id": "CHI",
+                "opponent_franchise_id": "BOS", "is_home": False,
+                "pts": 2,
+            },
+        ])
+        postseason_games.append({
+            "game_id": f"bref-{year}1028BOS",
+            "season": season,
+            "game_date": game_date,
+            "game_type": "playoff",
+            "home_franchise_id": "BOS",
+            "away_franchise_id": "CHI",
+            "home_pts": 2,
+            "away_pts": 2,
+            "overtime_periods": 0,
+        })
+        assert playoff_id != postseason_games[-1]["game_id"]
+    pd.DataFrame(regular_games).to_parquet(
+        parquet_dir / "games.parquet", index=False
+    )
+    pd.DataFrame(regular_team_games).to_parquet(
+        parquet_dir / "team_games.parquet", index=False
+    )
+    pd.DataFrame(postseason_games).to_parquet(
+        parquet_dir / "playoff_games.parquet", index=False
+    )
+
+    audit = player_games_build.audit_source(tmp_path)
+
+    assert list(audit) == [
+        "player_games",
+        "team_aggregates",
+        "validated_team_games",
+        "discrepancies",
+        "approved_exceptions",
+    ]
+    assert len(audit["player_games"]) == 8
+    assert len(audit["team_aggregates"]) == 8
+    assert len(audit["validated_team_games"]) == 8
+    assert len(audit["discrepancies"]["minutes"]) == 8
+    assert audit["discrepancies"]["points"] == {}
+    assert audit["approved_exceptions"] == _ledger()
