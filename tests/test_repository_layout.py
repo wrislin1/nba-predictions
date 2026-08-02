@@ -1056,6 +1056,153 @@ def test_restore_raw_restores_verified_full_snapshot(tmp_path) -> None:
     assert restored == archived
 
 
+def test_pbp_archive_scripts_are_executable_and_tracked() -> None:
+    """Would fail if the PBP archive/restore scripts were missing, untracked,
+    or not marked executable in Git."""
+    recovery_scripts = {
+        "scripts/archive_pbp_snapshot.sh",
+        "scripts/restore_pbp_snapshot.sh",
+    }
+    tracked = subprocess.run(
+        ["git", "ls-files", "-s", *sorted(recovery_scripts)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    tracked_modes = {
+        fields[3]: fields[0]
+        for line in tracked
+        if len(fields := line.split(maxsplit=3)) == 4
+    }
+    assert set(tracked_modes) == recovery_scripts
+    assert all(mode == "100755" for mode in tracked_modes.values())
+
+
+def test_pbp_final_audit_is_present() -> None:
+    """Would fail if the committed final play-by-play audit were missing."""
+    audit_path = ROOT / "docs/audits/2026-07-31-play-by-play-archive.md"
+    assert audit_path.is_file()
+    audit = audit_path.read_text(encoding="utf-8")
+    assert "restore_verified: passed" in audit
+    assert "reproducible_build: passed" in audit
+
+
+def test_pbp_generated_data_paths_remain_ignored_and_untracked() -> None:
+    """Would fail if a PBP raw cache or large-Parquet path could be added."""
+    paths = [
+        "data/raw/stats_nba/pbp/example.json",
+        "data/parquet-large/pbp/season=2026/events.parquet",
+    ]
+    checked = subprocess.run(
+        ["git", "check-ignore", *paths],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert set(checked.stdout.splitlines()) == set(paths)
+
+    tracked = subprocess.run(
+        ["git", "ls-files", *paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked == []
+
+
+def test_pbp_documentation_matches_the_delivered_contract() -> None:
+    """Would fail if the README/data dictionary drifted from the actual
+    ``EVENT_COLUMNS``/``PBP_ARROW_SCHEMA`` contract or omitted a required
+    operational fact."""
+    from nba_data import pbp_build
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    dictionary_path = ROOT / "docs/data-dictionary.md"
+    dictionary = dictionary_path.read_text(encoding="utf-8")
+
+    # README links to the PBP data-dictionary section and the final audit.
+    assert "docs/data-dictionary.md#play-by-play-archive" in readme
+    assert "docs/audits/2026-07-31-play-by-play-archive.md" in readme
+    normalized_readme = " ".join(readme.lower().split())
+    assert re.search(
+        r"clone.*(does not|contains no).*(raw pbp|raw play-by-play)",
+        normalized_readme,
+    )
+    assert "data/parquet-large/" in readme
+    assert "data/raw/stats_nba/pbp" in readme
+
+    shared_terms = (
+        "events.parquet",
+        "python -m nba_data fetch-pbp",
+        "python -m nba_data build-pbp",
+        "scripts/archive_pbp_snapshot.sh",
+        "scripts/restore_pbp_snapshot.sh",
+        "pbp-archive-2026-",
+        "(game_id, action_id)",
+    )
+    for document in (readme, dictionary):
+        for term in shared_terms:
+            assert term in document
+
+    # Data dictionary lists all EVENT_COLUMNS, in exact order, with the
+    # exact Arrow type/nullability/origin from PBP_ARROW_SCHEMA.
+    heading = "### `events.parquet`"
+    assert heading in dictionary
+    section = dictionary.split(heading, maxsplit=1)[1]
+    section = re.split(r"\n#{2,3} ", section, maxsplit=1)[0]
+    documented_columns: list[str] = []
+    documented_rows: dict[str, list[str]] = {}
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip().strip("`") for cell in line.split("|")[1:-1]]
+        if (
+            len(cells) >= 4
+            and cells[0] not in {"Column", "---"}
+            and set(cells[0]) != {"-"}
+        ):
+            documented_columns.append(cells[0])
+            documented_rows[cells[0]] = cells
+
+    assert documented_columns == pbp_build.EVENT_COLUMNS
+
+    for field in pbp_build.PBP_ARROW_SCHEMA:
+        row = documented_rows[field.name]
+        assert row[1] == str(field.type), field.name
+        expected_nullable = "yes" if field.nullable else "no"
+        assert row[2] == expected_nullable, field.name
+        expected_origin = (
+            "derived"
+            if field.name in pbp_build._DERIVED_EVENT_COLUMNS
+            else "source"
+        )
+        assert row[3] == expected_origin, field.name
+
+    # Raw source score strings are documented as distinct from the derived,
+    # non-null running scores.
+    assert "score_home_raw" in dictionary
+    assert "score_away_raw" in dictionary
+    normalized_dictionary = " ".join(dictionary.lower().split())
+    assert re.search(
+        r"score_home_raw.{0,200}exact source score string",
+        normalized_dictionary,
+    ) or re.search(
+        r"exact source score string.{0,200}score_home_raw",
+        normalized_dictionary,
+    )
+    assert "running score" in normalized_dictionary
+    assert "pbp_score_mismatches.json" in dictionary
+
+    # All three game types and the exact 1997..2026 ending-season scope.
+    for game_type in ("regular", "playoff", "play_in"):
+        assert f"`{game_type}`" in section or game_type in dictionary
+    assert "1997" in dictionary and "2026" in dictionary
+    assert "23-key" in dictionary or "23 required" in dictionary
+
+
 def test_restore_raw_rejects_tampered_snapshot(tmp_path) -> None:
     """Would fail if restore copied a snapshot without verifying hashes."""
     repo, archive_root, snapshot = seed_raw_snapshot(tmp_path)
