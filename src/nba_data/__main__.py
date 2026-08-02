@@ -9,6 +9,7 @@ from nba_data import (
     hoopr,
     pbp,
     pbp_build,
+    player_logs,
     playoff_bref,
     playoff_build,
     stats_nba,
@@ -61,6 +62,13 @@ def main() -> None:
         action="append",
         choices=pbp.SEASONS,
     )
+    fetch_player_logs = commands.add_parser("fetch-player-logs")
+    fetch_player_logs.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        choices=player_logs.SEASONS,
+    )
     commands.add_parser("build-pbp")
     args = parser.parse_args()
     if args.data_dir is None:
@@ -104,6 +112,13 @@ def main() -> None:
             tuple(dict.fromkeys(args.season)) if args.season else pbp.SEASONS
         )
         pbp.fetch(data, selected)
+    elif args.command == "fetch-player-logs":
+        selected = (
+            tuple(dict.fromkeys(args.season))
+            if args.season
+            else player_logs.SEASONS
+        )
+        player_logs.fetch(data, selected)
     elif args.command == "build-pbp":
         pbp_build.run(data)
 

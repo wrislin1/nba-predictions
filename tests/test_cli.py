@@ -513,3 +513,82 @@ def test_build_pbp_rejects_season_flag(monkeypatch, tmp_path):
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def test_fetch_player_logs_defaults_to_all_seasons(monkeypatch, tmp_path):
+    """Would fail if the player-log command omitted its complete default scope."""
+    cli = load_cli()
+    calls = []
+    provider = type(
+        "PlayerLogs", (), {
+            "SEASONS": (1984, 2026),
+            "fetch": staticmethod(lambda data, seasons: calls.append(
+                (data, tuple(seasons))
+            )),
+        },
+    )
+    monkeypatch.setattr(cli, "player_logs", provider, raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "fetch-player-logs"]
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path, (1984, 2026))]
+
+
+def test_fetch_player_logs_deduplicates_seasons_in_first_occurrence_order(
+    monkeypatch, tmp_path
+):
+    """Would fail if repeatable --season flags were sorted or repeated."""
+    cli = load_cli()
+    calls = []
+    provider = type(
+        "PlayerLogs", (), {
+            "SEASONS": (1984, 2026),
+            "fetch": staticmethod(lambda data, seasons: calls.append(
+                (data, tuple(seasons))
+            )),
+        },
+    )
+    monkeypatch.setattr(cli, "player_logs", provider, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-player-logs",
+            "--season", "2026", "--season", "1984", "--season", "2026",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path, (2026, 1984))]
+
+
+@pytest.mark.parametrize("season", ["1983", "2027", "not-a-season"])
+def test_fetch_player_logs_rejects_invalid_seasons(monkeypatch, tmp_path, season):
+    """Would fail if invalid CLI input reached the player-log fetcher."""
+    cli = load_cli()
+    calls = []
+    provider = type(
+        "PlayerLogs", (), {
+            "SEASONS": (1984, 2026),
+            "fetch": staticmethod(lambda *args: calls.append(args)),
+        },
+    )
+    monkeypatch.setattr(cli, "player_logs", provider, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-player-logs",
+            "--season", season,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []

@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import math
 import numbers
+import os
+import stat
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Iterable
 
 import pandas as pd
+import requests
+from nba_api.stats.endpoints import LeagueGameLog
+from nba_api.stats.library.http import NBAStatsHTTP, NBAStatsResponse
 
-from nba_data import franchises
+from nba_data import cache, franchises, stats_nba
 
 
 SEASONS = tuple(range(1984, 2027))
@@ -100,6 +107,240 @@ def cache_path(data_dir: Path, season: int, game_type: str) -> Path:
         data_dir / "raw/stats_nba/player_logs" / f"season={season}"
         / f"{game_type}.json"
     )
+
+
+def _expected_metadata(season: int, game_type: str) -> dict[str, object]:
+    return {
+        "provider": "stats_nba",
+        "endpoint": "LeagueGameLog",
+        "season": season,
+        "season_label": season_label(season),
+        "game_type": game_type,
+        "season_type": SEASON_TYPES[game_type],
+        "league_id": "00",
+        "player_or_team_abbreviation": "P",
+    }
+
+
+def _read_cached_entry(
+    destination: Path, season: int, game_type: str
+) -> tuple[bytes, dict] | None:
+    attestation = cache.read_attested(destination, validate_payload)
+    if attestation is None:
+        return None
+    payload, metadata = attestation
+    expected = _expected_metadata(season, game_type)
+    if any(metadata.get(key) != value for key, value in expected.items()):
+        raise cache.CacheIntegrityError(
+            f"player-log cache metadata mismatch for {destination}"
+        )
+    if metadata.get("content_length") != len(payload):
+        raise cache.CacheIntegrityError(
+            f"player-log cache content length mismatch for {destination}"
+        )
+    return payload, metadata
+
+
+def read_cached(
+    data_dir: Path, season: int, game_type: str
+) -> tuple[bytes, dict] | None:
+    """Read one stable, attested player-log cache pair."""
+    return _read_cached_entry(
+        cache_path(Path(data_dir), season, game_type), season, game_type
+    )
+
+
+def validate_cache_inventory_root(raw_root: Path) -> tuple[Path, ...]:
+    """Validate the complete, exact player-log cache tree at ``raw_root``."""
+    root = Path(raw_root)
+    expected_bodies = tuple(
+        root / f"season={season}" / f"{game_type}.json"
+        for season in SEASONS
+        for game_type in applicable_game_types(season)
+    )
+    expected_relative = {
+        path.relative_to(root) for path in expected_bodies
+    } | {
+        Path(f"{path.relative_to(root)}.meta.json") for path in expected_bodies
+    }
+    expected_season_dirs = {path.parent.relative_to(root) for path in expected_bodies}
+
+    try:
+        root_mode = root.lstat().st_mode
+    except FileNotFoundError:
+        root_mode = None
+    if root_mode is None or not stat.S_ISDIR(root_mode):
+        raise cache.CacheIntegrityError(
+            f"player-log cache root must be a real directory: {root}"
+        )
+
+    observed_relative: set[Path] = set()
+    for season_dir in root.iterdir():
+        relative_dir = season_dir.relative_to(root)
+        if relative_dir not in expected_season_dirs:
+            raise cache.CacheIntegrityError(
+                f"unexpected player-log cache entry: {relative_dir}"
+            )
+        if not stat.S_ISDIR(season_dir.lstat().st_mode):
+            raise cache.CacheIntegrityError(
+                f"unsafe player-log cache entry: {relative_dir}"
+            )
+        for entry in season_dir.iterdir():
+            relative = entry.relative_to(root)
+            if relative not in expected_relative:
+                raise cache.CacheIntegrityError(
+                    f"unexpected player-log cache entry: {relative}"
+                )
+            if not stat.S_ISREG(entry.lstat().st_mode):
+                raise cache.CacheIntegrityError(
+                    f"unsafe player-log cache entry: {relative}"
+                )
+            observed_relative.add(relative)
+
+    if observed_relative != expected_relative:
+        missing = sorted(str(path) for path in expected_relative - observed_relative)
+        raise cache.CacheIntegrityError(
+            f"missing player-log cache entry: {missing}"
+        )
+
+    for season in SEASONS:
+        for game_type in applicable_game_types(season):
+            _read_cached_entry(
+                root / f"season={season}" / f"{game_type}.json",
+                season,
+                game_type,
+            )
+    return expected_bodies
+
+
+def validate_cache_inventory(data_dir: Path) -> tuple[Path, ...]:
+    """Validate the repository's complete player-log raw-cache inventory."""
+    return validate_cache_inventory_root(
+        Path(data_dir) / "raw/stats_nba/player_logs"
+    )
+
+
+def available_bytes(path: Path) -> int:
+    """Return available filesystem bytes at an existing path."""
+    stats = os.statvfs(path)
+    return stats.f_bavail * stats.f_frsize
+
+
+def _nearest_existing_ancestor(path: Path) -> Path:
+    current = Path(path)
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            raise PlayerLogValidationError(
+                f"no existing ancestor for player-log cache root {path}"
+            )
+        current = parent
+    return current
+
+
+def _retry_delay(exc: requests.RequestException, attempt: int) -> float:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is not None and status != 429 and not 500 <= status <= 599:
+        raise cache.SourceAccessError(f"LeagueGameLog request failed: HTTP {status}")
+    retry_after = None
+    if response is not None:
+        header = response.headers.get("Retry-After")
+        if header is not None:
+            if not header.strip().isdigit():
+                raise cache.SourceAccessError(
+                    f"LeagueGameLog request failed: invalid Retry-After {header!r}"
+                )
+            retry_after = float(header.strip())
+            if retry_after > MAX_RETRY_AFTER_S:
+                raise cache.SourceAccessError(
+                    "LeagueGameLog request failed: Retry-After "
+                    f"{int(retry_after)} exceeds {int(MAX_RETRY_AFTER_S)}"
+                )
+    delay = RETRY_DELAYS_S[attempt - 1]
+    return max(delay, retry_after) if retry_after is not None else delay
+
+
+def _request_league_game_log(endpoint: LeagueGameLog) -> bytes:
+    """Send one LeagueGameLog HTTP request without letting nba_api parse errors hide status."""
+    response = requests.get(
+        NBAStatsHTTP.base_url.format(
+            endpoint=getattr(endpoint, "endpoint", "leaguegamelog")
+        ),
+        params=sorted(getattr(endpoint, "parameters", {}).items()),
+        headers=dict(NBAStatsHTTP.headers),
+        timeout=getattr(endpoint, "timeout", 90),
+    )
+    if response.status_code != 200:
+        raise requests.HTTPError(response=response)
+    endpoint.nba_response = NBAStatsResponse(
+        response.text, response.status_code, response.url
+    )
+    return endpoint.get_json().encode("utf-8")
+
+
+def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
+    """Fetch uncached LeagueGameLog source pairs in serialized order."""
+    data_dir = Path(data_dir)
+    ordered_seasons = tuple(dict.fromkeys(seasons))
+    raw_root = data_dir / "raw/stats_nba/player_logs"
+    capacity_checked = False
+    preflight_done = False
+    last_request_start: float | None = None
+
+    for season in ordered_seasons:
+        for game_type in applicable_game_types(season):
+            destination = cache_path(data_dir, season, game_type)
+            if read_cached(data_dir, season, game_type) is not None:
+                continue
+            if not capacity_checked:
+                capacity_path = _nearest_existing_ancestor(raw_root)
+                available = available_bytes(capacity_path)
+                if available < FETCH_HEADROOM_BYTES:
+                    raise PlayerLogValidationError(
+                        "insufficient fetch capacity: required "
+                        f"{FETCH_HEADROOM_BYTES} bytes, available {available} bytes"
+                    )
+                capacity_checked = True
+            if not preflight_done:
+                stats_nba.preflight_dns()
+                preflight_done = True
+
+            for attempt in range(1, len(RETRY_DELAYS_S) + 2):
+                now = time.monotonic()
+                if last_request_start is not None:
+                    wait = last_request_start + MIN_REQUEST_INTERVAL_S - now
+                    if wait > 0:
+                        time.sleep(wait)
+                        now = time.monotonic()
+                last_request_start = now
+                try:
+                    endpoint = LeagueGameLog(
+                        league_id="00",
+                        player_or_team_abbreviation="P",
+                        season=season_label(season),
+                        season_type_all_star=SEASON_TYPES[game_type],
+                        direction="ASC",
+                        sorter="DATE",
+                        timeout=90,
+                        get_request=False,
+                    )
+                    payload = _request_league_game_log(endpoint)
+                except requests.RequestException as exc:
+                    if attempt == len(RETRY_DELAYS_S) + 1:
+                        raise cache.SourceAccessError(
+                            "LeagueGameLog request exhausted retries after "
+                            f"{attempt} attempts: {type(exc).__name__}: {exc}"
+                        ) from exc
+                    time.sleep(_retry_delay(exc, attempt))
+                    continue
+                cache.publish_bytes(
+                    destination,
+                    payload,
+                    _expected_metadata(season, game_type),
+                    validate_payload,
+                )
+                break
 
 
 def validate_payload_bytes(payload: bytes) -> None:
