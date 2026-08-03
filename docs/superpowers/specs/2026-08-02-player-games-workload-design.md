@@ -1,14 +1,16 @@
-# Player Games & Workload (1984–2026) — Design
+# Player Games & Workload (2012–2026 Release) — Design
 
 *Approved as the first slice of the player-availability roadmap on 2026-08-02.
 This design replaces the D1 and absence-inference sections of the original
 umbrella design. It publishes appearances and workload only; it does not infer
-roster membership or absence.*
+roster membership or absence. Amended 2026-08-03 by
+[`2026-08-03-player-games-release-boundary-amendment-design.md`](2026-08-03-player-games-release-boundary-amendment-design.md),
+which governs wherever the documents conflict.*
 
 ## Goal
 
 Publish one source-attested row per NBA player appearance for every regular
-season, playoff, and play-in game in completed ending seasons 1984–2026. The
+season, playoff, and play-in game in completed ending seasons 2012–2026. The
 dataset answers who appeared, for which franchise and opponent, and what
 traditional box-score workload the source credited to that player.
 
@@ -18,14 +20,18 @@ to play.
 
 ## Scope
 
-- Ending seasons: every integer from 1984 through 2026 inclusive.
+- Trusted publication ending seasons: every integer from 2012 through 2026
+  inclusive.
+- Preserved source-audit ending seasons: every integer from 1984 through 2026
+  inclusive. Ending seasons 1984–2011 are quarantined from publication.
 - Game types: `regular` and `playoff` in every season; `play_in` in ending
   seasons 2020–2026.
 - Source: stats.nba.com `LeagueGameLog`, through the repository's locked
   `nba_api` dependency, with `PlayerOrTeam=P` and one response per applicable
   `(season, game_type)`.
-- Request count: exactly 93 cache identities—43 regular, 43 playoff, and 7
-  play-in responses.
+- Source-archive request count: exactly 93 cache identities—43 regular, 43
+  playoff, and 7 play-in responses. The publication consumes exactly 37 of
+  them: 15 regular, 15 playoff, and 7 play-in responses.
 - Release boundary: completed seasons only. Updating to ending season 2027 or
   supporting a mutable in-progress season requires a separately reviewed scope
   extension; this slice never replaces an already valid cache body.
@@ -45,10 +51,10 @@ transactional tree publication. `src/nba_data/player_games_snapshot.py` wraps
 those semantic validators for immutable raw-plus-publication archive and
 restore checks; it does not define a second data contract.
 
-A deterministic source-audit command runs against the complete raw cache
-before final publication. It emits candidate exception artifacts for explicit
-human review. The builder accepts only exact entries copied into the committed
-exception ledger; an unlisted discrepancy or stale ledger entry fails.
+A deterministic source-audit command runs against the complete 1984–2026 raw
+cache and preserves historical candidate artifacts for diagnosis. The builder
+uses only the 2012–2026 subset, requires zero point/minute discrepancies, and
+requires the committed point/minute exception ledger to remain empty.
 
 ## Raw acquisition and cache contract
 
@@ -117,13 +123,14 @@ the raw body; required-header removal or type-family drift fails normalization.
 ```text
 data/parquet-large/player_games/
   _manifest.json
-  season=1984/player_games.parquet
-  season=1985/player_games.parquet
+  season=2012/player_games.parquet
+  season=2013/player_games.parquet
   ...
   season=2026/player_games.parquet
 ```
 
-There is exactly one Zstandard-compressed Parquet file per ending season. Rows
+There is exactly one Zstandard-compressed Parquet file per published ending
+season: 15 files total. Rows
 are ordered by `season`, `game_date`, `game_id`, `franchise_id`, and
 `person_id`. The primary key is `(game_id, person_id)`.
 
@@ -171,7 +178,8 @@ first contract preemptively.
   neutral games whose two rows can carry identical matchup text.
 - The reviewed 2026-08-03 source audit found exactly 36 Charles Oakley rows in
   which both parsed sides equal the row's own abbreviation. Those rows are the
-  only malformed player-row matchup anomalies permitted by this release. They
+  only malformed player-row matchup anomalies permitted by the preserved full
+  source audit. They are outside the 2012–2026 publication. They
   are recorded in the
   dedicated canonical ledger
   `src/nba_data/reference/player_game_matchup_exceptions.json`; normalization
@@ -228,7 +236,7 @@ Regular-season player-log games join exactly to `games.parquet` and
 regular games or team-games.
 
 Postseason player-log games join one-to-one to the subset of
-`playoff_games.parquet` whose `season` is 1984–2026 and whose `game_type` is
+`playoff_games.parquet` whose `season` is 2012–2026 and whose `game_type` is
 `playoff` or `play_in`. Because that publication uses Basketball Reference IDs,
 the cross-source identity is exactly:
 
@@ -245,13 +253,12 @@ For every team-game, non-null player `pts` values are summed and compared with
 the corresponding published team score. Null `pts` makes the team-game a
 discrepancy; it is never zero-filled.
 
-The 2026-08-02 source probe found 29 point disagreements among the 1,886 ending
-season 1984 regular team-games, so exact equality without exceptions is known
-to be false. Every disagreement must match an exact `points` entry in
-`src/nba_data/reference/player_game_validation_exceptions.json`, keyed by
-`<game_id>|<franchise_id>` and containing `season`, `player_total`,
-`published_total`, and a non-empty evidence note. Unlisted discrepancies,
-value drift, and stale entries all fail.
+The complete 1984–2026 source audit found 662 historical point disagreements,
+including incomplete player payloads, bad regular references, and phantom
+player rows. Those entries are quarantine evidence, not approvals. The
+2012–2026 publication has zero point disagreements and the committed `points`
+ledger remains empty. Any publication-scope disagreement or non-empty/stale
+entry fails.
 
 ### Player-minute plausibility
 
@@ -262,13 +269,12 @@ residual must be at most five
 minutes, and the two teams in a game must infer the same overtime count.
 Postseason inferred overtime must also equal `playoff_games.overtime_periods`.
 
-A team-game with null minutes, residual greater than five, opposing overtime
-disagreement, or postseason published-overtime disagreement must match an
-exact `minutes` entry in the same exception ledger. Each entry records the raw
-team total or null state, inferred/published overtime values, opposing team
-total, and evidence note. Unlisted discrepancies, value drift, and stale
-entries fail. The known ending season 1984 277-minute source total therefore
-cannot disappear inside the normal tolerance.
+A publication-scope team-game with null minutes, residual greater than five,
+opposing overtime disagreement, or postseason published-overtime disagreement
+fails publication. The observed `minutes` section and the committed `minutes`
+ledger must both remain empty. The full historical audit's 1,211 minute
+candidates remain quarantined; they do not justify a tolerance increase or
+imputation.
 
 ### Source-review checkpoint
 
@@ -282,11 +288,11 @@ The initial committed exception ledger is the valid empty object:
 ```
 
 After all 93 raw pairs are cached, `scripts/audit_player_logs.py` writes a
-deterministic Markdown audit and a complete candidate exception JSON to an
-explicit output directory. Implementation pauses. The user reviews the exact
-source/published values and evidence. Only the approved candidate JSON is
-copied into the committed ledger. No code may auto-accept, widen a tolerance,
-drop a row, or alter a source value to make the gates pass.
+deterministic Markdown audit and a complete historical candidate exception
+JSON to an explicit output directory. The 2026-08-03 review rejected that
+candidate as a publication approval ledger. It remains generated quarantine
+evidence. No code may auto-accept it, widen a tolerance, drop a row, or alter a
+source value to make the publication gates pass.
 
 The matchup-exception ledger is separately reviewed source evidence and has
 this exact top-level shape:
@@ -348,7 +354,8 @@ paths. It contains:
 - `schema_version` and the exact ordered Arrow schema;
 - scope: ending seasons, game types, and applicable types by season;
 - dependency versions;
-- every raw body and sidecar relative path, SHA-256, and byte length;
+- every one of the 37 publication-consumed raw bodies and sidecars by relative
+  path, SHA-256, and byte length; the snapshot separately attests all 93 pairs;
 - the point/minute exception-ledger, matchup-exception-ledger,
   designation-exception-ledger, and packaged franchise-reference path,
   SHA-256, and byte-length bindings;
@@ -358,7 +365,7 @@ paths. It contains:
 - per-partition path, Parquet SHA-256/length, row count, unique player count,
   game counts by type, and a logical-row SHA-256 independent of Parquet bytes;
 - whole-publication row, player, game, and validation summaries; and
-- exact point/minute exception counts; and
+- exact zero point/minute exception counts; and
 - the applied matchup-exception count plus a SHA-256 over the canonical sorted
   JSON object of exact applied entries, proving the effective repair set rather
   than merely its size; and
@@ -369,8 +376,9 @@ Builds happen in a sibling stage directory. Every staged Parquet file is
 reread and every manifest value is recomputed before
 `publication.publish_tree` replaces the prior tree. `validate_publication`
 independently walks the published tree without following symlinks, requires
-exactly 43 partition files plus `_manifest.json`, rereads every partition,
-re-attests every raw pair and the exception ledger, repeats the coverage joins
+exactly 15 partition files plus `_manifest.json`, rereads every partition,
+re-attests every one of the 37 consumed raw pairs and the exception ledger,
+repeats the coverage joins
 against the committed regular/postseason reference publications, and rejects
 any stored manifest claim that cannot be recomputed. Snapshot validation
 therefore receives those committed reference publications separately; they are
@@ -414,7 +422,8 @@ Outside a source checkout, `--data-dir` remains required before the subcommand.
 
 ## Immutable snapshot and recovery
 
-After publication passes, the combined raw-plus-Parquet snapshot is:
+After publication passes, the combined raw-plus-Parquet snapshot retains the
+complete 93-pair raw archive plus the 15-partition publication:
 
 ```text
 /mnt/nas/llm/documents/nba-predictions-archive/
@@ -467,8 +476,10 @@ through `NBA_PLAYER_GAMES_ARCHIVE_ROOT` and `NBA_PLAYER_GAMES_DATA_DIR`.
 
 The final implementation updates `README.md` and `docs/data-dictionary.md` and
 commits `docs/audits/2026-08-02-player-games-source-audit.md`. The audit states
-the manifest SHA-256, exact release scope, counts by season/type, point and
-minute exception keys, all matchup repair keys with raw/expected values and
+the manifest SHA-256, exact 2012–2026 release scope, the separate 1984–2026 raw
+archive scope, historical quarantine counts and artifact hashes, counts by
+season/type, zero approved point/minute exceptions, all matchup repair keys
+with raw/expected values and
 consensus evidence, all designation repair keys with exact raw/reference
 evidence, source limitations, and the explicit rule that no
 appearance row does not imply absence.
@@ -478,6 +489,7 @@ appearance row does not imply absence.
 - Roster stints, inactive lists, absence inference, and injury reasons.
 - Schedule rest, density, travel, road-trip, or timezone features.
 - Official injury-report or Pro Sports Transactions ingestion.
+- Historical workload publication or correction for ending seasons 1984–2011.
 - Mutable in-progress seasons or automatic future-season extension.
 - Per-game box-score endpoints, play-by-play-derived usage, lineup stints, or
   tracking metrics.
@@ -485,16 +497,17 @@ appearance row does not imply absence.
 
 ## Success criteria
 
-1. Exactly 93 raw body/sidecar pairs are complete, identity-checked, and bound
-   into the publication manifest.
-2. Exactly 43 season partitions cover every regular and postseason game in the
-   existing publications for ending seasons 1984–2026.
-3. Every player-point, player-minute, and matchup discrepancy is either
-   rejected or matched byte-for-byte in its reviewed exact exception ledger;
-   no stale entry survives, and every matchup approval still passes live
-   within-game consensus plus downstream committed-reference coverage. Every
-   designation exception also matches its exact reciprocal raw shape and
-   unique hoopR-backed neutral reference.
+1. Exactly 93 raw body/sidecar pairs are complete and identity-checked in the
+   source archive; exactly the 37 publication-consumed pairs are bound into the
+   publication manifest.
+2. Exactly 15 season partitions cover every regular and postseason game in the
+   existing publications for ending seasons 2012–2026; their manifest binds
+   exactly 37 consumed cache identities.
+3. The publication has zero player-point and zero player-minute discrepancies
+   against an empty ledger. It applies zero historical matchup repairs and all
+   ten designation repairs, with no stale entry and with every designation
+   matching its exact reciprocal raw shape and unique hoopR-backed neutral
+   reference. The full audit separately retains all 36 matchup repairs.
 4. Two offline builds from the same raw cache and ledger produce identical
    partition and manifest bytes, and independent validation passes.
 5. The immutable NAS snapshot validates and restores into absent targets, while

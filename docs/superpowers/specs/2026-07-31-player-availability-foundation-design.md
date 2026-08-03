@@ -1,9 +1,9 @@
 # Player Availability & Workload Foundation (1984–2026) — Roadmap Design
 
 *Originally approved 2026-07-31. Revised 2026-08-02 after an evidence-backed
-repository and source review. The revision decomposes the foundation into
-three independently reviewable slices and removes claims the available sources
-cannot support. The decomposition was approved 2026-08-02.*
+repository and source review. Amended 2026-08-03 after the complete player-log
+audit narrowed the first trusted D1 publication to ending seasons 2012–2026
+while preserving 1984–2011 as quarantined raw evidence.*
 
 ## Goal
 
@@ -27,7 +27,7 @@ team's actual travel itinerary.
 
 | Slice | Deliverable | Status | Dependency |
 |---|---|---|---|
-| D1 | `player_games`, ending seasons 1984–2026 | Approved standalone design; plan now | Existing regular-season and postseason publications |
+| D1 | Trusted `player_games`, ending seasons 2012–2026; quarantined raw evidence for 1984–2011 | Release-boundary amendment approved | Existing regular-season and postseason publications |
 | D3 | Exact schedule-feature functions and location references | Separate future design | A decision on regular-only versus all-game scope, plus a neutral-site location audit |
 | D2 | Qualified injury-event source plus an explicit roster/eligibility denominator | Blocked pending source qualification and framing decision | Legal/technical source access, stable event identity, and roster semantics |
 
@@ -36,6 +36,12 @@ dataset by itself, and does not depend on the unresolved injury-source or
 location questions. D3 is second because it is deterministic once its scope
 and location truth are pinned. D2 is last because its source and denominator
 are both unresolved.
+
+The complete 1984–2026 audit subsequently proved that source availability is
+not the same as trustworthy historical workload. The 2026-08-03
+[`player-games release-boundary amendment`](2026-08-03-player-games-release-boundary-amendment-design.md)
+therefore narrows the first publication without discarding the acquired raw
+evidence.
 
 ## Review findings that changed the original design
 
@@ -51,9 +57,12 @@ returns player rows for the full requested boundary:
 The same 1984 regular-season probe disproved two proposed exact gates. Player
 point totals disagreed with the committed `team_games` total for 29 of 1,886
 team-games, and one team-game summed to 277 reported player-minutes rather than
-lying near a `240 + 25 × overtime_periods` total. Those discrepancies must be
-audited across the complete source and bound by an exact, reviewed exception
-ledger. They must not be hidden by a wide tolerance or silently corrected.
+lying near a `240 + 25 × overtime_periods` total. The later complete audit
+expanded those findings to 662 point and 1,211 minute entries and proved that a
+blanket exception ledger would hide multiple source and reference failure
+modes. The first trusted publication therefore begins in 2012; the historical
+entries remain diagnostic evidence and must not be hidden by a wide tolerance
+or silently corrected.
 
 The committed `games.parquet` and `team_games.parquet` products contain regular
 season only. Postseason coverage must therefore cross-check against
@@ -119,8 +128,9 @@ reference before it can claim 1984–2026 travel coverage.
 
 ## Shared constraints
 
-- **Era and cutoff:** the first reviewed release is fixed to completed ending
-  seasons 1984–2026. It does not implement a mutable in-progress season.
+- **Era and cutoff:** D1 retains raw source evidence for completed ending
+  seasons 1984–2026, but its first trusted publication is fixed to ending
+  seasons 2012–2026. It does not implement a mutable in-progress season.
 - **Provenance:** raw response bodies and SHA-256 sidecars are immutable inputs;
   normalized publications bind every consumed body and sidecar.
 - **Storage:** large raw caches and partitioned Parquet publications remain
@@ -146,8 +156,8 @@ Its implementation plan is
 
 1. D1 publishes a reproducible, source-attested player-appearance/workload
    table for every regular, playoff, and play-in game in ending seasons
-   1984–2026, with every source disagreement either rejected or exactly listed
-   in a reviewed ledger.
+   2012–2026 with zero point/minute exceptions, while preserving the exact
+   1984–2026 raw archive and quarantining 1984–2011 from workload publication.
 2. D3 receives a separately approved design with exact temporal-window,
    location, neutral-site, postseason, and timezone semantics before it gets an
    implementation plan.
