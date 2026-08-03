@@ -64,6 +64,61 @@ def _payload(season, game_type):
     }).encode()
 
 
+MATCHUP_FIXTURE_KEY = "1984|regular|0028300001|2"
+MATCHUP_FIXTURE_ENTRY = {
+    "season": 1984,
+    "game_type": "regular",
+    "game_id": "0028300001",
+    "person_id": 2,
+    "game_date": "1983-10-28",
+    "nba_team_id": 1610612741,
+    "team_name_raw": "Chicago Bulls",
+    "team_abbreviation_raw": "CHI",
+    "matchup_raw": "CHI @ CHI",
+    "expected_home_abbreviation": "BOS",
+    "expected_away_abbreviation": "CHI",
+    "note": (
+        "Reviewed source anomaly; same-game valid rows and committed references "
+        "agree on the expected ordered matchup."
+    ),
+}
+MATCHUP_FIXTURE_LEDGER_BYTES = (
+    b'{\n'
+    b'  "exceptions": {\n'
+    b'    "1984|regular|0028300001|2": {\n'
+    b'      "expected_away_abbreviation": "CHI",\n'
+    b'      "expected_home_abbreviation": "BOS",\n'
+    b'      "game_date": "1983-10-28",\n'
+    b'      "game_id": "0028300001",\n'
+    b'      "game_type": "regular",\n'
+    b'      "matchup_raw": "CHI @ CHI",\n'
+    b'      "nba_team_id": 1610612741,\n'
+    b'      "note": "Reviewed source anomaly; same-game valid rows and committed references agree on the expected ordered matchup.",\n'
+    b'      "person_id": 2,\n'
+    b'      "season": 1984,\n'
+    b'      "team_abbreviation_raw": "CHI",\n'
+    b'      "team_name_raw": "Chicago Bulls"\n'
+    b'    }\n'
+    b'  },\n'
+    b'  "schema_version": 1\n'
+    b'}\n'
+)
+
+
+def _matchup_payload(season, game_type):
+    document = json.loads(_payload(season, game_type))
+    result_set = document["resultSets"][0]
+    rows = result_set["rowSet"]
+    malformed = rows[0]
+    malformed[HEADERS.index("MATCHUP")] = "CHI @ CHI"
+    valid_same_team = list(malformed)
+    valid_same_team[HEADERS.index("PLAYER_ID")] = 3
+    valid_same_team[HEADERS.index("PLAYER_NAME")] = "Player 3"
+    valid_same_team[HEADERS.index("MATCHUP")] = "CHI @ BOS"
+    rows.insert(1, valid_same_team)
+    return json.dumps(document).encode()
+
+
 def _metadata(season, game_type):
     return {
         "provider": "stats_nba",
@@ -94,6 +149,12 @@ def _publish_scope(data_dir, seasons=(1984, 1985)):
 def _use_tiny_scope(monkeypatch):
     for module in (player_games_build, player_logs):
         monkeypatch.setattr(module, "SEASONS", (1984, 1985))
+        monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
+
+
+def _use_one_season_scope(monkeypatch):
+    for module in (player_games_build, player_logs):
+        monkeypatch.setattr(module, "SEASONS", (1984,))
         monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
 
 
@@ -190,8 +251,59 @@ def _seed_build_inputs(monkeypatch, data_dir):
     _use_tiny_scope(monkeypatch)
     _publish_scope(data_dir)
     references = _publish_references(data_dir)
+    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
+    matchup_ledger.write_bytes(b'{"exceptions":{},"schema_version":1}\n')
+    monkeypatch.setattr(
+        player_games_build,
+        "MATCHUP_EXCEPTIONS_PATH",
+        matchup_ledger,
+        raising=False,
+    )
     ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
     return data_dir / "raw/stats_nba/player_logs", references, ledger
+
+
+def _seed_matchup_build_inputs(monkeypatch, data_dir):
+    _use_one_season_scope(monkeypatch)
+    for game_type in ("regular", "playoff"):
+        destination = player_logs.cache_path(data_dir, 1984, game_type)
+        payload = (
+            _matchup_payload(1984, game_type)
+            if game_type == "regular"
+            else _payload(1984, game_type)
+        )
+        cache.publish_bytes(
+            destination,
+            payload,
+            _metadata(1984, game_type),
+            player_logs.validate_payload,
+        )
+    references = _publish_references(data_dir, seasons=(1984,))
+    games = pd.read_parquet(references / "games.parquet")
+    games.loc[games.game_id.eq("0028300001"), "away_pts"] = 4
+    games.to_parquet(references / "games.parquet", index=False)
+    team_games = pd.read_parquet(references / "team_games.parquet")
+    team_games.loc[
+        team_games.game_id.eq("0028300001")
+        & team_games.franchise_id.eq("CHI"),
+        "pts",
+    ] = 4
+    team_games.to_parquet(references / "team_games.parquet", index=False)
+    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
+    matchup_ledger.write_bytes(MATCHUP_FIXTURE_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "MATCHUP_EXCEPTIONS_PATH",
+        matchup_ledger,
+        raising=False,
+    )
+    ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
+    return (
+        data_dir / "raw/stats_nba/player_logs",
+        references,
+        ledger,
+        matchup_ledger,
+    )
 
 
 def _replace_fixture_franchise(references, ledger, old, new):
@@ -1160,6 +1272,7 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
         "validated_team_games",
         "discrepancies",
         "approved_exceptions",
+        "matchup_repairs",
     ]
     assert len(audit["player_games"]) == 8
     assert len(audit["team_aggregates"]) == 8
@@ -1167,6 +1280,36 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
     assert len(audit["discrepancies"]["minutes"]) == 8
     assert audit["discrepancies"]["points"] == {}
     assert audit["approved_exceptions"] == _ledger()
+    assert audit["matchup_repairs"] == {}
+
+
+def test_audit_source_returns_exact_matchup_approval_and_consensus_evidence(
+    monkeypatch, tmp_path,
+):
+    """Would fail if audit lost the exact applied approval or its live proof."""
+    _raw_root, _references, _ledger, _matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+
+    audit = player_games_build.audit_source(tmp_path)
+
+    assert audit["matchup_repairs"] == {
+        MATCHUP_FIXTURE_KEY: {
+            "approval": MATCHUP_FIXTURE_ENTRY,
+            "consensus": {
+                "game_date": "1983-10-28",
+                "home_abbreviation": "BOS",
+                "away_abbreviation": "CHI",
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "malformed_rows": 1,
+                "valid_rows": 2,
+                "valid_team_identities": 2,
+                "valid_home_identities": 1,
+                "valid_away_identities": 1,
+            },
+        }
+    }
 
 
 def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
@@ -1229,6 +1372,10 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
             "team_games": 8,
         },
         "exceptions": {"minutes": 8, "points": 0},
+        "matchup_repairs": {
+            "count": 0,
+            "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        },
         "games": 4,
         "players": 2,
         "rows": 8,
@@ -1238,6 +1385,72 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
     assert str(tmp_path) not in rendered
     assert "fetched_at" not in rendered
     assert "NaN" not in rendered
+
+
+def test_build_binds_both_ledgers_and_the_exact_applied_matchup_digest(
+    monkeypatch, tmp_path,
+):
+    """Would fail if manifest bytes and normalization semantics could diverge."""
+    raw_root, references, points_ledger, matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    manifest = player_games_build.build_from_roots(
+        raw_root, references, stage
+    )
+
+    assert manifest["exception_ledger"] == {
+        "points_minutes": {
+            "path": "src/nba_data/reference/player_game_validation_exceptions.json",
+            "sha256": hashlib.sha256(points_ledger.read_bytes()).hexdigest(),
+            "bytes": len(points_ledger.read_bytes()),
+        },
+        "matchups": {
+            "path": "src/nba_data/reference/player_game_matchup_exceptions.json",
+            "sha256": "3c5ef85bbf6b284a5972fca3ae84d61a7e1f0cbc10f4bf339befe519bb5701ac",
+            "bytes": 585,
+        },
+    }
+    assert matchup_ledger.read_bytes() == MATCHUP_FIXTURE_LEDGER_BYTES
+    assert manifest["validation"]["matchup_repairs"] == {
+        "count": 1,
+        "sha256": "d78415f5cd5ceb85af4512a68474ca15b101f7d01fe92805e6289dd77cb56ce7",
+    }
+
+
+def test_build_rejects_matchup_ledger_mutation_during_recomputation(
+    monkeypatch, tmp_path,
+):
+    """Would fail if pinned bytes changed after their mapping governed rows."""
+    raw_root, references, _points_ledger, matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+    real_assemble = player_games_build._assemble_season_from_root
+    mutated = False
+
+    def mutate_after_assembly(*args, **kwargs):
+        nonlocal mutated
+        result = real_assemble(*args, **kwargs)
+        if not mutated:
+            matchup_ledger.write_bytes(matchup_ledger.read_bytes() + b" ")
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        player_games_build,
+        "_assemble_season_from_root",
+        mutate_after_assembly,
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="matchup exception ledger changed",
+    ):
+        player_games_build.build_from_roots(raw_root, references, stage)
 
 
 def test_build_uses_live_pinned_franchise_bytes_after_cache_warmup(
@@ -1474,6 +1687,56 @@ def test_validate_publication_rejects_source_identity_lie(monkeypatch, tmp_path)
         player_games_build.validate_publication(raw_root, stage, references)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["ledger_binding", "repair_count", "repair_digest"],
+)
+def test_validate_publication_recomputes_matchup_ledger_and_repair_evidence(
+    monkeypatch, tmp_path, mutation,
+):
+    """Would fail if independent validation trusted stored matchup claims."""
+    raw_root, references, _points_ledger, _matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    manifest_path = stage / "_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "ledger_binding":
+        manifest["exception_ledger"]["matchups"]["sha256"] = "0" * 64
+    elif mutation == "repair_count":
+        manifest["validation"]["matchup_repairs"]["count"] = 2
+    else:
+        manifest["validation"]["matchup_repairs"]["sha256"] = "f" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+def test_validate_publication_rejects_live_matchup_ledger_byte_drift(
+    monkeypatch, tmp_path,
+):
+    """Would fail if semantically equivalent but unbound ledger bytes passed."""
+    raw_root, references, _points_ledger, matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    matchup_ledger.write_bytes(matchup_ledger.read_bytes() + b" ")
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="exception ledger",
+    ):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
 def test_validate_publication_rejects_noncanonical_manifest_bytes(
     monkeypatch, tmp_path
 ):
@@ -1587,6 +1850,28 @@ def test_write_source_review_writes_only_canonical_candidates(
         "missing appearance does not prove roster membership, eligibility, injury, rest, or expected participation",
     ):
         assert required in markdown
+
+
+def test_write_source_review_deterministically_enumerates_matchup_repairs(
+    monkeypatch, tmp_path,
+):
+    """Would fail if source review omitted raw, expected, or consensus proof."""
+    _raw_root, _references, _ledger, _matchup_ledger = (
+        _seed_matchup_build_inputs(monkeypatch, tmp_path)
+    )
+    audit = player_games_build.audit_source(tmp_path)
+    outputs = [tmp_path / "review-a", tmp_path / "review-b"]
+
+    for output in outputs:
+        player_games_build.write_source_review(output, audit)
+
+    first = (outputs[0] / "source-audit.md").read_bytes()
+    second = (outputs[1] / "source-audit.md").read_bytes()
+    assert first == second
+    assert (
+        b"| 1984|regular|0028300001|2 | 1983-10-28 | CHI @ CHI | "
+        b"BOS | CHI | 2 | 2 | 2 | 1 | 2 | 1 | 1 |\n"
+    ) in first
 
 
 @pytest.mark.parametrize("unsafe", ["nonempty", "symlink", "fifo"])

@@ -6,9 +6,11 @@ import json
 import math
 import numbers
 import os
+import re
 import stat
 import time
 from collections.abc import Mapping
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -37,6 +39,10 @@ MIN_REQUEST_INTERVAL_S = 1.5
 RETRY_DELAYS_S = (5.0, 10.0, 20.0, 40.0)
 MAX_RETRY_AFTER_S = 120.0
 FETCH_HEADROOM_BYTES = 5_368_709_120
+MATCHUP_EXCEPTIONS_PATH = (
+    Path(__file__).resolve().parent
+    / "reference/player_game_matchup_exceptions.json"
+)
 
 PLAYER_GAME_COLUMNS = [
     "game_id", "person_id", "season", "game_type", "game_date",
@@ -62,10 +68,175 @@ REQUIRED_HEADERS = {
 _RESULT_SET_NAME = "LeagueGameLog"
 _INT64_MIN = -(2 ** 63)
 _INT64_MAX = 2 ** 63 - 1
+_MATCHUP_EXCEPTION_FIELDS = {
+    "season",
+    "game_type",
+    "game_id",
+    "person_id",
+    "game_date",
+    "nba_team_id",
+    "team_name_raw",
+    "team_abbreviation_raw",
+    "matchup_raw",
+    "expected_home_abbreviation",
+    "expected_away_abbreviation",
+    "note",
+}
 
 
 class PlayerLogValidationError(ValueError):
     """Raised when a player game-log source response violates its contract."""
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PlayerLogValidationError(
+                f"duplicate JSON member name in matchup exceptions: {key!r}"
+            )
+        result[key] = value
+    return result
+
+
+def parse_matchup_exceptions(payload: bytes) -> dict[str, dict]:
+    """Parse the canonical exact matchup-exception ledger."""
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON numeric constant: {value}")
+
+    try:
+        document = json.loads(
+            payload,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=reject_constant,
+        )
+    except PlayerLogValidationError:
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise PlayerLogValidationError(
+            f"invalid matchup-exception JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise PlayerLogValidationError("matchup-exception root must be an object")
+    if set(document) != {"schema_version", "exceptions"}:
+        raise PlayerLogValidationError(
+            "matchup-exception top-level keys must be exactly schema_version and exceptions"
+        )
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise PlayerLogValidationError(
+            "matchup-exception schema_version has wrong type or value"
+        )
+    exceptions = document["exceptions"]
+    if not isinstance(exceptions, dict):
+        raise PlayerLogValidationError("matchup exceptions must be an object")
+
+    parsed = {}
+    integer_fields = ("season", "person_id", "nba_team_id")
+    string_fields = (
+        "game_type",
+        "game_id",
+        "game_date",
+        "team_name_raw",
+        "team_abbreviation_raw",
+        "matchup_raw",
+        "expected_home_abbreviation",
+        "expected_away_abbreviation",
+        "note",
+    )
+    for key, entry in exceptions.items():
+        if not isinstance(key, str) or not re.fullmatch(
+            r"[0-9]{4}\|(regular|playoff|play_in)\|[0-9]{10}\|[0-9]+", key
+        ):
+            raise PlayerLogValidationError(
+                f"malformed matchup-exception composite key: {key!r}"
+            )
+        if not isinstance(entry, dict) or set(entry) != _MATCHUP_EXCEPTION_FIELDS:
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has non-canonical fields"
+            )
+        for field in integer_fields:
+            if type(entry[field]) is not int:
+                raise PlayerLogValidationError(
+                    f"matchup-exception entry {key!r} field {field!r} has wrong type"
+                )
+        for field in string_fields:
+            if type(entry[field]) is not str:
+                raise PlayerLogValidationError(
+                    f"matchup-exception entry {key!r} field {field!r} has wrong type"
+                )
+        if not entry["note"].strip():
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} requires a non-empty note"
+            )
+        for field in (
+            "game_type",
+            "game_id",
+            "game_date",
+            "team_name_raw",
+            "team_abbreviation_raw",
+            "matchup_raw",
+            "expected_home_abbreviation",
+            "expected_away_abbreviation",
+        ):
+            if not entry[field]:
+                raise PlayerLogValidationError(
+                    f"matchup-exception entry {key!r} field {field!r} must not be empty"
+                )
+        try:
+            parsed_date = date.fromisoformat(entry["game_date"])
+        except ValueError as exc:
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has invalid game_date"
+            ) from exc
+        if parsed_date.isoformat() != entry["game_date"]:
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has non-canonical game_date"
+            )
+        if not 1984 <= entry["season"] <= 2026:
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has season outside 1984..2026"
+            )
+        if (
+            entry["game_type"] not in GAME_TYPES
+            or (
+                entry["game_type"] == "play_in"
+                and entry["season"] < 2020
+            )
+        ):
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has inapplicable game type"
+            )
+        if not re.fullmatch(r"[0-9]{10}", entry["game_id"]):
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has invalid game_id"
+            )
+        if not entry["game_id"].startswith(ID_PREFIXES[entry["game_type"]]):
+            raise PlayerLogValidationError(
+                f"matchup-exception entry {key!r} has wrong game_id prefix"
+            )
+        expected_key = (
+            f"{entry['season']}|{entry['game_type']}|{entry['game_id']}|"
+            f"{entry['person_id']}"
+        )
+        if key != expected_key:
+            raise PlayerLogValidationError(
+                f"matchup-exception key/body identity disagreement: {key!r}"
+            )
+        parsed[key] = dict(entry)
+    return parsed
+
+
+def load_matchup_exceptions(
+    path: Path = MATCHUP_EXCEPTIONS_PATH,
+) -> dict[str, dict]:
+    """Load and parse the packaged matchup-exception ledger."""
+    try:
+        payload = Path(path).read_bytes()
+    except OSError as exc:
+        raise PlayerLogValidationError(
+            f"matchup-exception ledger could not be read: {path}"
+        ) from exc
+    return parse_matchup_exceptions(payload)
 
 
 def _decode_payload(payload: bytes) -> object:
@@ -453,10 +624,14 @@ def _box_column(values: pd.Series, source_name: str) -> pd.Series:
     return numeric.astype("Int64")
 
 
-def normalize_payload(
-    payload: bytes, *, season: int, game_type: str
-) -> pd.DataFrame:
-    """Normalize a source-shaped ``LeagueGameLog`` response."""
+def normalize_payload_with_matchup_evidence(
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]],
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Normalize a payload and return exact applied matchup evidence."""
     if game_type not in GAME_TYPES:
         raise PlayerLogValidationError(f"unknown game type: {game_type!r}")
     season_label(season)
@@ -502,6 +677,13 @@ def normalize_payload(
             f"GAME_ID prefix mismatch for game type {game_type!r}: {bad[:5]}"
         )
 
+    person_id = _exact_integer_series(raw["PLAYER_ID"], "PLAYER_ID")
+    nba_team_id = _exact_integer_series(raw["TEAM_ID"], "TEAM_ID")
+    game_date = pd.to_datetime(raw["GAME_DATE"]).dt.date
+    franchise_id = raw["TEAM_NAME"].map(
+        lambda name: franchises.resolve(str(name), season)
+    )
+
     matchup = raw["MATCHUP"].astype(str)
     away_extract = matchup.str.extract(r"^(?P<left>\S+)\s@\s(?P<right>\S+)$")
     home_extract = matchup.str.extract(r"^(?P<left>\S+)\svs\.\s(?P<right>\S+)$")
@@ -522,29 +704,202 @@ def normalize_payload(
     team_abbr = raw["TEAM_ABBREVIATION"].astype(str).str.strip()
     is_home_side = team_abbr.eq(matchup_home_abbr)
     is_away_side = team_abbr.eq(matchup_away_abbr)
-    if not (is_home_side ^ is_away_side).all():
-        bad = sorted(team_abbr.loc[~(is_home_side ^ is_away_side)].unique())
+    valid_matchup = is_home_side ^ is_away_side
+    on_neither_side = ~(is_home_side | is_away_side)
+    if on_neither_side.any():
+        bad = sorted(team_abbr.loc[on_neither_side].unique())
         raise PlayerLogValidationError(
-            "TEAM_ABBREVIATION does not appear on exactly one side of "
-            f"its own MATCHUP: {bad[:5]}"
+            "TEAM_ABBREVIATION does not appear on exactly one side of its own "
+            f"MATCHUP (appears on neither side): {bad[:5]}"
         )
+
+    row_keys = pd.Series(
+        [
+            f"{season}|{game_type}|{game_id_value}|{person_id_value}"
+            for game_id_value, person_id_value in zip(game_id, person_id)
+        ],
+        index=raw.index,
+    )
+    approved_subset = {
+        key: dict(entry)
+        for key, entry in matchup_exceptions.items()
+        if entry.get("season") == season and entry.get("game_type") == game_type
+    }
+    malformed_indexes = raw.index[~valid_matchup].tolist()
+    observed_keys = [row_keys.at[index] for index in malformed_indexes]
+    if len(observed_keys) != len(set(observed_keys)):
+        raise PlayerLogValidationError(
+            "approved matchup key must identify exactly one source row"
+        )
+    unapproved = sorted(set(observed_keys) - set(approved_subset))
+    stale = sorted(set(approved_subset) - set(observed_keys))
+    if unapproved:
+        raise PlayerLogValidationError(
+            "TEAM_ABBREVIATION does not appear on exactly one side of its own "
+            f"MATCHUP; unapproved malformed rows: {unapproved}"
+        )
+    if stale:
+        raise PlayerLogValidationError(
+            f"stale matchup approvals not observed: {stale}"
+        )
+
+    evidence = {}
+    identity_columns = ["TEAM_ID", "TEAM_NAME", "TEAM_ABBREVIATION"]
+    for malformed_index in malformed_indexes:
+        key = row_keys.at[malformed_index]
+        approval = approved_subset[key]
+        exact_source = {
+            "season": season,
+            "game_type": game_type,
+            "game_id": game_id.at[malformed_index],
+            "person_id": int(person_id.at[malformed_index]),
+            "game_date": game_date.at[malformed_index].isoformat(),
+            "nba_team_id": int(nba_team_id.at[malformed_index]),
+            "team_name_raw": raw.at[malformed_index, "TEAM_NAME"],
+            "team_abbreviation_raw": raw.at[
+                malformed_index, "TEAM_ABBREVIATION"
+            ],
+            "matchup_raw": raw.at[malformed_index, "MATCHUP"],
+        }
+        drift = {
+            field: (approval.get(field), value)
+            for field, value in exact_source.items()
+            if approval.get(field) != value
+        }
+        if drift:
+            raise PlayerLogValidationError(
+                f"matchup approval raw-field drift for {key}: {drift}"
+            )
+
+        group_indexes = raw.index[game_id.eq(game_id.at[malformed_index])]
+        group_malformed = [
+            index for index in group_indexes if not bool(valid_matchup.at[index])
+        ]
+        if len(group_malformed) != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} has {len(group_malformed)} "
+                "malformed matchup rows, expected exactly 1"
+            )
+        identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+        }
+        if len(identities) != 2:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} has {len(identities)} raw "
+                "team identities, expected 2"
+            )
+        resolved_franchises = {
+            franchise_id.at[index] for index in group_indexes
+        }
+        if len(resolved_franchises) != 2:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} has "
+                f"{len(resolved_franchises)} resolved franchises, expected 2"
+            )
+        dates = {game_date.at[index] for index in group_indexes}
+        if len(dates) != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} has multiple dates"
+            )
+        valid_indexes = [
+            index for index in group_indexes if bool(valid_matchup.at[index])
+        ]
+        ordered_pairs = {
+            (
+                str(matchup_home_abbr.at[index]),
+                str(matchup_away_abbr.at[index]),
+            )
+            for index in valid_indexes
+        }
+        if len(ordered_pairs) != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} lacks unanimous valid-row "
+                "matchup consensus"
+            )
+        valid_identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in valid_indexes
+        }
+        if valid_identities != identities:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} lacks valid rows from both teams"
+            )
+        valid_home_identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in valid_indexes
+            if bool(is_home_side.at[index])
+        }
+        valid_away_identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in valid_indexes
+            if bool(is_away_side.at[index])
+        }
+        if len(valid_home_identities) != 1 or len(valid_away_identities) != 1:
+            raise PlayerLogValidationError(
+                f"game {game_id.at[malformed_index]} lacks exactly one valid "
+                "identity per side"
+            )
+        malformed_identity = tuple(
+            raw.loc[malformed_index, identity_columns].tolist()
+        )
+        if malformed_identity not in valid_identities:
+            raise PlayerLogValidationError(
+                f"approved malformed identity for {key} lacks a valid same-team row"
+            )
+        consensus_home, consensus_away = next(iter(ordered_pairs))
+        approved_pair = (
+            approval.get("expected_home_abbreviation"),
+            approval.get("expected_away_abbreviation"),
+        )
+        if approved_pair != (consensus_home, consensus_away):
+            raise PlayerLogValidationError(
+                f"matchup approval expected-pair drift for {key}: "
+                f"{approved_pair!r} != {(consensus_home, consensus_away)!r}"
+            )
+        malformed_team = team_abbr.at[malformed_index]
+        if bool(matched_away.at[malformed_index]):
+            separator_agrees = malformed_team == consensus_away
+        else:
+            separator_agrees = malformed_team == consensus_home
+        if not separator_agrees:
+            raise PlayerLogValidationError(
+                f"malformed matchup separator disagrees with consensus for {key}"
+            )
+        matchup_home_abbr.at[malformed_index] = consensus_home
+        matchup_away_abbr.at[malformed_index] = consensus_away
+        is_home_side.at[malformed_index] = malformed_team == consensus_home
+        is_away_side.at[malformed_index] = malformed_team == consensus_away
+        evidence[key] = {
+            "approval": approval,
+            "consensus": {
+                "game_date": next(iter(dates)).isoformat(),
+                "home_abbreviation": consensus_home,
+                "away_abbreviation": consensus_away,
+                "raw_team_identities": len(identities),
+                "resolved_franchises": len(resolved_franchises),
+                "malformed_rows": len(group_malformed),
+                "valid_rows": len(valid_indexes),
+                "valid_team_identities": len(valid_identities),
+                "valid_home_identities": len(valid_home_identities),
+                "valid_away_identities": len(valid_away_identities),
+            },
+        }
 
     working = pd.DataFrame({
         "game_id": game_id,
-        "person_id": _exact_integer_series(raw["PLAYER_ID"], "PLAYER_ID"),
+        "person_id": person_id,
         "season": season,
         "game_type": game_type,
-        "game_date": pd.to_datetime(raw["GAME_DATE"]).dt.date,
+        "game_date": game_date,
         "player_name": raw["PLAYER_NAME"],
-        "nba_team_id": _exact_integer_series(raw["TEAM_ID"], "TEAM_ID"),
+        "nba_team_id": nba_team_id,
         "team_name_raw": raw["TEAM_NAME"],
         "team_abbreviation_raw": raw["TEAM_ABBREVIATION"],
         "matchup_raw": raw["MATCHUP"],
         "matchup_home_abbreviation": matchup_home_abbr,
         "matchup_away_abbreviation": matchup_away_abbr,
-        "franchise_id": raw["TEAM_NAME"].map(
-            lambda name: franchises.resolve(str(name), season)
-        ),
+        "franchise_id": franchise_id,
         "is_home": is_home_side,
     })
     for source_name, target_name in {
@@ -607,4 +962,23 @@ def normalize_payload(
         opponents[(row.game_id, row.franchise_id)]
         for row in working[["game_id", "franchise_id"]].itertuples(index=False)
     ]
-    return working[PLAYER_GAME_COLUMNS]
+    return working[PLAYER_GAME_COLUMNS], evidence
+
+
+def normalize_payload(
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]] | None = None,
+) -> pd.DataFrame:
+    """Normalize a source-shaped ``LeagueGameLog`` response."""
+    if matchup_exceptions is None:
+        matchup_exceptions = load_matchup_exceptions()
+    frame, _evidence = normalize_payload_with_matchup_evidence(
+        payload,
+        season=season,
+        game_type=game_type,
+        matchup_exceptions=matchup_exceptions,
+    )
+    return frame

@@ -1005,3 +1005,329 @@ def test_normalize_payload_requires_exactly_one_home_team_identity():
             row[HEADERS.index("MATCHUP")] = "CHI vs. BOS"
     with pytest.raises(ValueError, match="has 2 home team identities, expected 1"):
         player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def _approved_matchup_rows():
+    rows = [
+        _row(
+            891, "Charles Oakley", 1610612752, "NYK", "New York Knicks",
+            "NYK vs. NYK", 40, 8,
+        ),
+        _row(
+            892, "Patrick Ewing", 1610612752, "NYK", "New York Knicks",
+            "NYK vs. CHH", 42, 24,
+        ),
+        _row(
+            893, "Glen Rice", 1610612766, "CHH", "Charlotte Hornets",
+            "CHH @ NYK", 41, 22,
+        ),
+    ]
+    for row in rows:
+        row[HEADERS.index("SEASON_ID")] = "41996"
+        row[HEADERS.index("GAME_ID")] = "0049600001"
+        row[HEADERS.index("GAME_DATE")] = "1997-04-24"
+    return rows
+
+
+MATCHUP_EXCEPTION_KEY = "1997|playoff|0049600001|891"
+MATCHUP_EXCEPTION_NOTE = (
+    "Reviewed source anomaly; same-game valid rows and committed references "
+    "agree on the expected ordered matchup."
+)
+
+
+def _approved_matchup_entry(**changes):
+    entry = {
+        "season": 1997,
+        "game_type": "playoff",
+        "game_id": "0049600001",
+        "person_id": 891,
+        "game_date": "1997-04-24",
+        "nba_team_id": 1610612752,
+        "team_name_raw": "New York Knicks",
+        "team_abbreviation_raw": "NYK",
+        "matchup_raw": "NYK vs. NYK",
+        "expected_home_abbreviation": "NYK",
+        "expected_away_abbreviation": "CHH",
+        "note": MATCHUP_EXCEPTION_NOTE,
+    }
+    entry.update(changes)
+    return entry
+
+
+def _matchup_exception_payload(exceptions=None, **root_changes):
+    document = {
+        "schema_version": 1,
+        "exceptions": (
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()}
+            if exceptions is None else exceptions
+        ),
+    }
+    document.update(root_changes)
+    return json.dumps(document, sort_keys=True).encode("utf-8")
+
+
+def test_normalize_payload_applies_the_exact_packaged_matchup_approval():
+    """Would fail if the reviewed Oakley row still died at the XOR gate."""
+    frame = player_logs.normalize_payload(
+        _payload(_approved_matchup_rows()),
+        season=1997,
+        game_type="playoff",
+        matchup_exceptions={
+            MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()
+        },
+    )
+
+    oakley = frame.loc[frame.person_id.eq(891)].iloc[0]
+    assert oakley["matchup_raw"] == "NYK vs. NYK"
+    assert bool(oakley["is_home"]) is True
+    assert oakley["opponent_franchise_id"] == "NOP"
+
+
+def test_normalize_payload_returns_exact_approval_and_consensus_evidence():
+    """Would fail if applied semantics could not be audited bidirectionally."""
+    entry = _approved_matchup_entry()
+    frame, evidence = player_logs.normalize_payload_with_matchup_evidence(
+        _payload(_approved_matchup_rows()),
+        season=1997,
+        game_type="playoff",
+        matchup_exceptions={MATCHUP_EXCEPTION_KEY: entry},
+    )
+
+    assert frame.loc[frame.person_id.eq(891), "matchup_raw"].item() == "NYK vs. NYK"
+    assert evidence == {
+        MATCHUP_EXCEPTION_KEY: {
+            "approval": entry,
+            "consensus": {
+                "game_date": "1997-04-24",
+                "home_abbreviation": "NYK",
+                "away_abbreviation": "CHH",
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "malformed_rows": 1,
+                "valid_rows": 2,
+                "valid_team_identities": 2,
+                "valid_home_identities": 1,
+                "valid_away_identities": 1,
+            },
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("case", "rows", "exceptions"),
+    [
+        (
+            "unlisted malformed row",
+            _approved_matchup_rows(),
+            {},
+        ),
+        (
+            "stale approval",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "NYK vs. CHH" if row[HEADERS.index("TEAM_ABBREVIATION")] == "NYK" else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+        (
+            "changed raw field",
+            _approved_matchup_rows(),
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(matchup_raw="NYK @ NYK")},
+        ),
+        (
+            "changed expected pair",
+            _approved_matchup_rows(),
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    expected_away_abbreviation="MIA"
+                )
+            },
+        ),
+        (
+            "unsupported syntax",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "NYK - NYK" if row[HEADERS.index("PLAYER_ID")] == 891 else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    matchup_raw="NYK - NYK"
+                )
+            },
+        ),
+        (
+            "own team on neither side",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "BOS vs. CHI" if row[HEADERS.index("PLAYER_ID")] == 891 else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    matchup_raw="BOS vs. CHI"
+                )
+            },
+        ),
+        (
+            "missing valid-row consensus",
+            [_approved_matchup_rows()[0]],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+        (
+            "valid rows from only one team",
+            _approved_matchup_rows()[:2],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_matchup_approvals_fail_closed_without_every_proof_obligation(
+    case, rows, exceptions,
+):
+    """Would fail if an approval bypassed a required same-game proof."""
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions=exceptions,
+        )
+
+
+def test_matchup_approval_rejects_conflicting_valid_row_consensus():
+    """Would fail if a non-unanimous ordered pair could authorize a repair."""
+    rows = _approved_matchup_rows()
+    conflicting = list(rows[-1])
+    conflicting[HEADERS.index("PLAYER_ID")] = 894
+    conflicting[HEADERS.index("MATCHUP")] = "CHH @ BOS"
+    rows.append(conflicting)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        )
+
+
+def test_matchup_approval_rejects_multiple_malformed_rows_in_one_game():
+    """Would fail if one review generalized to another player's malformed row."""
+    rows = _approved_matchup_rows()
+    second = list(rows[0])
+    second[HEADERS.index("PLAYER_ID")] = 894
+    second[HEADERS.index("PLAYER_NAME")] = "Another Knick"
+    rows.append(second)
+    second_key = "1997|playoff|0049600001|894"
+    second_entry = _approved_matchup_entry(person_id=894)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(),
+                second_key: second_entry,
+            },
+        )
+
+
+def test_matchup_approval_rejects_malformed_rows_from_both_teams():
+    """Would fail if both sides could be repaired without independent coverage."""
+    rows = _approved_matchup_rows()
+    malformed_hornet = list(rows[-1])
+    malformed_hornet[HEADERS.index("MATCHUP")] = "CHH @ CHH"
+    valid_hornet = list(rows[-1])
+    valid_hornet[HEADERS.index("PLAYER_ID")] = 894
+    valid_hornet[HEADERS.index("PLAYER_NAME")] = "Another Hornet"
+    rows[-1] = malformed_hornet
+    rows.append(valid_hornet)
+    second_key = "1997|playoff|0049600001|893"
+    second_entry = {
+        **_approved_matchup_entry(),
+        "person_id": 893,
+        "nba_team_id": 1610612766,
+        "team_name_raw": "Charlotte Hornets",
+        "team_abbreviation_raw": "CHH",
+        "matchup_raw": "CHH @ CHH",
+    }
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(),
+                second_key: second_entry,
+            },
+        )
+
+
+def test_parse_matchup_exceptions_accepts_only_the_canonical_schema():
+    """Would fail if canonical reviewed entries could not be loaded exactly."""
+    assert player_logs.parse_matchup_exceptions(_matchup_exception_payload()) == {
+        MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            b'{"schema_version":1,"schema_version":1,"exceptions":{}}',
+            "duplicate",
+        ),
+        (
+            json.dumps({"schema_version": 1, "exceptions": {}, "extra": {}}).encode(),
+            "top-level",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: {**_approved_matchup_entry(), "extra": 1}}
+            ),
+            "fields",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(season=True)}
+            ),
+            "type",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(person_id="891")}
+            ),
+            "type",
+        ),
+        (
+            _matchup_exception_payload(
+                {"1997|playoff|0049600001|892": _approved_matchup_entry()}
+            ),
+            "identity",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(note="  ")}
+            ),
+            "note",
+        ),
+    ],
+)
+def test_parse_matchup_exceptions_rejects_schema_and_identity_drift(payload, match):
+    """Would fail if non-canonical approval bytes silently changed semantics."""
+    with pytest.raises(player_logs.PlayerLogValidationError, match=match):
+        player_logs.parse_matchup_exceptions(payload)
