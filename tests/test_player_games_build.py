@@ -2869,6 +2869,7 @@ def test_render_final_audit_binds_manifest_hash_and_restore():
     assert "Restore verified: yes" in report
     assert "Trusted publication: ending seasons 2012–2026" in report
     assert "Consumed player-log cache identities: 37" in report
+    assert "Publication partitions: 15" in report
     assert "Raw archive: ending seasons 1984–2026 (93 identities)" in report
     assert "Historical quarantine: ending seasons 1984–2011" in report
     assert "Raw player rows audited: 1,082,012" in report

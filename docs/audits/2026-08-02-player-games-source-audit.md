@@ -6,6 +6,7 @@ Restore verified: yes
 
 Trusted publication: ending seasons 2012–2026
 Consumed player-log cache identities: 37
+Publication partitions: 15
 Raw archive: ending seasons 1984–2026 (93 identities)
 Historical quarantine: ending seasons 1984–2011
 

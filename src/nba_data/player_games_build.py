@@ -2198,6 +2198,7 @@ def render_final_audit(
         "",
         "Trusted publication: ending seasons 2012–2026",
         f"Consumed player-log cache identities: {len(player_log_sources)}",
+        f"Publication partitions: {len(partitions)}",
         "Raw archive: ending seasons 1984–2026 "
         f"({_FINAL_AUDIT_RAW_ARCHIVE_IDENTITIES} identities)",
         "Historical quarantine: ending seasons 1984–2011",
