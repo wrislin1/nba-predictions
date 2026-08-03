@@ -24,6 +24,7 @@
 - Regular coverage is exact against `games.parquet` and `team_games.parquet`. Postseason coverage is exact against `playoff_games.parquet` on `(season, game_date, game_type, home_franchise_id, away_franchise_id)`.
 - Player-point or player-minute discrepancies may pass only through exact entries in `src/nba_data/reference/player_game_validation_exceptions.json`. Unlisted, value-drifted, and stale entries fail.
 - The exception ledger starts empty. After the full source audit, implementation pauses for explicit user review before any candidate entry is committed.
+- The user approved the 2026-08-03 Task 6 recommendation for an exact 36-row matchup allowlist. Only entries in `src/nba_data/reference/player_game_matchup_exceptions.json` may repair derived matchup values; raw `matchup_raw` remains unchanged, live same-game consensus and downstream reference coverage remain mandatory, and unlisted, stale, duplicate, or drifted entries fail.
 - Write exactly one deterministic `player_games.parquet` for every `season=1984` through `season=2026`, then `_manifest.json`. Rebuilds from the same cache and ledger must be byte-identical.
 - The immutable snapshot root is `/mnt/nas/llm/documents/nba-predictions-archive/player-games-archive-2026-<manifest-sha12>/`, overridable only by the documented environment variables.
 - Unit tests use small source-shaped fixtures and never access the network. Integration checks read complete local caches only.
@@ -46,6 +47,9 @@
 
 `src/nba_data/reference/player_game_validation_exceptions.json`
     Exact reviewed `points` and `minutes` exceptions. It begins as `{"minutes": {}, "points": {}}` and changes only after Task 6's user-review checkpoint.
+
+`src/nba_data/reference/player_game_matchup_exceptions.json`
+    Canonical schema-versioned exact allowlist for the 36 reviewed Charles Oakley source rows enumerated in `.superpowers/sdd/2026-08-02-player-games-workload/task-6-matchup-diagnostic.md`. This ledger is approved now; it is separate from the still-pending point/minute candidate review.
 
 `tests/test_player_logs.py`
     Source identity, payload, normalization, cache, pacing, retry, capacity, and resumable-fetch tests.
@@ -120,6 +124,10 @@ MIN_REQUEST_INTERVAL_S = 1.5
 RETRY_DELAYS_S = (5.0, 10.0, 20.0, 40.0)
 MAX_RETRY_AFTER_S = 120.0
 FETCH_HEADROOM_BYTES = 5_368_709_120
+MATCHUP_EXCEPTIONS_PATH = (
+    Path(__file__).resolve().parent
+    / "reference/player_game_matchup_exceptions.json"
+)
 
 PLAYER_GAME_COLUMNS = [
     "game_id", "person_id", "season", "game_type", "game_date",
@@ -161,8 +169,23 @@ def read_cached(
     data_dir: Path, season: int, game_type: str
 ) -> tuple[bytes, dict] | None: ...
 def normalize_payload(
-    payload: bytes, *, season: int, game_type: str
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]] | None = None,
 ) -> pd.DataFrame: ...
+def parse_matchup_exceptions(payload: bytes) -> dict[str, dict]: ...
+def load_matchup_exceptions(
+    path: Path = MATCHUP_EXCEPTIONS_PATH,
+) -> dict[str, dict]: ...
+def normalize_payload_with_matchup_evidence(
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]],
+) -> tuple[pd.DataFrame, dict[str, dict]]: ...
 def available_bytes(path: Path) -> int: ...
 def validate_cache_inventory_root(raw_root: Path) -> tuple[Path, ...]: ...
 def validate_cache_inventory(data_dir: Path) -> tuple[Path, ...]: ...
@@ -178,6 +201,7 @@ EXCEPTIONS_PATH = (
     Path(__file__).resolve().parent
     / "reference/player_game_validation_exceptions.json"
 )
+MATCHUP_EXCEPTIONS_PATH = player_logs.MATCHUP_EXCEPTIONS_PATH
 MINUTE_TOLERANCE = 5
 MAX_OVERTIME_PERIODS = 6
 
@@ -973,12 +997,24 @@ git commit -m "feat: publish player game workloads"
 ### Task 6: Acquire all 93 source pairs and stop for exception review
 
 **Files:**
+- Create: `src/nba_data/reference/player_game_matchup_exceptions.json`
+- Modify: `src/nba_data/player_logs.py`
+- Modify: `src/nba_data/player_games_build.py`
+- Modify: `tests/test_player_logs.py`
+- Modify: `tests/test_player_games_build.py`
 - Generate, never commit: `data/raw/stats_nba/player_logs/**`
 - Generate, never commit: `/tmp/player-game-source-review/**`
 
 **Interfaces:**
 - Consumes: Tasks 1–5, network access to stats.nba.com, committed game publications.
-- Produces: one complete attested raw inventory plus deterministic review artifacts; no tracked-file change.
+- Produces: the approved exact matchup-exception implementation and committed ledger, one complete attested raw inventory, plus deterministic point/minute review artifacts.
+
+**Approved 2026-08-03 amendment:** The first source-audit attempt found exactly
+36 malformed rows, all listed in
+`.superpowers/sdd/2026-08-02-player-games-workload/task-6-matchup-diagnostic.md`.
+The user approved that diagnostic's Option A recommendation. Implement the
+exact allowlist below before rerunning Step 4. This approval applies only to
+the matchup ledger; the Step 6 point/minute review boundary remains mandatory.
 
 - [ ] **Step 1: Confirm the execution environment and disk headroom**
 
@@ -1011,6 +1047,117 @@ does not request any valid existing pair.
 
 Expected: prints `93`.
 
+- [ ] **Step 3a: Write failing behavioral tests for exact matchup approvals**
+
+In `tests/test_player_logs.py`, add source-shaped, hand-checked fixtures that
+name and catch these breaks:
+
+- one exact approved duplicated-own-team row is normalized with its literal
+  `matchup_raw` unchanged while `is_home` and `opponent_franchise_id` come from
+  the approved ordered pair, and its exact entry is returned as evidence;
+- an unlisted malformed row, stale approval, changed raw field, changed
+  expected pair, unsupported syntax, own team on neither side, missing or
+  conflicting valid-row consensus, valid rows from only one team, multiple
+  malformed rows in one game, and malformed rows from both teams each fail;
+- duplicate JSON member names, non-canonical top-level/entry fields, type
+  drift, key/value disagreement, and an empty note each fail parsing.
+
+Run the narrow tests and observe that the first approved case fails at the
+current XOR check before adding implementation code.
+
+- [ ] **Step 3b: Commit the exact reviewed ledger and two-pass proof logic**
+
+Create canonical sorted JSON with exactly `schema_version` and `exceptions` at
+the top level. Keys are exactly
+`<ending-season>|<game-type>|<10-digit-game-id>|<person-id>`. Each value has
+exactly these fields and types:
+
+```text
+season: int
+game_type: str
+game_id: str
+person_id: int
+game_date: YYYY-MM-DD str
+nba_team_id: int
+team_name_raw: str
+team_abbreviation_raw: str
+matchup_raw: str
+expected_home_abbreviation: str
+expected_away_abbreviation: str
+note: non-empty str
+```
+
+Transcribe the exact 36 rows from the diagnostic's `Exact affected rows`
+table. Derive expected ordered pairs positionally from `Consensus matchup`;
+do not derive them from the malformed row. Use this exact note for every row:
+
+```text
+Reviewed source anomaly; same-game valid rows and committed references agree on the expected ordered matchup.
+```
+
+Implement `parse_matchup_exceptions`, `load_matchup_exceptions`, and
+`normalize_payload_with_matchup_evidence`. `normalize_payload` remains
+backward-compatible and delegates with the packaged ledger when the optional
+mapping is omitted. Parsing rejects duplicate JSON keys and all schema/type/key
+drift. For each season/type payload, observed malformed keys must equal the
+approved subset bidirectionally.
+
+For an approved row, require exact raw-field equality and exactly one source
+row for the key. Its game must have exactly two raw team identities and two
+resolved franchises; exactly one malformed row; valid companion rows from
+both teams; one unanimous ordered home/away pair; exactly one valid identity
+per side; one date; and the malformed identity must also occur among valid
+same-team rows. The approved expected pair must equal that live consensus, and
+the raw separator must imply the same side for the malformed team. Preserve
+`matchup_raw`; substitute only the approved pair used to derive `is_home` and
+the existing opponent mapping. Reject every unapproved shape rather than
+generalizing consensus repair.
+
+- [ ] **Step 3c: Bind matchup decisions into audit, manifest, and validation**
+
+Pass one parsed mapping from a stable captured ledger payload through every
+season assembly call so the semantics used for normalization are the exact
+bytes bound into the manifest. Do not rely on a second implicit file read.
+Aggregate applied evidence bidirectionally across all 93 payloads.
+
+Keep the manifest's existing nine top-level keys. Change `exception_ledger`
+to contain exactly `points_minutes` and `matchups`, each with path, SHA-256,
+and byte length. In `validation`, retain existing point/minute counts and add:
+
+```json
+"matchup_repairs": {
+  "count": 36,
+  "sha256": "<SHA-256 of canonical sorted JSON bytes for the exact applied entry mapping>"
+}
+```
+
+`write_source_review` must enumerate the 36 matchup repairs separately from
+the point/minute candidates with key, raw matchup, expected home/away pair,
+and the consensus proof fields. Independent publication validation must reread
+stable bytes, recompute the exact applied set and digest, and reject ledger,
+count, digest, raw-value, expected-pair, or repair-set drift.
+
+Add behavior tests in `tests/test_player_games_build.py` for the two ledger
+bindings, exact applied count/digest, deterministic audit enumeration, and
+independent validation failures after mutating either the ledger binding or
+the repair evidence. Expected literals must be hand-derived rather than
+computed through the code under test.
+
+- [ ] **Step 3d: Verify and commit the approved matchup amendment**
+
+```bash
+.venv/bin/python -m pytest tests/test_player_logs.py tests/test_player_games_build.py -q
+.venv/bin/python -m pytest -q
+git diff --check
+git add src/nba_data/player_logs.py src/nba_data/player_games_build.py \
+  src/nba_data/reference/player_game_matchup_exceptions.json \
+  tests/test_player_logs.py tests/test_player_games_build.py
+git commit -m "fix: review player matchup source anomalies"
+```
+
+Expected: all tests pass and the implementation commit contains no raw cache,
+large Parquet publication, or point/minute candidate ledger change.
+
 - [ ] **Step 4: Generate deterministic source-review artifacts**
 
 Ensure the output target is absent, then run:
@@ -1023,7 +1170,9 @@ Ensure the output target is absent, then run:
 
 Expected: `source-audit.md` and
 `player_game_validation_exceptions.json` are created. The audit reports exact
-regular and postseason coverage. Based on the verified 2026-08-02 probe, the
+regular and postseason coverage and separately enumerates all 36 approved
+matchup repairs with their raw/expected values and consensus evidence. Based
+on the verified 2026-08-02 probe, the
 candidate is expected to include point discrepancies in ending season 1984 and
 a minutes entry for `0028300095|LAC`; source revisions may change values, which
 is why this is a review gate rather than a hard-coded ledger.
@@ -1059,7 +1208,8 @@ Provide the user:
 Do not modify `player_game_validation_exceptions.json`, widen
 `MINUTE_TOLERANCE`, publish Parquet, or start Task 7 until the user explicitly
 approves the candidate ledger and its non-empty evidence notes.
-Task 6 creates no commit.
+Task 6 creates only the approved matchup-amendment commit before the source
+review stop. It does not commit point/minute candidates or generated data.
 
 ---
 
@@ -1302,6 +1452,8 @@ Require README and data dictionary to contain:
 - cache and partition layouts;
 - regular and postseason cross-source keys;
 - points/minutes exception semantics and reviewed-ledger path;
+- matchup-exception semantics, reviewed-ledger path, exact repair count and
+  digest, and the rule that future malformed rows fail for new human review;
 - the no-absence/no-roster warning;
 - final audit link and immutable snapshot name; and
 - explicit no-commit policy for `data/raw/` and `data/parquet-large/`.
@@ -1394,7 +1546,7 @@ deploy, remove the worktree, or begin D2/D3.
 | Exact Arrow schema and 43 deterministic partitions | Task 3 |
 | Regular exact-ID and postseason composite-key coverage | Task 4 |
 | Exact points/minutes gates and stale-ledger rejection | Task 4 |
-| Human-reviewed exception checkpoint | Tasks 6–7 |
+| Human-reviewed matchup and point/minute exception checkpoints | Tasks 6–7 |
 | Deterministic manifest, independent validation, transactional publication | Task 5 |
 | Two byte-identical full builds | Task 7 |
 | Immutable NAS snapshot and verified absent-target restore | Task 8 |
