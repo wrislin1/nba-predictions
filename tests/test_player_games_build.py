@@ -519,6 +519,149 @@ def _replace_fixture_franchise(references, ledger, old, new):
     )
 
 
+def _seed_release_scoped_repair_inputs(monkeypatch, data_dir):
+    """Publish two seasons where only the newer one is in publication scope.
+
+    Season 1984 carries an approved historical matchup exception but is
+    quarantined out of PUBLICATION_SEASONS; season 1985 carries a
+    publication-scope approved designation exception. Would fail if repair
+    application ignored PUBLICATION_SEASONS scoping and applied every
+    approved ledger entry regardless of season.
+    """
+    for module in (player_games_build, player_logs):
+        monkeypatch.setattr(module, "SOURCE_SEASONS", (1984, 1985))
+        monkeypatch.setattr(module, "PUBLICATION_SEASONS", (1985,))
+        monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
+
+    def _rowset(payload):
+        document = json.loads(payload)
+        return document, document["resultSets"][0]["rowSet"]
+
+    def _publish(season, game_type, document):
+        cache.publish_bytes(
+            player_logs.cache_path(data_dir, season, game_type),
+            json.dumps(document).encode(),
+            _metadata(season, game_type),
+            player_logs.validate_payload,
+        )
+
+    min_index = HEADERS.index("MIN")
+
+    # 1984 (quarantined/historical): approved matchup anomaly, exact minutes.
+    document, rows = _rowset(_matchup_payload(1984, "regular"))
+    rows[0][min_index] = 120
+    rows[1][min_index] = 120
+    rows[2][min_index] = 240
+    _publish(1984, "regular", document)
+    document, rows = _rowset(_payload(1984, "playoff"))
+    for row in rows:
+        row[min_index] = 240
+    _publish(1984, "playoff", document)
+
+    # 1985 (published): approved designation anomaly, exact minutes.
+    document, rows = _rowset(_designation_payload(1985, "regular"))
+    for row in rows:
+        row[min_index] = 240
+    _publish(1985, "regular", document)
+    document, rows = _rowset(_payload(1985, "playoff"))
+    for row in rows:
+        row[min_index] = 240
+    _publish(1985, "playoff", document)
+
+    references = _publish_references(data_dir, seasons=(1984, 1985))
+    games = pd.read_parquet(references / "games.parquet")
+    games.loc[games.game_id.eq("0028300001"), "away_pts"] = 4
+    games.loc[games.game_id.eq("0028400001"), "neutral_site"] = True
+    games.loc[games.game_id.eq("0028400001"), "neutral_site_source"] = "hoopr"
+    games.loc[games.game_id.eq("0028400001"), "venue_name"] = "Fixture Arena"
+    games.loc[games.game_id.eq("0028400001"), "venue_city"] = "Fixture City"
+    games.to_parquet(references / "games.parquet", index=False)
+    team_games = pd.read_parquet(references / "team_games.parquet")
+    team_games.loc[
+        team_games.game_id.eq("0028300001") & team_games.franchise_id.eq("CHI"),
+        "pts",
+    ] = 4
+    team_games.to_parquet(references / "team_games.parquet", index=False)
+
+    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
+    matchup_ledger.write_bytes(MATCHUP_FIXTURE_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "MATCHUP_EXCEPTIONS_PATH",
+        matchup_ledger,
+        raising=False,
+    )
+
+    designation_entry = {
+        **DESIGNATION_FIXTURE_ENTRY,
+        "season": 1985,
+        "game_id": "0028400001",
+        "game_date": "1984-10-28",
+    }
+    designation_key = "1985|regular|0028400001"
+    designation_ledger = data_dir / "fixture-designation-exceptions.json"
+    designation_ledger.write_bytes(
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "designations": {designation_key: designation_entry},
+                },
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+    )
+    monkeypatch.setattr(
+        player_games_build,
+        "DESIGNATION_EXCEPTIONS_PATH",
+        designation_ledger,
+        raising=False,
+    )
+
+    ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
+    return (
+        data_dir / "raw/stats_nba/player_logs",
+        references,
+        ledger,
+        matchup_ledger,
+        designation_ledger,
+    )
+
+
+def _build_scoped_publication(
+    tmp_path, monkeypatch, *, source_seasons, publication_seasons
+):
+    """Build a real publication for an explicit source/publication split.
+
+    Would fail if manifest construction, layout, and independent validation
+    could only be exercised where SOURCE_SEASONS and PUBLICATION_SEASONS
+    happen to coincide (as with the tiny/one-season scope helpers); this
+    drives them apart with a quarantined source season so publication
+    scoping is proven against literal expected values, not derived from
+    production scope constants. Patches through the caller's own
+    ``monkeypatch`` fixture so the scope reverts at test teardown instead of
+    leaking into later tests.
+    """
+    for module in (player_games_build, player_logs):
+        monkeypatch.setattr(module, "SOURCE_SEASONS", tuple(source_seasons))
+        monkeypatch.setattr(
+            module, "PUBLICATION_SEASONS", tuple(publication_seasons)
+        )
+        monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
+    _publish_scope_with_exact_minutes(tmp_path, seasons=source_seasons)
+    _publish_references(tmp_path, seasons=publication_seasons)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
+    _write_empty_ledger(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    manifest = player_games_build.build_from_roots(
+        tmp_path / "raw/stats_nba/player_logs", tmp_path / "parquet", stage,
+    )
+    return stage, manifest
+
+
 def test_player_games_arrow_schema_has_exact_order_types_and_nullability():
     """Would fail if a partition could drift from the player-game contract."""
     expected = pa.schema(
@@ -1762,6 +1905,79 @@ def test_publication_scope_rejects_stale_nonempty_ledger(
         player_games_build.build_from_roots(raw_root, references, stage)
 
 
+def test_manifest_binds_only_trusted_publication_scope(tmp_path, monkeypatch):
+    """Would fail if the manifest still bound quarantined source seasons."""
+    stage, manifest = _build_scoped_publication(
+        tmp_path,
+        monkeypatch,
+        source_seasons=(2011, 2012, 2013),
+        publication_seasons=(2012, 2013),
+    )
+
+    assert manifest["scope"]["ending_seasons"] == [2012, 2013]
+    assert set(manifest["partitions"]) == {"2012", "2013"}
+    assert len(manifest["sources"]["player_logs"]) == 4
+    assert {
+        entry["identity"]["season"]
+        for entry in manifest["sources"]["player_logs"]
+    } == {2012, 2013}
+    assert manifest["validation"]["cache_entries"] == 4
+    assert manifest["validation"]["exceptions"] == {
+        "minutes": 0,
+        "points": 0,
+    }
+    assert manifest["validation"]["matchup_repairs"]["count"] == 0
+
+
+def test_publication_layout_rejects_quarantined_partition(tmp_path, monkeypatch):
+    """Would fail if the layout check still tolerated a quarantined season."""
+    root, _manifest = _build_scoped_publication(
+        tmp_path,
+        monkeypatch,
+        source_seasons=(2011, 2012),
+        publication_seasons=(2012,),
+    )
+    (root / "season=2011").mkdir()
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="extra=.*season=2011",
+    ):
+        player_games_build.validate_publication(
+            tmp_path / "raw/stats_nba/player_logs",
+            root,
+            tmp_path / "parquet",
+        )
+
+
+def test_validate_publication_rejects_quarantined_source_binding(
+    tmp_path, monkeypatch,
+):
+    """Would fail if validation trusted a stored source list instead of
+    recomputing exactly the publication-scope binding."""
+    stage, _manifest = _build_scoped_publication(
+        tmp_path,
+        monkeypatch,
+        source_seasons=(2011, 2012),
+        publication_seasons=(2012,),
+    )
+    manifest_path = stage / "_manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    quarantined = dict(document["sources"]["player_logs"][0])
+    quarantined["body_path"] = "season=2011/regular.json"
+    document["sources"]["player_logs"].append(quarantined)
+    manifest_path.write_bytes(player_games_build._manifest_bytes(document))
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="manifest source mismatch",
+    ):
+        player_games_build.validate_publication(
+            tmp_path / "raw/stats_nba/player_logs",
+            stage,
+            tmp_path / "parquet",
+        )
+
+
 def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
     """Would fail if manifest claims depended on staging paths or write order."""
     raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
@@ -1909,6 +2125,44 @@ def test_build_binds_designation_ledger_and_exact_two_layer_proof(
             player_games_build._manifest_bytes(expected_evidence)
         ).hexdigest(),
     }
+
+
+def test_build_applies_only_release_scoped_repairs(monkeypatch, tmp_path):
+    """Would fail if repair application ignored PUBLICATION_SEASONS scoping
+    and applied every approved ledger entry regardless of season."""
+    raw_root, references, _ledger, matchup_ledger, designation_ledger = (
+        _seed_release_scoped_repair_inputs(monkeypatch, tmp_path)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    manifest = player_games_build.build_from_roots(raw_root, references, stage)
+
+    assert manifest["validation"]["matchup_repairs"]["count"] == 0
+    assert manifest["validation"]["designation_repairs"]["count"] == 1
+    assert manifest["exception_ledger"]["matchups"] == {
+        "path": "src/nba_data/reference/player_game_matchup_exceptions.json",
+        "sha256": hashlib.sha256(matchup_ledger.read_bytes()).hexdigest(),
+        "bytes": len(matchup_ledger.read_bytes()),
+    }
+    assert manifest["exception_ledger"]["designations"] == {
+        "path": "src/nba_data/reference/player_game_designation_exceptions.json",
+        "sha256": hashlib.sha256(designation_ledger.read_bytes()).hexdigest(),
+        "bytes": len(designation_ledger.read_bytes()),
+    }
+
+    matchup_ledger.write_bytes(matchup_ledger.read_bytes() + b" ")
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError, match="exception ledger"
+    ):
+        player_games_build.validate_publication(raw_root, stage, references)
+    matchup_ledger.write_bytes(matchup_ledger.read_bytes()[:-1])
+
+    designation_ledger.write_bytes(designation_ledger.read_bytes() + b" ")
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError, match="exception ledger"
+    ):
+        player_games_build.validate_publication(raw_root, stage, references)
 
 
 @pytest.mark.parametrize(
