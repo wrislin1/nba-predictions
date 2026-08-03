@@ -1221,6 +1221,7 @@ def _recompute_manifest(
         raise PlayerGamesBuildError(
             f"franchise reference is invalid: {FRANCHISE_REFERENCE_PATH}"
         ) from exc
+    franchises.load_reference.cache_clear()
     audit, bodies = _audit_from_roots(
         raw_root, reference_dir, franchise_resolver
     )

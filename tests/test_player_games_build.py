@@ -1272,6 +1272,57 @@ def test_build_uses_live_pinned_franchise_bytes_after_cache_warmup(
     )
 
 
+def test_build_and_validation_use_live_only_alias_after_cache_warmup(
+    monkeypatch, tmp_path
+):
+    """Would fail if normalization consulted stale aliases before pinned bytes."""
+    raw_root, references, ledger = _seed_build_inputs(monkeypatch, tmp_path)
+    live_alias = "Boston Live Alias"
+    franchises.load_reference.cache_clear()
+    with pytest.raises(franchises.UnknownTeamError):
+        franchises.resolve(live_alias, 1984)
+
+    fixture = tmp_path / "franchises.csv"
+    fixture.write_bytes(
+        player_games_build.FRANCHISE_REFERENCE_PATH.read_bytes()
+        + f"{live_alias},BOS_LIVE,,\n".encode()
+    )
+    monkeypatch.setattr(franchises, "REFERENCE", fixture)
+    monkeypatch.setattr(
+        player_games_build, "FRANCHISE_REFERENCE_PATH", fixture
+    )
+    for season in player_games_build.SEASONS:
+        for game_type in ("regular", "playoff"):
+            document = json.loads(_payload(season, game_type))
+            result_set = document["resultSets"][0]
+            team_name_index = result_set["headers"].index("TEAM_NAME")
+            for row in result_set["rowSet"]:
+                if row[team_name_index] == "Boston Celtics":
+                    row[team_name_index] = live_alias
+            payload = json.dumps(document).encode()
+            cache.publish_bytes(
+                player_logs.cache_path(tmp_path, season, game_type),
+                payload,
+                _metadata(season, game_type),
+                player_logs.validate_payload,
+            )
+    _replace_fixture_franchise(references, ledger, "BOS", "BOS_LIVE")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    manifest = player_games_build.build_from_roots(
+        raw_root, references, stage
+    )
+
+    assert player_games_build.validate_publication(
+        raw_root, stage, references
+    ) == manifest
+    table = pq.read_table(stage / "season=1984/player_games.parquet")
+    assert set(table.column("franchise_id").to_pylist()) == {
+        "BOS_LIVE", "CHI"
+    }
+
+
 def test_build_rejects_franchise_reference_mutation_during_recomputation(
     monkeypatch, tmp_path
 ):
