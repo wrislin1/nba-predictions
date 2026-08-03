@@ -3,6 +3,7 @@ import hashlib
 import importlib.metadata
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -205,14 +206,54 @@ def _publish_scope(data_dir, seasons=(1984, 1985)):
 
 def _use_tiny_scope(monkeypatch):
     for module in (player_games_build, player_logs):
-        monkeypatch.setattr(module, "SEASONS", (1984, 1985))
+        monkeypatch.setattr(module, "SOURCE_SEASONS", (1984, 1985))
+        monkeypatch.setattr(module, "PUBLICATION_SEASONS", (1984, 1985))
         monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
 
 
 def _use_one_season_scope(monkeypatch):
     for module in (player_games_build, player_logs):
-        monkeypatch.setattr(module, "SEASONS", (1984,))
+        monkeypatch.setattr(module, "SOURCE_SEASONS", (1984,))
+        monkeypatch.setattr(module, "PUBLICATION_SEASONS", (1984,))
         monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
+
+
+def _use_empty_exception_ledgers(monkeypatch, data_dir):
+    """Point matchup/designation ledgers at empty fixtures under a tiny scope.
+
+    Would fail if a tiny-scoped season range rejected the committed
+    matchup/designation ledgers' real (wider-range) entries: those ledgers
+    are validated against the patched SOURCE_SEASONS, so any test that
+    narrows the season scope and then loads the real, unpatched ledgers
+    would see spurious "season outside" errors unrelated to what it's
+    testing.
+    """
+    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
+    matchup_ledger.write_bytes(b'{"exceptions":{},"schema_version":1}\n')
+    monkeypatch.setattr(
+        player_games_build,
+        "MATCHUP_EXCEPTIONS_PATH",
+        matchup_ledger,
+        raising=False,
+    )
+    designation_ledger = data_dir / "fixture-designation-exceptions.json"
+    designation_ledger.write_bytes(EMPTY_DESIGNATION_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "DESIGNATION_EXCEPTIONS_PATH",
+        designation_ledger,
+        raising=False,
+    )
+    # `load_matchup_exceptions`/`load_designation_exceptions` bind their
+    # default `path=` argument at definition time, so patching the module
+    # path attributes above does not affect callers (like `_assemble_season`
+    # via its own None-default) that omit an explicit path. Patch the
+    # loaders directly so every fallback path sees the empty fixtures too.
+    monkeypatch.setattr(player_logs, "load_matchup_exceptions", lambda *a, **k: {})
+    monkeypatch.setattr(
+        player_logs, "load_designation_exceptions", lambda *a, **k: {}
+    )
+    return matchup_ledger, designation_ledger
 
 
 def _publish_references(data_dir, seasons=(1984, 1985)):
@@ -308,27 +349,46 @@ def _write_reviewed_fixture_ledger(monkeypatch, data_dir):
     return ledger
 
 
+def _publish_scope_with_exact_minutes(data_dir, seasons=(1984, 1985)):
+    """Publish the shared fixture payload with per-team minutes at 240.
+
+    Would fail if the ordinary build observed a spurious minute discrepancy:
+    the shared ``_payload`` fixture puts a single 24-minute player on each
+    team, which is far outside the minute tolerance. This variant rewrites
+    MIN to 240 so the ordinary build sees zero discrepancies.
+    """
+    for season in seasons:
+        for game_type in ("regular", "playoff"):
+            document = json.loads(_payload(season, game_type))
+            result_set = document["resultSets"][0]
+            min_index = result_set["headers"].index("MIN")
+            for row in result_set["rowSet"]:
+                row[min_index] = 240
+            payload = json.dumps(document).encode()
+            cache.publish_bytes(
+                player_logs.cache_path(data_dir, season, game_type),
+                payload,
+                _metadata(season, game_type),
+                player_logs.validate_payload,
+            )
+
+
+def _write_empty_ledger(monkeypatch, data_dir):
+    ledger = data_dir / "fixture-exceptions.json"
+    ledger.write_text(
+        json.dumps(_ledger(), sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(player_games_build, "EXCEPTIONS_PATH", ledger)
+    return ledger
+
+
 def _seed_build_inputs(monkeypatch, data_dir):
     _use_tiny_scope(monkeypatch)
-    _publish_scope(data_dir)
+    _publish_scope_with_exact_minutes(data_dir)
     references = _publish_references(data_dir)
-    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
-    matchup_ledger.write_bytes(b'{"exceptions":{},"schema_version":1}\n')
-    monkeypatch.setattr(
-        player_games_build,
-        "MATCHUP_EXCEPTIONS_PATH",
-        matchup_ledger,
-        raising=False,
-    )
-    designation_ledger = data_dir / "fixture-designation-exceptions.json"
-    designation_ledger.write_bytes(EMPTY_DESIGNATION_LEDGER_BYTES)
-    monkeypatch.setattr(
-        player_games_build,
-        "DESIGNATION_EXCEPTIONS_PATH",
-        designation_ledger,
-        raising=False,
-    )
-    ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
+    _use_empty_exception_ledgers(monkeypatch, data_dir)
+    ledger = _write_empty_ledger(monkeypatch, data_dir)
     return data_dir / "raw/stats_nba/player_logs", references, ledger
 
 
@@ -506,8 +566,11 @@ def test_assemble_seasons_reads_complete_cache_with_exact_schema_and_order(
     """Would fail if cache rows were inferred, omitted, or unstably ordered."""
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
 
-    table = player_games_build._assemble_seasons(tmp_path)
+    table = player_games_build._assemble_seasons(
+        tmp_path, seasons=player_games_build.SOURCE_SEASONS
+    )
 
     assert table.schema == player_games_build.PLAYER_GAMES_ARROW_SCHEMA
     assert table.column_names == player_logs.PLAYER_GAME_COLUMNS
@@ -522,12 +585,31 @@ def test_assemble_seasons_reads_complete_cache_with_exact_schema_and_order(
     )
 
 
+def test_assemble_seasons_reads_only_the_requested_scope(monkeypatch, tmp_path):
+    """Would fail if assembly silently read a wider scope than requested."""
+    requested = []
+
+    def fake_assemble(_data_dir, season, *args, **kwargs):
+        requested.append(season)
+        return pa.table({"season": [season]})
+
+    monkeypatch.setattr(player_games_build, "_assemble_season", fake_assemble)
+    player_games_build._assemble_seasons(
+        tmp_path,
+        seasons=(2012, 2013),
+        matchup_exceptions={},
+        designation_exceptions={},
+    )
+    assert requested == [2012, 2013]
+
+
 def test_stage_partitions_writes_exact_zstd_deterministic_season_trees(
     monkeypatch, tmp_path,
 ):
     """Would fail if staging inferred schema or emitted unstable Parquet."""
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
     validate_inventory = player_logs.validate_cache_inventory
     validated = []
 
@@ -939,10 +1021,27 @@ def _coverage_references():
     return games, team_games, playoff_games
 
 
-def _validated_coverage():
+def test_cross_validate_coverage_uses_explicit_publication_seasons():
+    """Would fail if coverage still read a hard-coded season scope."""
+    aggregates = player_games_build.aggregate_team_games(_player_game_rows())
+    games, team_games, playoffs = _coverage_references()
+
+    validated = player_games_build.cross_validate_coverage(
+        aggregates,
+        games,
+        team_games,
+        playoffs,
+        seasons=(2020,),
+    )
+
+    assert set(validated["season"]) == {2020}
+    assert len(validated) == 2
+
+
+def _validated_coverage(seasons=(1984, 2020)):
     aggregates = player_games_build.aggregate_team_games(_player_game_rows())
     return player_games_build.cross_validate_coverage(
-        aggregates, *_coverage_references()
+        aggregates, *_coverage_references(), seasons=seasons
     )
 
 
@@ -976,7 +1075,7 @@ def test_regular_coverage_rejects_missing_player_game():
         match=r"0028300001\|CHI",
     ):
         player_games_build.cross_validate_coverage(
-            aggregates, *_coverage_references()
+            aggregates, *_coverage_references(), seasons=(1984, 2020),
         )
 
 
@@ -992,7 +1091,7 @@ def test_regular_coverage_rejects_extra_player_game():
         match=r"0028300999\|BOS",
     ):
         player_games_build.cross_validate_coverage(
-            aggregates, *_coverage_references()
+            aggregates, *_coverage_references(), seasons=(1984, 2020),
         )
 
 
@@ -1010,6 +1109,7 @@ def test_regular_coverage_rejects_team_game_identity_drift():
             games,
             team_games,
             playoff_games,
+            seasons=(1984, 2020),
         )
 
 
@@ -1027,6 +1127,7 @@ def test_regular_coverage_duplicate_game_reports_identity():
             games,
             team_games,
             playoff_games,
+            seasons=(1984, 2020),
         )
 
 
@@ -1055,6 +1156,7 @@ def test_postseason_coverage_rejects_duplicate_composite_key():
             games,
             team_games,
             playoff_games,
+            seasons=(1984, 2020),
         )
 
 
@@ -1080,6 +1182,7 @@ def test_postseason_coverage_rejects_home_away_or_date_drift(column, value):
             games,
             team_games,
             playoff_games,
+            seasons=(1984, 2020),
         )
 
 
@@ -1184,7 +1287,9 @@ def test_null_player_points_become_a_canonical_discrepancy():
         "pts",
     ] = None
     validated = player_games_build.cross_validate_coverage(
-        player_games_build.aggregate_team_games(rows), *_coverage_references()
+        player_games_build.aggregate_team_games(rows),
+        *_coverage_references(),
+        seasons=(1984, 2020),
     )
 
     assert player_games_build.collect_discrepancies(validated)["points"] == {
@@ -1223,7 +1328,9 @@ def test_null_minutes_become_a_canonical_discrepancy():
     rows = _player_game_rows()
     rows.loc[0, "min"] = None
     validated = player_games_build.cross_validate_coverage(
-        player_games_build.aggregate_team_games(rows), *_coverage_references()
+        player_games_build.aggregate_team_games(rows),
+        *_coverage_references(),
+        seasons=(1984, 2020),
     )
 
     assert player_games_build.collect_discrepancies(validated)["minutes"][
@@ -1335,6 +1442,7 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
     """Would fail if Task 5 had to reread source data to render review evidence."""
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
     parquet_dir = tmp_path / "parquet"
     parquet_dir.mkdir()
     regular_games = []
@@ -1626,6 +1734,34 @@ def test_audit_rejects_playoff_mutation_after_designation_reference_proof(
         player_games_build.audit_source(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("section", "entry"),
+    [
+        ("points", _points_exception()),
+        ("minutes", _minutes_exception()),
+    ],
+)
+def test_publication_scope_rejects_stale_nonempty_ledger(
+    monkeypatch,
+    tmp_path,
+    section,
+    entry,
+):
+    """Would fail if a stale reviewed exception could pass a clean build."""
+    raw_root, references, ledger = _seed_build_inputs(monkeypatch, tmp_path)
+    document = _ledger()
+    key = f"{entry['game_id']}|{entry['franchise_id']}"
+    document[section][key] = entry
+    _save_ledger(ledger, document)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="stale.*" + re.escape(key),
+    ):
+        player_games_build.build_from_roots(raw_root, references, stage)
+
+
 def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
     """Would fail if manifest claims depended on staging paths or write order."""
     raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
@@ -1685,7 +1821,7 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
             "status": "passed",
             "team_games": 8,
         },
-        "exceptions": {"minutes": 8, "points": 0},
+        "exceptions": {"minutes": 0, "points": 0},
         "matchup_repairs": {
             "count": 0,
             "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
@@ -1903,14 +2039,16 @@ def test_build_and_validation_use_live_only_alias_after_cache_warmup(
     monkeypatch.setattr(
         player_games_build, "FRANCHISE_REFERENCE_PATH", fixture
     )
-    for season in player_games_build.SEASONS:
+    for season in player_games_build.PUBLICATION_SEASONS:
         for game_type in ("regular", "playoff"):
             document = json.loads(_payload(season, game_type))
             result_set = document["resultSets"][0]
             team_name_index = result_set["headers"].index("TEAM_NAME")
+            min_index = result_set["headers"].index("MIN")
             for row in result_set["rowSet"]:
                 if row[team_name_index] == "Boston Celtics":
                     row[team_name_index] = live_alias
+                row[min_index] = 240
             payload = json.dumps(document).encode()
             cache.publish_bytes(
                 player_logs.cache_path(tmp_path, season, game_type),
@@ -2253,6 +2391,7 @@ def test_write_source_review_writes_only_canonical_candidates(
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
     _publish_references(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
     audit = player_games_build.audit_source(tmp_path)
     output = tmp_path / "review"
 
@@ -2331,6 +2470,7 @@ def test_write_source_review_refuses_unsafe_output(monkeypatch, tmp_path, unsafe
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
     _publish_references(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
     audit = player_games_build.audit_source(tmp_path)
     output = tmp_path / "review"
     if unsafe == "nonempty":
@@ -2524,6 +2664,7 @@ def test_audit_script_preserves_symlink_identity_for_source_output(
     _use_tiny_scope(monkeypatch)
     _publish_scope(tmp_path)
     _publish_references(tmp_path)
+    _use_empty_exception_ledgers(monkeypatch, tmp_path)
     from scripts import audit_player_logs
 
     target = tmp_path / "target"

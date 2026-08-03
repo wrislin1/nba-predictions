@@ -19,7 +19,8 @@ import pyarrow.parquet as pq
 from nba_data import cache, franchises, player_logs, publication
 
 
-SEASONS = player_logs.SOURCE_SEASONS
+SOURCE_SEASONS = player_logs.SOURCE_SEASONS
+PUBLICATION_SEASONS = player_logs.PUBLICATION_SEASONS
 PLAY_IN_SEASONS = player_logs.PLAY_IN_SEASONS
 MINUTE_TOLERANCE = 5
 MAX_OVERTIME_PERIODS = 6
@@ -366,9 +367,11 @@ def cross_validate_coverage(
     games: pd.DataFrame,
     team_games: pd.DataFrame,
     playoff_games: pd.DataFrame,
+    *,
+    seasons: tuple[int, ...],
 ) -> pd.DataFrame:
     """Require exact regular and source-independent postseason coverage."""
-    scoped = set(range(1984, 2027))
+    scoped = set(seasons)
     regular_aggregates = team_aggregates.loc[
         team_aggregates["season"].isin(scoped)
         & team_aggregates["game_type"].eq("regular")
@@ -770,11 +773,13 @@ def _merge_designation_evidence(target: dict, observed: dict) -> None:
     target.update(observed)
 
 
-def _scoped_matchup_exceptions(matchup_exceptions: dict) -> dict:
+def _scoped_matchup_exceptions(
+    matchup_exceptions: dict, seasons: tuple[int, ...]
+) -> dict:
     return {
         key: entry
         for key, entry in matchup_exceptions.items()
-        if entry["season"] in SEASONS
+        if entry["season"] in seasons
         and entry["game_type"] in _applicable_game_types(entry["season"])
     }
 
@@ -782,8 +787,9 @@ def _scoped_matchup_exceptions(matchup_exceptions: dict) -> dict:
 def _require_exact_matchup_evidence(
     matchup_exceptions: dict,
     matchup_evidence: dict,
+    seasons: tuple[int, ...],
 ) -> None:
-    expected = set(_scoped_matchup_exceptions(matchup_exceptions))
+    expected = set(_scoped_matchup_exceptions(matchup_exceptions, seasons))
     observed = set(matchup_evidence)
     missing = sorted(expected - observed)
     unexpected = sorted(observed - expected)
@@ -794,11 +800,13 @@ def _require_exact_matchup_evidence(
         )
 
 
-def _scoped_designation_exceptions(designation_exceptions: dict) -> dict:
+def _scoped_designation_exceptions(
+    designation_exceptions: dict, seasons: tuple[int, ...]
+) -> dict:
     return {
         key: entry
         for key, entry in designation_exceptions.items()
-        if entry["season"] in SEASONS
+        if entry["season"] in seasons
         and entry["game_type"] in _applicable_game_types(entry["season"])
     }
 
@@ -806,8 +814,11 @@ def _scoped_designation_exceptions(designation_exceptions: dict) -> dict:
 def _require_exact_designation_evidence(
     designation_exceptions: dict,
     designation_evidence: dict,
+    seasons: tuple[int, ...],
 ) -> None:
-    expected = set(_scoped_designation_exceptions(designation_exceptions))
+    expected = set(
+        _scoped_designation_exceptions(designation_exceptions, seasons)
+    )
     observed = set(designation_evidence)
     missing = sorted(expected - observed)
     unexpected = sorted(observed - expected)
@@ -888,6 +899,8 @@ def _assemble_season(
 
 def _assemble_seasons(
     data_dir: Path,
+    *,
+    seasons: tuple[int, ...],
     matchup_exceptions: dict | None = None,
     matchup_evidence: dict | None = None,
     designation_exceptions: dict | None = None,
@@ -912,11 +925,15 @@ def _assemble_seasons(
             designation_evidence,
             franchise_resolver,
         )
-        for season in SEASONS
+        for season in seasons
     ]
-    _require_exact_matchup_evidence(matchup_exceptions, matchup_evidence)
+    _require_exact_matchup_evidence(
+        matchup_exceptions,
+        matchup_evidence,
+        seasons=seasons,
+    )
     _require_exact_designation_evidence(
-        designation_exceptions, designation_evidence
+        designation_exceptions, designation_evidence, seasons=seasons,
     )
     return pa.concat_tables(tables)
 
@@ -957,11 +974,12 @@ def audit_source(data_dir: Path) -> dict:
     designation_repairs = {}
     player_games = _assemble_seasons(
         data_dir,
-        matchup_exceptions,
-        matchup_repairs,
-        designation_exceptions,
-        designation_repairs,
-        franchise_resolver,
+        seasons=SOURCE_SEASONS,
+        matchup_exceptions=matchup_exceptions,
+        matchup_evidence=matchup_repairs,
+        designation_exceptions=designation_exceptions,
+        designation_evidence=designation_repairs,
+        franchise_resolver=franchise_resolver,
     ).to_pandas()
     team_aggregates = aggregate_team_games(player_games)
     regular_games = pd.read_parquet(io.BytesIO(games_snapshot["payload"]))
@@ -983,6 +1001,7 @@ def audit_source(data_dir: Path) -> dict:
         regular_games,
         regular_team_games,
         postseason_games,
+        seasons=SOURCE_SEASONS,
     )
     discrepancies = collect_discrepancies(validated_team_games)
     _require_snapshot_unchanged(
@@ -1091,7 +1110,7 @@ def stage_partitions(data_dir: Path, stage_dir: Path) -> tuple[Path, ...]:
     player_logs.validate_cache_inventory(data_dir)
     return tuple(
         _write_partition(_assemble_season(data_dir, season), stage_dir, season)
-        for season in SEASONS
+        for season in SOURCE_SEASONS
     )
 
 
@@ -1400,6 +1419,14 @@ def _audit_from_roots(
         _require_regular_file(reference_dir / name, f"reference {name}")
     _require_regular_file(EXCEPTIONS_PATH, "exception ledger")
 
+    publication_bodies = {
+        raw_root / f"season={season}" / f"{game_type}.json"
+        for season, game_type in player_logs.cache_identities(
+            PUBLICATION_SEASONS
+        )
+    }
+    bodies = tuple(path for path in bodies if path in publication_bodies)
+
     matchup_repairs = {}
     designation_repairs = {}
     tables = [
@@ -1412,11 +1439,15 @@ def _audit_from_roots(
             designation_exceptions,
             designation_repairs,
         )
-        for season in SEASONS
+        for season in PUBLICATION_SEASONS
     ]
-    _require_exact_matchup_evidence(matchup_exceptions, matchup_repairs)
+    _require_exact_matchup_evidence(
+        matchup_exceptions, matchup_repairs, seasons=PUBLICATION_SEASONS,
+    )
     _require_exact_designation_evidence(
-        designation_exceptions, designation_repairs
+        designation_exceptions,
+        designation_repairs,
+        seasons=PUBLICATION_SEASONS,
     )
     player_games = pa.concat_tables(tables).to_pandas()
     team_aggregates = aggregate_team_games(player_games)
@@ -1433,6 +1464,7 @@ def _audit_from_roots(
             regular_games,
             regular_team_games,
             postseason_games,
+            seasons=PUBLICATION_SEASONS,
         )
     except (OSError, pa.ArrowException) as exc:
         raise PlayerGamesBuildError(
@@ -1689,7 +1721,7 @@ def _recompute_manifest(
         postseason_games,
     )
     partitions = {}
-    for season in SEASONS:
+    for season in PUBLICATION_SEASONS:
         expected_frame = audit["player_games"].loc[
             audit["player_games"]["season"].eq(season)
         ].copy()
@@ -1731,10 +1763,10 @@ def _recompute_manifest(
     manifest = {
         "schema_version": 1,
         "scope": {
-            "ending_seasons": list(sorted(SEASONS)),
+            "ending_seasons": list(sorted(PUBLICATION_SEASONS)),
             "game_types": sorted({
                 game_type
-                for season in SEASONS
+                for season in PUBLICATION_SEASONS
                 for game_type in _applicable_game_types(season)
             }),
         },
@@ -1838,7 +1870,7 @@ def write_source_review(output_dir: Path, audit: dict) -> None:
             f"{frame['game_id'].nunique()} | {frame['person_id'].nunique()} |"
         )
     cache_entries = sum(
-        len(_applicable_game_types(season)) for season in SEASONS
+        len(_applicable_game_types(season)) for season in SOURCE_SEASONS
     )
     point_keys = sorted(candidates["points"])
     minute_keys = sorted(candidates["minutes"])
@@ -1962,7 +1994,7 @@ def _require_exact_publication_layout(publication_dir: Path) -> None:
             f"publication root must be a real directory: {publication_dir}"
         )
     expected = {"_manifest.json"} | {
-        f"season={season}" for season in SEASONS
+        f"season={season}" for season in PUBLICATION_SEASONS
     }
     observed = {entry.name for entry in publication_dir.iterdir()}
     if observed != expected:
