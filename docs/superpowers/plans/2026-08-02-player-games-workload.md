@@ -1365,7 +1365,16 @@ generated data.
 
 ---
 
-### Task 7: Land the reviewed ledger, prove reproducibility, and publish
+### Tasks 7–9: Superseded by the trusted-release amendment plan
+
+*Superseded 2026-08-03. Do not execute the original Tasks 7–9 below. The full
+source audit rejected the candidate ledger and the user approved a 2012–2026
+trusted publication with 1984–2011 quarantined. Continue with
+[`2026-08-03-player-games-trusted-release.md`](2026-08-03-player-games-trusted-release.md),
+which replaces the remaining implementation, snapshot, and documentation
+steps.*
+
+### Original Task 7: Land the reviewed ledger, prove reproducibility, and publish
 
 **Files:**
 - Modify after explicit review: `src/nba_data/reference/player_game_validation_exceptions.json`
