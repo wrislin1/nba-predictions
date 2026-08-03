@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 from nba_data import cache, franchises, player_logs, publication
 
 
-SEASONS = player_logs.SEASONS
+SEASONS = player_logs.SOURCE_SEASONS
 PLAY_IN_SEASONS = player_logs.PLAY_IN_SEASONS
 MINUTE_TOLERANCE = 5
 MAX_OVERTIME_PERIODS = 6

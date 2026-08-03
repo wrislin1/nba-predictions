@@ -22,7 +22,8 @@ from nba_api.stats.library.http import NBAStatsHTTP, NBAStatsResponse
 from nba_data import cache, franchises, stats_nba
 
 
-SEASONS = tuple(range(1984, 2027))
+SOURCE_SEASONS = tuple(range(1984, 2027))
+PUBLICATION_SEASONS = tuple(range(2012, 2027))
 PLAY_IN_SEASONS = tuple(range(2020, 2027))
 GAME_TYPES = ("regular", "playoff", "play_in")
 SEASON_TYPES = {
@@ -217,7 +218,7 @@ def parse_matchup_exceptions(payload: bytes) -> dict[str, dict]:
             raise PlayerLogValidationError(
                 f"matchup-exception entry {key!r} has non-canonical game_date"
             )
-        if not 1984 <= entry["season"] <= 2026:
+        if entry["season"] not in SOURCE_SEASONS:
             raise PlayerLogValidationError(
                 f"matchup-exception entry {key!r} has season outside 1984..2026"
             )
@@ -369,7 +370,7 @@ def parse_designation_exceptions(payload: bytes) -> dict[str, dict]:
             raise PlayerLogValidationError(
                 f"designation-exception entry {key!r} has non-canonical date"
             )
-        if not 1984 <= entry["season"] <= 2026:
+        if entry["season"] not in SOURCE_SEASONS:
             raise PlayerLogValidationError(
                 f"designation-exception entry {key!r} season is outside 1984..2026"
             )
@@ -480,7 +481,7 @@ def _decode_payload(payload: bytes) -> object:
 
 def season_label(season: int) -> str:
     """Return the NBA season label for an ending season."""
-    if season not in SEASONS:
+    if season not in SOURCE_SEASONS:
         raise PlayerLogValidationError(
             f"player-log ending season must be 1984..2026: {season}"
         )
@@ -493,6 +494,27 @@ def applicable_game_types(season: int) -> tuple[str, ...]:
     if season in PLAY_IN_SEASONS:
         return GAME_TYPES
     return GAME_TYPES[:2]
+
+
+def cache_identities(
+    seasons: Iterable[int] | None = None,
+) -> tuple[tuple[int, str], ...]:
+    """Return the exact (season, game_type) identities for a season scope."""
+    if seasons is None:
+        seasons = SOURCE_SEASONS
+    ordered_seasons = tuple(dict.fromkeys(seasons))
+    unsupported = tuple(
+        season for season in ordered_seasons if season not in SOURCE_SEASONS
+    )
+    if unsupported:
+        raise PlayerLogValidationError(
+            f"ending season must be in 1984..2026: {unsupported}"
+        )
+    return tuple(
+        (season, game_type)
+        for season in ordered_seasons
+        for game_type in applicable_game_types(season)
+    )
 
 
 def cache_path(data_dir: Path, season: int, game_type: str) -> Path:
@@ -554,8 +576,7 @@ def validate_cache_inventory_root(raw_root: Path) -> tuple[Path, ...]:
     root = Path(raw_root)
     expected_bodies = tuple(
         root / f"season={season}" / f"{game_type}.json"
-        for season in SEASONS
-        for game_type in applicable_game_types(season)
+        for season, game_type in cache_identities()
     )
     expected_relative = {
         path.relative_to(root) for path in expected_bodies
@@ -602,13 +623,12 @@ def validate_cache_inventory_root(raw_root: Path) -> tuple[Path, ...]:
             f"missing player-log cache entry: {missing}"
         )
 
-    for season in SEASONS:
-        for game_type in applicable_game_types(season):
-            _read_cached_entry(
-                root / f"season={season}" / f"{game_type}.json",
-                season,
-                game_type,
-            )
+    for season, game_type in cache_identities():
+        _read_cached_entry(
+            root / f"season={season}" / f"{game_type}.json",
+            season,
+            game_type,
+        )
     return expected_bodies
 
 
@@ -680,8 +700,10 @@ def _request_league_game_log(endpoint: LeagueGameLog, before_request) -> bytes:
     return endpoint.get_json().encode("utf-8")
 
 
-def fetch(data_dir: Path, seasons: Iterable[int] = SEASONS) -> None:
+def fetch(data_dir: Path, seasons: Iterable[int] | None = None) -> None:
     """Fetch uncached LeagueGameLog source pairs in serialized order."""
+    if seasons is None:
+        seasons = SOURCE_SEASONS
     data_dir = Path(data_dir)
     ordered_seasons = tuple(dict.fromkeys(seasons))
     raw_root = data_dir / "raw/stats_nba/player_logs"

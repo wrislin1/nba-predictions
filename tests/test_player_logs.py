@@ -181,6 +181,39 @@ def test_source_helpers_define_season_scope_cache_location_and_file_validation(t
     assert player_logs.validate_payload(payload_path) is None
 
 
+def test_cache_identities_separate_source_archive_from_publication():
+    source = player_logs.cache_identities()
+    publication = player_logs.cache_identities(
+        player_logs.PUBLICATION_SEASONS
+    )
+
+    assert len(source) == 93
+    assert source[:2] == ((1984, "regular"), (1984, "playoff"))
+    assert source[-3:] == (
+        (2026, "regular"),
+        (2026, "playoff"),
+        (2026, "play_in"),
+    )
+    assert len(publication) == 37
+    assert publication[:2] == ((2012, "regular"), (2012, "playoff"))
+    assert publication[-3:] == source[-3:]
+
+
+def test_source_helpers_still_accept_quarantined_1984():
+    assert player_logs.season_label(1984) == "1983-84"
+    assert player_logs.cache_path(Path("/data"), 1984, "regular") == (
+        Path("/data/raw/stats_nba/player_logs/season=1984/regular.json")
+    )
+
+
+def test_cache_identities_reject_season_outside_source_archive():
+    with pytest.raises(
+        player_logs.PlayerLogValidationError,
+        match="1984..2026",
+    ):
+        player_logs.cache_identities((2012, 2027))
+
+
 def test_read_cached_accepts_only_the_exact_sidecar_identity(tmp_path):
     """Would fail if a cache pair from a different LeagueGameLog request passed."""
     destination = player_logs.cache_path(tmp_path, 1984, "regular")
@@ -343,16 +376,15 @@ def test_read_cached_rejects_pair_mutated_during_attestation(
 
 def _seed_full_player_log_cache(data_dir):
     bodies = []
-    for season in player_logs.SEASONS:
-        for game_type in player_logs.applicable_game_types(season):
-            destination = player_logs.cache_path(data_dir, season, game_type)
-            cache.publish_bytes(
-                destination,
-                _payload(REGULAR_ROWS),
-                _cache_metadata(season, game_type),
-                player_logs.validate_payload,
-            )
-            bodies.append(destination)
+    for season, game_type in player_logs.cache_identities():
+        destination = player_logs.cache_path(data_dir, season, game_type)
+        cache.publish_bytes(
+            destination,
+            _payload(REGULAR_ROWS),
+            _cache_metadata(season, game_type),
+            player_logs.validate_payload,
+        )
+        bodies.append(destination)
     return data_dir / "raw/stats_nba/player_logs", tuple(bodies)
 
 

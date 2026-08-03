@@ -68,7 +68,7 @@ def main() -> None:
         "--season",
         type=int,
         action="append",
-        choices=player_logs.SEASONS,
+        choices=player_logs.SOURCE_SEASONS,
     )
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
@@ -118,7 +118,7 @@ def main() -> None:
         selected = (
             tuple(dict.fromkeys(args.season))
             if args.season
-            else player_logs.SEASONS
+            else player_logs.SOURCE_SEASONS
         )
         player_logs.fetch(data, selected)
     elif args.command == "build-pbp":

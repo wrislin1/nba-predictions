@@ -521,7 +521,7 @@ def test_fetch_player_logs_defaults_to_all_seasons(monkeypatch, tmp_path):
     calls = []
     provider = type(
         "PlayerLogs", (), {
-            "SEASONS": (1984, 2026),
+            "SOURCE_SEASONS": (1984, 2026),
             "fetch": staticmethod(lambda data, seasons: calls.append(
                 (data, tuple(seasons))
             )),
@@ -545,7 +545,7 @@ def test_fetch_player_logs_deduplicates_seasons_in_first_occurrence_order(
     calls = []
     provider = type(
         "PlayerLogs", (), {
-            "SEASONS": (1984, 2026),
+            "SOURCE_SEASONS": (1984, 2026),
             "fetch": staticmethod(lambda data, seasons: calls.append(
                 (data, tuple(seasons))
             )),
@@ -573,7 +573,7 @@ def test_fetch_player_logs_rejects_invalid_seasons(monkeypatch, tmp_path, season
     calls = []
     provider = type(
         "PlayerLogs", (), {
-            "SEASONS": (1984, 2026),
+            "SOURCE_SEASONS": (1984, 2026),
             "fetch": staticmethod(lambda *args: calls.append(args)),
         },
     )
