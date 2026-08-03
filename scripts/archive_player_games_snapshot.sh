@@ -225,7 +225,7 @@ fi
 
 mv -T -n "$staging" "$snapshot" || true
 if [ -d "$staging" ]; then
-  printf 'refusing to overwrite existing snapshot (concurrent creation): %s\n' \
+  printf 'refusing to overwrite existing snapshot (concurrent creation or rename failure): %s\n' \
     "$snapshot" >&2
   exit 1
 fi

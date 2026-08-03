@@ -194,4 +194,3 @@ or corrected player-row synthesis is authorized by this amendment.
    from the 37-pair publication binding.
 8. Final documentation names both scopes and records the quarantine evidence;
    it never describes 1984–2011 as validated workload.
-

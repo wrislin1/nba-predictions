@@ -266,7 +266,7 @@ if [ -e "$raw_destination" ] || [ -L "$raw_destination" ]; then
 fi
 mv -T -n "$raw_stage" "$raw_destination" || true
 if [ -d "$raw_stage" ]; then
-  printf 'refusing to overwrite raw destination (concurrent creation): %s\n' \
+  printf 'refusing to overwrite raw destination (concurrent creation or rename failure): %s\n' \
     "$raw_destination" >&2
   exit 1
 fi

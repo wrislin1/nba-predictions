@@ -1102,18 +1102,6 @@ def _write_partition(table: pa.Table, stage_dir: Path, season: int) -> Path:
     return partition_path
 
 
-def stage_partitions(data_dir: Path, stage_dir: Path) -> tuple[Path, ...]:
-    """Validate raw inventory and stage one exact Parquet file per season."""
-    data_dir = Path(data_dir)
-    stage_dir = Path(stage_dir)
-    _require_empty_stage(stage_dir)
-    player_logs.validate_cache_inventory(data_dir)
-    return tuple(
-        _write_partition(_assemble_season(data_dir, season), stage_dir, season)
-        for season in SOURCE_SEASONS
-    )
-
-
 def _resolve_franchises(
     frame: pd.DataFrame,
     resolver: franchises.FranchiseResolver,

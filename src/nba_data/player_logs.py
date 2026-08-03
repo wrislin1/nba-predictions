@@ -732,47 +732,47 @@ def fetch(data_dir: Path, seasons: Iterable[int] | None = None) -> None:
                 uncached.append((season, game_type, destination))
 
     for season, game_type, destination in uncached:
-            if not capacity_checked:
-                capacity_path = _nearest_existing_ancestor(raw_root)
-                available = available_bytes(capacity_path)
-                if available < FETCH_HEADROOM_BYTES:
-                    raise PlayerLogValidationError(
-                        "insufficient fetch capacity: required "
-                        f"{FETCH_HEADROOM_BYTES} bytes, available {available} bytes"
-                    )
-                capacity_checked = True
-            if not preflight_done:
-                stats_nba.preflight_dns()
-                preflight_done = True
-
-            for attempt in range(1, len(RETRY_DELAYS_S) + 2):
-                try:
-                    endpoint = LeagueGameLog(
-                        league_id="00",
-                        player_or_team_abbreviation="P",
-                        season=season_label(season),
-                        season_type_all_star=SEASON_TYPES[game_type],
-                        direction="ASC",
-                        sorter="DATE",
-                        timeout=90,
-                        get_request=False,
-                    )
-                    payload = request_payload(endpoint)
-                except requests.RequestException as exc:
-                    if attempt == len(RETRY_DELAYS_S) + 1:
-                        raise cache.SourceAccessError(
-                            "LeagueGameLog request exhausted retries after "
-                            f"{attempt} attempts: {type(exc).__name__}: {exc}"
-                        ) from exc
-                    time.sleep(_retry_delay(exc, attempt))
-                    continue
-                cache.publish_bytes(
-                    destination,
-                    payload,
-                    _expected_metadata(season, game_type),
-                    validate_payload,
+        if not capacity_checked:
+            capacity_path = _nearest_existing_ancestor(raw_root)
+            available = available_bytes(capacity_path)
+            if available < FETCH_HEADROOM_BYTES:
+                raise PlayerLogValidationError(
+                    "insufficient fetch capacity: required "
+                    f"{FETCH_HEADROOM_BYTES} bytes, available {available} bytes"
                 )
-                break
+            capacity_checked = True
+        if not preflight_done:
+            stats_nba.preflight_dns()
+            preflight_done = True
+
+        for attempt in range(1, len(RETRY_DELAYS_S) + 2):
+            try:
+                endpoint = LeagueGameLog(
+                    league_id="00",
+                    player_or_team_abbreviation="P",
+                    season=season_label(season),
+                    season_type_all_star=SEASON_TYPES[game_type],
+                    direction="ASC",
+                    sorter="DATE",
+                    timeout=90,
+                    get_request=False,
+                )
+                payload = request_payload(endpoint)
+            except requests.RequestException as exc:
+                if attempt == len(RETRY_DELAYS_S) + 1:
+                    raise cache.SourceAccessError(
+                        "LeagueGameLog request exhausted retries after "
+                        f"{attempt} attempts: {type(exc).__name__}: {exc}"
+                    ) from exc
+                time.sleep(_retry_delay(exc, attempt))
+                continue
+            cache.publish_bytes(
+                destination,
+                payload,
+                _expected_metadata(season, game_type),
+                validate_payload,
+            )
+            break
 
 
 def validate_payload_bytes(payload: bytes) -> None:

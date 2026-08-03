@@ -979,7 +979,7 @@ manifest's `validation.matchup_repairs`/`validation.designation_repairs`.
 exactly nine top-level keys: `schema_version`, `scope`
 (`ending_seasons`, `game_types`, exactly `[2012..2026]`), the ordered
 `schema` (name, Arrow type, nullability for every column above), `versions`
-(`nba_api`, `numpy`, `pandas`, `pyarrow`, `python`), `sources`
+(`nba_api`, `pandas`, `pyarrow`, `python`), `sources`
 (`player_logs` — the 37 consumed cache body/sidecar bindings, sorted; and
 `franchise_reference`), `references` (the committed `games.parquet`,
 `team_games.parquet`, `playoff_games.parquet`, and their manifests),

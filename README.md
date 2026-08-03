@@ -187,7 +187,7 @@ raw player-log responses and no large player-game Parquet data, only the code
 and this documentation.
 
 The raw source archive covers the complete ending-season range 1984–2026 (93
-consumed cache identities: 43 regular, 43 playoff, seven play-in). The first
+cache identities: 43 regular, 43 playoff, seven play-in). The first
 **trusted publication**, however, is deliberately narrower: ending seasons
 2012–2026 only, consuming exactly 37 of those 93 cache identities (15
 regular, 15 playoff, seven play-in) and writing exactly 15 partitions. Ending

@@ -746,53 +746,6 @@ def test_assemble_seasons_reads_only_the_requested_scope(monkeypatch, tmp_path):
     assert requested == [2012, 2013]
 
 
-def test_stage_partitions_writes_exact_zstd_deterministic_season_trees(
-    monkeypatch, tmp_path,
-):
-    """Would fail if staging inferred schema or emitted unstable Parquet."""
-    _use_tiny_scope(monkeypatch)
-    _publish_scope(tmp_path)
-    _use_empty_exception_ledgers(monkeypatch, tmp_path)
-    validate_inventory = player_logs.validate_cache_inventory
-    validated = []
-
-    def record_validation(data_dir):
-        validated.append(data_dir)
-        return validate_inventory(data_dir)
-
-    monkeypatch.setattr(player_logs, "validate_cache_inventory", record_validation)
-    stages = [tmp_path / "stage-a", tmp_path / "stage-b"]
-    for stage in stages:
-        stage.mkdir()
-
-    for stage in stages:
-        player_games_build.stage_partitions(tmp_path, stage)
-
-    expected_files = {
-        "season=1984/player_games.parquet",
-        "season=1985/player_games.parquet",
-    }
-    assert {
-        path.relative_to(stages[0]).as_posix()
-        for path in stages[0].rglob("*")
-        if path.is_file()
-    } == expected_files
-    assert validated == [tmp_path, tmp_path]
-    for season in (1984, 1985):
-        paths = [stage / f"season={season}/player_games.parquet" for stage in stages]
-        tables = [pq.read_table(path) for path in paths]
-        assert all(table.schema == player_games_build.PLAYER_GAMES_ARROW_SCHEMA for table in tables)
-        assert all(
-            pq.ParquetFile(path).metadata.row_group(0).column(column).compression
-            == "ZSTD"
-            for path in paths
-            for column in range(len(player_logs.PLAYER_GAME_COLUMNS))
-        )
-        assert hashlib.sha256(paths[0].read_bytes()).hexdigest() == (
-            hashlib.sha256(paths[1].read_bytes()).hexdigest()
-        )
-
-
 @pytest.mark.parametrize(
     ("column", "value", "match"),
     [
@@ -838,32 +791,6 @@ def test_assemble_season_rejects_duplicate_keys_across_game_types(
         match=r"duplicate \(game_id, person_id\)",
     ):
         player_games_build._assemble_season(Path("unused"), 1984)
-
-
-@pytest.mark.parametrize("unsafe_kind", ["file", "symlink-season"])
-def test_stage_partitions_rejects_every_preexisting_stage_entry(
-    monkeypatch, tmp_path, unsafe_kind,
-):
-    """Would fail if staging merged with an untrusted prior tree."""
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    if unsafe_kind == "file":
-        (stage / "stray.txt").write_text("unexpected")
-    else:
-        target = tmp_path / "outside"
-        target.mkdir()
-        (stage / "season=1984").symlink_to(target, target_is_directory=True)
-    monkeypatch.setattr(
-        player_games_build.player_logs,
-        "validate_cache_inventory",
-        lambda *args: pytest.fail("inventory inspected before rejecting stage"),
-    )
-
-    with pytest.raises(
-        player_games_build.PlayerGamesBuildError,
-        match="stage directory must be empty",
-    ):
-        player_games_build.stage_partitions(tmp_path, stage)
 
 
 @pytest.mark.parametrize("mutation", ["schema", "rows", "compression"])
