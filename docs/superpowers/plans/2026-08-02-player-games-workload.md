@@ -25,6 +25,7 @@
 - Player-point or player-minute discrepancies may pass only through exact entries in `src/nba_data/reference/player_game_validation_exceptions.json`. Unlisted, value-drifted, and stale entries fail.
 - The exception ledger starts empty. After the full source audit, implementation pauses for explicit user review before any candidate entry is committed.
 - The user approved the 2026-08-03 Task 6 recommendation for an exact 36-row matchup allowlist. Only entries in `src/nba_data/reference/player_game_matchup_exceptions.json` may repair derived matchup values; raw `matchup_raw` remains unchanged, live same-game consensus and downstream reference coverage remain mandatory, and unlisted, stale, duplicate, or drifted entries fail.
+- The user separately approved the 2026-08-03 exact ten-game neutral-site designation recommendation. Only entries in `src/nba_data/reference/player_game_designation_exceptions.json` may resolve reciprocal-`@` `(0 home, 2 away)` games; exact raw-shape equality and unique hoopR-backed committed neutral-reference agreement remain mandatory, and only derived `is_home` changes.
 - Write exactly one deterministic `player_games.parquet` for every `season=1984` through `season=2026`, then `_manifest.json`. Rebuilds from the same cache and ledger must be byte-identical.
 - The immutable snapshot root is `/mnt/nas/llm/documents/nba-predictions-archive/player-games-archive-2026-<manifest-sha12>/`, overridable only by the documented environment variables.
 - Unit tests use small source-shaped fixtures and never access the network. Integration checks read complete local caches only.
@@ -50,6 +51,9 @@
 
 `src/nba_data/reference/player_game_matchup_exceptions.json`
     Canonical schema-versioned exact allowlist for the 36 reviewed Charles Oakley source rows enumerated in `.superpowers/sdd/2026-08-02-player-games-workload/task-6-matchup-diagnostic.md`. This ledger is approved now; it is separate from the still-pending point/minute candidate review.
+
+`src/nba_data/reference/player_game_designation_exceptions.json`
+    Canonical schema-versioned exact game-level allowlist for the ten reviewed reciprocal-`@` neutral-site games enumerated in `.superpowers/sdd/2026-08-02-player-games-workload/task-6-neutral-site-diagnostic.md`. This ledger authorizes exceptional designation only; it does not establish a general neutral-game rule.
 
 `tests/test_player_logs.py`
     Source identity, payload, normalization, cache, pacing, retry, capacity, and resumable-fetch tests.
@@ -128,6 +132,10 @@ MATCHUP_EXCEPTIONS_PATH = (
     Path(__file__).resolve().parent
     / "reference/player_game_matchup_exceptions.json"
 )
+DESIGNATION_EXCEPTIONS_PATH = (
+    Path(__file__).resolve().parent
+    / "reference/player_game_designation_exceptions.json"
+)
 
 PLAYER_GAME_COLUMNS = [
     "game_id", "person_id", "season", "game_type", "game_date",
@@ -174,10 +182,15 @@ def normalize_payload(
     season: int,
     game_type: str,
     matchup_exceptions: Mapping[str, Mapping[str, object]] | None = None,
+    designation_exceptions: Mapping[str, Mapping[str, object]] | None = None,
 ) -> pd.DataFrame: ...
 def parse_matchup_exceptions(payload: bytes) -> dict[str, dict]: ...
 def load_matchup_exceptions(
     path: Path = MATCHUP_EXCEPTIONS_PATH,
+) -> dict[str, dict]: ...
+def parse_designation_exceptions(payload: bytes) -> dict[str, dict]: ...
+def load_designation_exceptions(
+    path: Path = DESIGNATION_EXCEPTIONS_PATH,
 ) -> dict[str, dict]: ...
 def normalize_payload_with_matchup_evidence(
     payload: bytes,
@@ -185,7 +198,16 @@ def normalize_payload_with_matchup_evidence(
     season: int,
     game_type: str,
     matchup_exceptions: Mapping[str, Mapping[str, object]],
+    designation_exceptions: Mapping[str, Mapping[str, object]] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, dict]]: ...
+def normalize_payload_with_exception_evidence(
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]],
+    designation_exceptions: Mapping[str, Mapping[str, object]],
+) -> tuple[pd.DataFrame, dict[str, dict], dict[str, dict]]: ...
 def available_bytes(path: Path) -> int: ...
 def validate_cache_inventory_root(raw_root: Path) -> tuple[Path, ...]: ...
 def validate_cache_inventory(data_dir: Path) -> tuple[Path, ...]: ...
@@ -202,6 +224,7 @@ EXCEPTIONS_PATH = (
     / "reference/player_game_validation_exceptions.json"
 )
 MATCHUP_EXCEPTIONS_PATH = player_logs.MATCHUP_EXCEPTIONS_PATH
+DESIGNATION_EXCEPTIONS_PATH = player_logs.DESIGNATION_EXCEPTIONS_PATH
 MINUTE_TOLERANCE = 5
 MAX_OVERTIME_PERIODS = 6
 
@@ -998,6 +1021,7 @@ git commit -m "feat: publish player game workloads"
 
 **Files:**
 - Create: `src/nba_data/reference/player_game_matchup_exceptions.json`
+- Create: `src/nba_data/reference/player_game_designation_exceptions.json`
 - Modify: `src/nba_data/player_logs.py`
 - Modify: `src/nba_data/player_games_build.py`
 - Modify: `tests/test_player_logs.py`
@@ -1015,6 +1039,16 @@ git commit -m "feat: publish player game workloads"
 The user approved that diagnostic's Option A recommendation. Implement the
 exact allowlist below before rerunning Step 4. This approval applies only to
 the matchup ledger; the Step 6 point/minute review boundary remains mandatory.
+
+**Approved 2026-08-03 neutral-site amendment:** The post-`3eab99d` audit then
+reached exactly ten regular games / 220 valid-XOR rows with reciprocal
+`<OWN> @ <OTHER>` strings and raw role shape `(0 home, 2 away)`. The complete
+census and exact values are in
+`.superpowers/sdd/2026-08-02-player-games-workload/task-6-neutral-site-diagnostic.md`.
+The user approved its recommendation for a separate exact ten-game designation
+ledger plus mandatory unique hoopR-backed committed neutral-reference proof.
+This approval does not authorize a general reciprocal or reference-driven rule,
+and the Step 6 point/minute review boundary remains mandatory.
 
 - [ ] **Step 1: Confirm the execution environment and disk headroom**
 
@@ -1158,6 +1192,122 @@ git commit -m "fix: review player matchup source anomalies"
 Expected: all tests pass and the implementation commit contains no raw cache,
 large Parquet publication, or point/minute candidate ledger change.
 
+- [ ] **Step 3e: Write failing tests for exact neutral-site designation approvals**
+
+In `tests/test_player_logs.py`, add source-shaped, hand-checked reciprocal-`@`
+fixtures proving that one exact approved game preserves both literal raw
+strings while deriving exactly one designated home identity and returning
+deterministic designation evidence. Add failures for an unlisted or stale game,
+wrong date/identity/string/row count, non-reciprocal strings, mixed `@`/`vs.`,
+unsupported syntax, malformed-row overlap, a third identity/pair, any raw role
+shape other than `(0 home, 2 away)`, and expected-side drift.
+
+Test the designation-ledger parser rejects duplicate JSON members, extra or
+missing fields, bool-as-int and other type drift, key/body disagreement,
+noncanonical key/date/ID, non-regular entries, unsorted or duplicate team
+objects, equal expected sides/franchises, wrong neutral flags/source, and an
+empty note. Observe the approved fixture fail at the current zero-home-identity
+gate before implementation.
+
+In `tests/test_player_games_build.py`, add failing tests requiring an exact
+unique committed regular reference match with one `games.parquet` row, two
+reciprocal `team_games.parquet` rows, exact season/date/franchises/designation,
+`neutral_site is True`, and `neutral_site_source == "hoopr"`. Cover missing,
+ambiguous, non-neutral, wrong-source, wrong-side, nonreciprocal team-game, and
+reference-byte mutation failures.
+
+- [ ] **Step 3f: Implement the approved ten-game designation ledger and proof**
+
+Create canonical sorted JSON with exactly `schema_version` and `designations`
+at the top level. The exact approved keys are:
+
+```text
+2025|regular|0022400147
+2025|regular|0022400621
+2025|regular|0022400633
+2025|regular|0022401229
+2025|regular|0022401230
+2026|regular|0022500147
+2026|regular|0022500578
+2026|regular|0022500602
+2026|regular|0022501229
+2026|regular|0022501230
+```
+
+Transcribe each date, two raw identities, exact raw matchup strings and row
+counts, expected abbreviations/franchises, and neutral-reference values from
+the diagnostic. `teams` is a two-item list sorted by `nba_team_id`; each team
+object contains exactly `nba_team_id`, `team_name_raw`,
+`team_abbreviation_raw`, `matchup_raw`, and `row_count`. Each designation entry
+also contains exactly `season`, `game_type`, `game_id`, `game_date`,
+`expected_home_abbreviation`, `expected_away_abbreviation`,
+`expected_home_franchise_id`, `expected_away_franchise_id`,
+`reference_neutral_site`, `reference_neutral_site_source`, and `note`. Use this
+exact note for all ten:
+
+```text
+Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.
+```
+
+Implement strict parse/load functions and
+`normalize_payload_with_exception_evidence`. Preserve the existing
+`normalize_payload_with_matchup_evidence` two-value return for compatibility;
+it may accept an optional designation mapping and delegate. Builder/audit code
+must call the new three-value function with explicit mappings parsed from
+stable captured bytes.
+
+For an approved game, prove observed and approved designation subsets equal in
+both directions, one exact group/date, two exact raw identities/franchises,
+all rows supported and valid-XOR, no malformed-row approval overlap, exactly
+one `<OWN> @ <OTHER>` string per identity, reciprocal strings, exact per-team
+row counts, one unordered pair, no duplicate player-game key, and raw role
+shape `(0 home, 2 away)`. Only then use the approved pair for derived
+`is_home`; preserve `matchup_raw` and derive opponents from the other resolved
+team as before. Every future or drifted shape fails closed.
+
+After assembly, validate each applied designation against stable committed
+regular-reference bytes: exactly one game row by NBA ID, exact season/date/team
+pair, explicit hoopR neutral status, exactly two reciprocal team-game rows,
+and exact agreement among reference, ledger, and normalized player roles. Keep
+all existing coverage, points, and minutes gates active. The reference chooses
+the designation only for an exact authorized game; ordinary games remain
+player-log-derived.
+
+Keep the manifest's nine top-level keys. Add exactly `designations` beside
+`points_minutes` and `matchups` under `exception_ledger`, binding path, SHA-256,
+and byte length. Retain the existing 36-row `matchup_repairs` evidence and add:
+
+```json
+"designation_repairs": {
+  "count": 10,
+  "sha256": "<SHA-256 of canonical sorted exact applied entries plus live raw/reference proof>"
+}
+```
+
+Capture and recheck stable designation-ledger, franchise, `games.parquet`, and
+`team_games.parquet` bytes. Independent publication validation recomputes the
+exact designation set, proof, count, and digest. `write_source_review` renders
+a separate designation table with key/date, raw teams/strings/counts,
+reference home/away, neutral source, venue, and proof counts; it does not mix
+these ten valid-row decisions with the 36 malformed rows or point/minute
+candidates.
+
+- [ ] **Step 3g: Verify and commit the designation amendment**
+
+```bash
+.venv/bin/python -m pytest tests/test_player_logs.py tests/test_player_games_build.py -q
+.venv/bin/python -m pytest -q
+git diff --check
+git add src/nba_data/player_logs.py src/nba_data/player_games_build.py \
+  src/nba_data/reference/player_game_designation_exceptions.json \
+  tests/test_player_logs.py tests/test_player_games_build.py
+git commit -m "fix: review neutral game designations"
+```
+
+Expected: all tests pass; all ten real cached games apply exactly; the existing
+36-row matchup ledger bytes remain unchanged; and no raw cache, publication,
+point/minute candidate, or unrelated tracked file enters the commit.
+
 - [ ] **Step 4: Generate deterministic source-review artifacts**
 
 Ensure the output target is absent, then run:
@@ -1171,7 +1321,8 @@ Ensure the output target is absent, then run:
 Expected: `source-audit.md` and
 `player_game_validation_exceptions.json` are created. The audit reports exact
 regular and postseason coverage and separately enumerates all 36 approved
-matchup repairs with their raw/expected values and consensus evidence. Based
+matchup repairs with their raw/expected values and consensus evidence, plus all
+ten approved designation repairs with exact raw/reference proof. Based
 on the verified 2026-08-02 probe, the
 candidate is expected to include point discrepancies in ending season 1984 and
 a minutes entry for `0028300095|LAC`; source revisions may change values, which
@@ -1208,8 +1359,9 @@ Provide the user:
 Do not modify `player_game_validation_exceptions.json`, widen
 `MINUTE_TOLERANCE`, publish Parquet, or start Task 7 until the user explicitly
 approves the candidate ledger and its non-empty evidence notes.
-Task 6 creates only the approved matchup-amendment commit before the source
-review stop. It does not commit point/minute candidates or generated data.
+Task 6 creates only the approved matchup- and designation-amendment commits
+before the source-review stop. It does not commit point/minute candidates or
+generated data.
 
 ---
 
@@ -1454,6 +1606,9 @@ Require README and data dictionary to contain:
 - points/minutes exception semantics and reviewed-ledger path;
 - matchup-exception semantics, reviewed-ledger path, exact repair count and
   digest, and the rule that future malformed rows fail for new human review;
+- designation-exception semantics, reviewed-ledger path, exact repair count
+  and digest, and the rule that future reciprocal/neutral shapes fail for new
+  human review;
 - the no-absence/no-roster warning;
 - final audit link and immutable snapshot name; and
 - explicit no-commit policy for `data/raw/` and `data/parquet-large/`.
@@ -1546,7 +1701,7 @@ deploy, remove the worktree, or begin D2/D3.
 | Exact Arrow schema and 43 deterministic partitions | Task 3 |
 | Regular exact-ID and postseason composite-key coverage | Task 4 |
 | Exact points/minutes gates and stale-ledger rejection | Task 4 |
-| Human-reviewed matchup and point/minute exception checkpoints | Tasks 6–7 |
+| Human-reviewed matchup, designation, and point/minute exception checkpoints | Tasks 6–7 |
 | Deterministic manifest, independent validation, transactional publication | Task 5 |
 | Two byte-identical full builds | Task 7 |
 | Immutable NAS snapshot and verified absent-target restore | Task 8 |

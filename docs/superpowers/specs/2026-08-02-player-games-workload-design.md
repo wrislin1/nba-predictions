@@ -171,7 +171,8 @@ first contract preemptively.
   neutral games whose two rows can carry identical matchup text.
 - The reviewed 2026-08-03 source audit found exactly 36 Charles Oakley rows in
   which both parsed sides equal the row's own abbreviation. Those rows are the
-  only matchup anomalies permitted by this release. They are recorded in the
+  only malformed player-row matchup anomalies permitted by this release. They
+  are recorded in the
   dedicated canonical ledger
   `src/nba_data/reference/player_game_matchup_exceptions.json`; normalization
   preserves the literal `matchup_raw` and uses the approved ordered pair only
@@ -190,6 +191,29 @@ first contract preemptively.
   malformed rows in one game; or malformed rows from both teams fails closed.
   Every future anomaly therefore returns to human review rather than being
   accepted by a general consensus-repair policy.
+- After those 36 rows were repaired, the audit reached exactly ten regular
+  neutral-site games in ending seasons 2025–2026 whose two teams use
+  reciprocal `<OWN> @ <OTHER>` strings. All 220 rows are individually
+  valid-XOR, but both raw identities derive as away and the player-log bodies
+  contain no venue, neutral-site, or designated-home field. These games are
+  separately authorized in
+  `src/nba_data/reference/player_game_designation_exceptions.json`; no general
+  reciprocal-matchup or reference-driven designation rule is authorized.
+- Each designation approval must match one exact source game, its date, two
+  canonically ordered raw identity objects, exact per-team matchup string and
+  row count, and raw role shape `(0 home, 2 away)`. Every row must be supported
+  syntax, valid-XOR, and `<OWN> @ <OTHER>`; the two strings must be reciprocal;
+  the game must have exactly two raw identities, two resolved franchises, one
+  unordered team pair, and no malformed-row repair overlap. Observed and
+  approved designation sets must be equal in both directions.
+- The approved designated sides must also agree with exactly one committed
+  regular `games.parquet` row and exactly two reciprocal `team_games.parquet`
+  rows for the NBA game ID. Season, date, franchises, home/away roles,
+  `neutral_site = true`, and `neutral_site_source = "hoopr"` must all agree.
+  Only derived `is_home` changes; `matchup_raw` and every other raw field remain
+  literal source semantics. The regular references share hoopR designation
+  lineage, so this is mandatory consistency proof plus explicit authorization,
+  not independent corroboration.
 - `opponent_franchise_id` comes from the other team group in the same game,
   not from an abbreviation-only historical lookup.
 - Duplicate `(game_id, person_id)` rows fail. Zero-minute credited rows remain
@@ -296,6 +320,26 @@ no duplicate JSON member names. The committed file contains the exact 36 rows
 enumerated in the Task 6 diagnostic; the example above is one of them, not a
 one-row ledger.
 
+The separately approved designation ledger has exactly `schema_version` and
+`designations` at the top level. Each key is
+`<ending-season>|<game-type>|<10-digit-game-id>`. Each value contains exactly:
+
+- `season`, `game_type`, `game_id`, and ISO `game_date`;
+- `teams`, an exactly two-item list sorted by `nba_team_id`, where each object
+  has exact `nba_team_id`, `team_name_raw`, `team_abbreviation_raw`,
+  `matchup_raw`, and `row_count` values;
+- `expected_home_abbreviation`, `expected_away_abbreviation`,
+  `expected_home_franchise_id`, and `expected_away_franchise_id`;
+- `reference_neutral_site: true` and
+  `reference_neutral_site_source: "hoopr"`; and
+- a non-empty review `note`.
+
+The parser rejects duplicate JSON member names, extra or missing fields,
+bool-as-int/type drift, noncanonical keys/dates/IDs, unsorted or duplicate team
+objects, equal expected sides, non-regular entries, and key/body disagreement.
+The committed file contains exactly the ten games and exact values enumerated
+in the 2026-08-03 neutral-site diagnostic.
+
 ## Manifest and publication
 
 `_manifest.json` is deterministic, sorted JSON with no timestamps or absolute
@@ -305,8 +349,9 @@ paths. It contains:
 - scope: ending seasons, game types, and applicable types by season;
 - dependency versions;
 - every raw body and sidecar relative path, SHA-256, and byte length;
-- the point/minute exception-ledger, matchup-exception-ledger, and packaged
-  franchise-reference path, SHA-256, and byte-length bindings;
+- the point/minute exception-ledger, matchup-exception-ledger,
+  designation-exception-ledger, and packaged franchise-reference path,
+  SHA-256, and byte-length bindings;
 - SHA-256 values for the exact committed `games.parquet`,
   `team_games.parquet`, `build_manifest.json`, `playoff_games.parquet`, and
   `playoff_games_manifest.json` files used for coverage validation;
@@ -316,7 +361,9 @@ paths. It contains:
 - exact point/minute exception counts; and
 - the applied matchup-exception count plus a SHA-256 over the canonical sorted
   JSON object of exact applied entries, proving the effective repair set rather
-  than merely its size.
+  than merely its size; and
+- the applied designation-exception count plus a SHA-256 over canonical sorted
+  exact applied entries and their live raw/reference proof.
 
 Builds happen in a sibling stage directory. Every staged Parquet file is
 reread and every manifest value is recomputed before
@@ -332,12 +379,21 @@ reference bytes differ from the manifest pins cannot validate or restore that
 snapshot.
 
 The manifest retains its nine top-level keys. `exception_ledger` contains
-exactly `points_minutes` and `matchups` file bindings. The validation section
+exactly `points_minutes`, `matchups`, and `designations` file bindings. The
+validation section
 retains the point/minute counts and adds
 `matchup_repairs: {"count": <int>, "sha256": <64-lowercase-hex>}`. Independent
-validation rereads stable bytes for both ledgers, reruns normalization and all
-consensus/reference gates, recomputes the applied set, and compares the whole
-manifest value.
+validation rereads stable bytes for all three ledgers, reruns normalization
+and all consensus/reference gates, recomputes the applied set, and compares the
+whole manifest value.
+
+Validation also contains
+`designation_repairs: {"count": 10, "sha256": <64-lowercase-hex>}`. The digest
+covers the canonical sorted applied game entries plus deterministic raw-shape
+and committed-reference proof. Independent validation captures and rechecks
+stable designation-ledger, `games.parquet`, and `team_games.parquet` bytes,
+recomputes the exact ten-key set and proof, and rejects any count, digest,
+ledger, source-shape, expected-side, neutral-reference, or reference-byte drift.
 
 ## Commands
 
@@ -388,6 +444,11 @@ through `NBA_PLAYER_GAMES_ARCHIVE_ROOT` and `NBA_PLAYER_GAMES_DATA_DIR`.
   expected-pair-drifted, unsupported, neither-side, missing-consensus,
   conflicting-consensus, missing-team, multiple-malformed, and both-team
   malformed cases fail.
+- Designation exceptions: each exact approved reciprocal-`@` game preserves
+  every `matchup_raw` while deriving only `is_home`; unlisted, stale,
+  duplicate, string/count/identity/date drift, non-reciprocal, mixed delimiter,
+  malformed-row overlap, wrong role shape, non-neutral reference, ambiguous or
+  missing reference, reference-side drift, and ledger mutation cases fail.
 - Regular exact coverage and postseason composite-key one-to-one coverage.
 - Points gates: exact match, unlisted mismatch, exact approved mismatch, value
   drift, stale ledger entry, and null player points.
@@ -408,7 +469,8 @@ The final implementation updates `README.md` and `docs/data-dictionary.md` and
 commits `docs/audits/2026-08-02-player-games-source-audit.md`. The audit states
 the manifest SHA-256, exact release scope, counts by season/type, point and
 minute exception keys, all matchup repair keys with raw/expected values and
-consensus evidence, source limitations, and the explicit rule that no
+consensus evidence, all designation repair keys with exact raw/reference
+evidence, source limitations, and the explicit rule that no
 appearance row does not imply absence.
 
 ## Out of scope
@@ -430,7 +492,9 @@ appearance row does not imply absence.
 3. Every player-point, player-minute, and matchup discrepancy is either
    rejected or matched byte-for-byte in its reviewed exact exception ledger;
    no stale entry survives, and every matchup approval still passes live
-   within-game consensus plus downstream committed-reference coverage.
+   within-game consensus plus downstream committed-reference coverage. Every
+   designation exception also matches its exact reciprocal raw shape and
+   unique hoopR-backed neutral reference.
 4. Two offline builds from the same raw cache and ledger produce identical
    partition and manifest bytes, and independent validation passes.
 5. The immutable NAS snapshot validates and restores into absent targets, while
