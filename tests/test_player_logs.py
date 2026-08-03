@@ -1331,3 +1331,493 @@ def test_parse_matchup_exceptions_rejects_schema_and_identity_drift(payload, mat
     """Would fail if non-canonical approval bytes silently changed semantics."""
     with pytest.raises(player_logs.PlayerLogValidationError, match=match):
         player_logs.parse_matchup_exceptions(payload)
+
+
+DESIGNATION_KEY = "2025|regular|0022400147"
+DESIGNATION_NOTE = (
+    "Reviewed neutral-site designation anomaly; exact reciprocal player-log "
+    "shape and unique hoopR-backed committed reference agree on the "
+    "designated sides."
+)
+
+
+def _designation_entry(**changes):
+    entry = {
+        "season": 2025,
+        "game_type": "regular",
+        "game_id": "0022400147",
+        "game_date": "2024-11-02",
+        "teams": [
+            {
+                "nba_team_id": 1610612748,
+                "team_name_raw": "Miami Heat",
+                "team_abbreviation_raw": "MIA",
+                "matchup_raw": "MIA @ WAS",
+                "row_count": 13,
+            },
+            {
+                "nba_team_id": 1610612764,
+                "team_name_raw": "Washington Wizards",
+                "team_abbreviation_raw": "WAS",
+                "matchup_raw": "WAS @ MIA",
+                "row_count": 13,
+            },
+        ],
+        "expected_home_abbreviation": "WAS",
+        "expected_away_abbreviation": "MIA",
+        "expected_home_franchise_id": "WAS",
+        "expected_away_franchise_id": "MIA",
+        "reference_neutral_site": True,
+        "reference_neutral_site_source": "hoopr",
+        "note": DESIGNATION_NOTE,
+    }
+    entry.update(changes)
+    return entry
+
+
+def _designation_rows():
+    identities = (
+        (1610612748, "MIA", "Miami Heat", "MIA @ WAS", 13),
+        (1610612764, "WAS", "Washington Wizards", "WAS @ MIA", 13),
+    )
+    rows = []
+    person_id = 10_000
+    for team_id, abbreviation, team_name, matchup, count in identities:
+        for offset in range(count):
+            row = _row(
+                person_id + offset,
+                f"{abbreviation} Player {offset}",
+                team_id,
+                abbreviation,
+                team_name,
+                matchup,
+                12,
+                2,
+            )
+            row[HEADERS.index("SEASON_ID")] = "22024"
+            row[HEADERS.index("GAME_ID")] = "0022400147"
+            row[HEADERS.index("GAME_DATE")] = "2024-11-02"
+            rows.append(row)
+        person_id += 100
+    return rows
+
+
+def test_normalize_payload_applies_the_exact_packaged_designation():
+    """Would fail if an approved reciprocal game still had zero home teams."""
+    frame = player_logs.normalize_payload(
+        _payload(_designation_rows()), season=2025, game_type="regular"
+    )
+
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert set(frame.loc[~frame.is_home, "franchise_id"]) == {"MIA"}
+    assert set(frame.loc[frame.franchise_id.eq("MIA"), "matchup_raw"]) == {
+        "MIA @ WAS"
+    }
+    assert set(frame.loc[frame.franchise_id.eq("WAS"), "matchup_raw"]) == {
+        "WAS @ MIA"
+    }
+
+
+def _designation_payload(designations=None, **root_changes):
+    document = {
+        "schema_version": 1,
+        "designations": (
+            {DESIGNATION_KEY: _designation_entry()}
+            if designations is None else designations
+        ),
+    }
+    document.update(root_changes)
+    return json.dumps(document, sort_keys=True).encode("utf-8")
+
+
+def _designation_rows_with(
+    *, player_id=None, abbreviation=None, field=None, value=None
+):
+    rows = _designation_rows()
+    for row in rows:
+        if player_id is not None and row[HEADERS.index("PLAYER_ID")] != player_id:
+            continue
+        if (
+            abbreviation is not None
+            and row[HEADERS.index("TEAM_ABBREVIATION")] != abbreviation
+        ):
+            continue
+        row[HEADERS.index(field)] = value
+    return rows
+
+
+def test_normalize_payload_returns_exact_designation_raw_evidence():
+    """Would fail if the approved raw proof could not be bound downstream."""
+    entry = _designation_entry()
+    frame, matchup_evidence, designation_evidence = (
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(_designation_rows()),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: entry},
+        )
+    )
+
+    assert matchup_evidence == {}
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert designation_evidence == {
+        DESIGNATION_KEY: {
+            "approval": entry,
+            "raw": {
+                "game_date": "2024-11-02",
+                "rows": 26,
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "valid_xor_rows": 26,
+                "malformed_rows": 0,
+                "unordered_matchup_pairs": 1,
+                "home_identities_before": 0,
+                "away_identities_before": 2,
+                "home_identities_after": 1,
+                "away_identities_after": 1,
+                "teams": entry["teams"],
+            },
+        }
+    }
+
+
+def test_matchup_evidence_api_keeps_its_two_value_return_with_designations():
+    """Would fail if designation evidence broke the reviewed public API."""
+    frame, matchup_evidence = player_logs.normalize_payload_with_matchup_evidence(
+        _payload(_designation_rows()),
+        season=2025,
+        game_type="regular",
+        matchup_exceptions={},
+        designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+    )
+
+    assert len(frame) == 26
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert matchup_evidence == {}
+
+
+@pytest.mark.parametrize(
+    ("case", "rows", "designations"),
+    [
+        ("unlisted", _designation_rows(), {}),
+        (
+            "stale",
+            _designation_rows_with(
+                field="MATCHUP", value="MIA @ WAS"
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "wrong date",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    game_date="2024-11-03"
+                )
+            },
+        ),
+        (
+            "wrong identity",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "team_name_raw": "Miami"},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "wrong string",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "matchup_raw": "MIA @ BOS"},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "wrong row count",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "row_count": 12},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "non-reciprocal strings",
+            _designation_rows_with(
+                abbreviation="WAS", field="MATCHUP", value="WAS @ BOS"
+            ),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        _designation_entry()["teams"][0],
+                        {
+                            **_designation_entry()["teams"][1],
+                            "matchup_raw": "WAS @ BOS",
+                        },
+                    ]
+                )
+            },
+        ),
+        (
+            "mixed separators",
+            _designation_rows_with(
+                field="MATCHUP", value="MIA vs. WAS"
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "unsupported syntax",
+            _designation_rows_with(
+                player_id=10_000,
+                field="MATCHUP",
+                value="MIA - WAS",
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "malformed overlap",
+            _designation_rows_with(
+                player_id=10_000,
+                field="MATCHUP",
+                value="MIA @ MIA",
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "expected side drift",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    expected_home_abbreviation="BOS"
+                )
+            },
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_designation_approvals_fail_closed_on_raw_or_approval_drift(
+    case, rows, designations,
+):
+    """Would fail if a designation approval generalized beyond exact proof."""
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions=designations,
+        )
+
+
+def test_designation_approval_rejects_a_third_identity_and_pair():
+    """Would fail if an approval could hide a third raw team identity."""
+    rows = _designation_rows()
+    third = list(rows[0])
+    third[HEADERS.index("PLAYER_ID")] = 99_999
+    third[HEADERS.index("TEAM_ID")] = 1610612752
+    third[HEADERS.index("TEAM_NAME")] = "New York Knicks"
+    third[HEADERS.index("TEAM_ABBREVIATION")] = "NYK"
+    third[HEADERS.index("MATCHUP")] = "NYK @ MIA"
+    rows.append(third)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+        )
+
+
+def test_designation_approval_rejects_two_home_raw_identities():
+    """Would fail if an approved game accepted a role shape other than (0, 2)."""
+    rows = _designation_rows()
+    for row in rows:
+        abbreviation = row[HEADERS.index("TEAM_ABBREVIATION")]
+        row[HEADERS.index("MATCHUP")] = (
+            "MIA vs. WAS" if abbreviation == "MIA" else "WAS vs. MIA"
+        )
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+        )
+
+
+def test_parse_designation_exceptions_accepts_only_the_canonical_schema():
+    """Would fail if an exact reviewed designation could not be loaded."""
+    assert player_logs.parse_designation_exceptions(
+        _designation_payload()
+    ) == {DESIGNATION_KEY: _designation_entry()}
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            b'{"schema_version":1,"schema_version":1,"designations":{}}',
+            "duplicate",
+        ),
+        (
+            json.dumps(
+                {"schema_version": 1, "designations": {}, "extra": {}}
+            ).encode(),
+            "top-level",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: {**_designation_entry(), "extra": 1}}
+            ),
+            "fields",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: {
+                        key: value
+                        for key, value in _designation_entry().items()
+                        if key != "note"
+                    }
+                }
+            ),
+            "fields",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(season=True)}
+            ),
+            "type",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=[
+                            {**_designation_entry()["teams"][0], "row_count": True},
+                            _designation_entry()["teams"][1],
+                        ]
+                    )
+                }
+            ),
+            "type",
+        ),
+        (
+            _designation_payload(
+                {"2025|regular|0022400148": _designation_entry()}
+            ),
+            "identity",
+        ),
+        (
+            _designation_payload(
+                {"2025|regular|22400147": _designation_entry()}
+            ),
+            "key",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_date="2024-1-2")}
+            ),
+            "date",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_id="22400147")}
+            ),
+            "game_id",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_type="playoff")}
+            ),
+            "regular",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=list(reversed(_designation_entry()["teams"]))
+                    )
+                }
+            ),
+            "sorted",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=[
+                            _designation_entry()["teams"][0],
+                            _designation_entry()["teams"][0],
+                        ]
+                    )
+                }
+            ),
+            "duplicate",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        expected_away_abbreviation="WAS"
+                    )
+                }
+            ),
+            "sides",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        expected_away_franchise_id="WAS"
+                    )
+                }
+            ),
+            "franchises",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(reference_neutral_site=False)}
+            ),
+            "neutral",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        reference_neutral_site_source="manual"
+                    )
+                }
+            ),
+            "hoopr",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(note="  ")}
+            ),
+            "note",
+        ),
+    ],
+)
+def test_parse_designation_exceptions_rejects_schema_and_value_drift(
+    payload, match,
+):
+    """Would fail if non-canonical designation bytes changed semantics."""
+    with pytest.raises(player_logs.PlayerLogValidationError, match=match):
+        player_logs.parse_designation_exceptions(payload)

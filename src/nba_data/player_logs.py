@@ -43,6 +43,10 @@ MATCHUP_EXCEPTIONS_PATH = (
     Path(__file__).resolve().parent
     / "reference/player_game_matchup_exceptions.json"
 )
+DESIGNATION_EXCEPTIONS_PATH = (
+    Path(__file__).resolve().parent
+    / "reference/player_game_designation_exceptions.json"
+)
 
 PLAYER_GAME_COLUMNS = [
     "game_id", "person_id", "season", "game_type", "game_date",
@@ -81,6 +85,27 @@ _MATCHUP_EXCEPTION_FIELDS = {
     "expected_home_abbreviation",
     "expected_away_abbreviation",
     "note",
+}
+_DESIGNATION_EXCEPTION_FIELDS = {
+    "season",
+    "game_type",
+    "game_id",
+    "game_date",
+    "teams",
+    "expected_home_abbreviation",
+    "expected_away_abbreviation",
+    "expected_home_franchise_id",
+    "expected_away_franchise_id",
+    "reference_neutral_site",
+    "reference_neutral_site_source",
+    "note",
+}
+_DESIGNATION_TEAM_FIELDS = {
+    "nba_team_id",
+    "team_name_raw",
+    "team_abbreviation_raw",
+    "matchup_raw",
+    "row_count",
 }
 
 
@@ -237,6 +262,209 @@ def load_matchup_exceptions(
             f"matchup-exception ledger could not be read: {path}"
         ) from exc
     return parse_matchup_exceptions(payload)
+
+
+def parse_designation_exceptions(payload: bytes) -> dict[str, dict]:
+    """Parse the canonical exact neutral-game designation ledger."""
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-standard JSON numeric constant: {value}")
+
+    try:
+        document = json.loads(
+            payload,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=reject_constant,
+        )
+    except PlayerLogValidationError:
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        raise PlayerLogValidationError(
+            f"invalid designation-exception JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise PlayerLogValidationError(
+            "designation-exception root must be an object"
+        )
+    if set(document) != {"schema_version", "designations"}:
+        raise PlayerLogValidationError(
+            "designation-exception top-level keys must be exactly "
+            "schema_version and designations"
+        )
+    if type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        raise PlayerLogValidationError(
+            "designation-exception schema_version has wrong type or value"
+        )
+    designations = document["designations"]
+    if not isinstance(designations, dict):
+        raise PlayerLogValidationError("designations must be an object")
+
+    parsed = {}
+    entry_strings = (
+        "game_type",
+        "game_id",
+        "game_date",
+        "expected_home_abbreviation",
+        "expected_away_abbreviation",
+        "expected_home_franchise_id",
+        "expected_away_franchise_id",
+        "reference_neutral_site_source",
+        "note",
+    )
+    team_strings = (
+        "team_name_raw",
+        "team_abbreviation_raw",
+        "matchup_raw",
+    )
+    for key, entry in designations.items():
+        if not isinstance(key, str) or not re.fullmatch(
+            r"[0-9]{4}\|regular\|[0-9]{10}", key
+        ):
+            raise PlayerLogValidationError(
+                f"malformed designation-exception composite key: {key!r}"
+            )
+        if not isinstance(entry, dict) or set(entry) != _DESIGNATION_EXCEPTION_FIELDS:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has non-canonical fields"
+            )
+        if type(entry["season"]) is not int:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} season has wrong type"
+            )
+        for field in entry_strings:
+            if type(entry[field]) is not str:
+                raise PlayerLogValidationError(
+                    f"designation-exception entry {key!r} field {field!r} "
+                    "has wrong type"
+                )
+            if field == "note":
+                if not entry[field].strip():
+                    raise PlayerLogValidationError(
+                        f"designation-exception entry {key!r} requires a "
+                        "non-empty note"
+                    )
+            elif not entry[field]:
+                raise PlayerLogValidationError(
+                    f"designation-exception entry {key!r} field {field!r} "
+                    "must not be empty"
+                )
+        if type(entry["reference_neutral_site"]) is not bool:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} neutral flag has wrong type"
+            )
+        if entry["reference_neutral_site"] is not True:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} must be neutral"
+            )
+        if entry["reference_neutral_site_source"] != "hoopr":
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} source must be hoopr"
+            )
+        try:
+            parsed_date = date.fromisoformat(entry["game_date"])
+        except ValueError as exc:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has invalid date"
+            ) from exc
+        if parsed_date.isoformat() != entry["game_date"]:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has non-canonical date"
+            )
+        if not 1984 <= entry["season"] <= 2026:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} season is outside 1984..2026"
+            )
+        if entry["game_type"] != "regular":
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} must be regular"
+            )
+        if (
+            not re.fullmatch(r"[0-9]{10}", entry["game_id"])
+            or not entry["game_id"].startswith(ID_PREFIXES["regular"])
+        ):
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has invalid game_id"
+            )
+        expected_key = (
+            f"{entry['season']}|{entry['game_type']}|{entry['game_id']}"
+        )
+        if key != expected_key:
+            raise PlayerLogValidationError(
+                f"designation-exception key/body identity disagreement: {key!r}"
+            )
+
+        teams = entry["teams"]
+        if not isinstance(teams, list) or len(teams) != 2:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} teams must have 2 items"
+            )
+        normalized_teams = []
+        for team in teams:
+            if not isinstance(team, dict) or set(team) != _DESIGNATION_TEAM_FIELDS:
+                raise PlayerLogValidationError(
+                    f"designation-exception entry {key!r} team has "
+                    "non-canonical fields"
+                )
+            for field in ("nba_team_id", "row_count"):
+                if type(team[field]) is not int:
+                    raise PlayerLogValidationError(
+                        f"designation-exception entry {key!r} team field "
+                        f"{field!r} has wrong type"
+                    )
+                if team[field] <= 0:
+                    raise PlayerLogValidationError(
+                        f"designation-exception entry {key!r} team field "
+                        f"{field!r} must be positive"
+                    )
+            for field in team_strings:
+                if type(team[field]) is not str or not team[field]:
+                    raise PlayerLogValidationError(
+                        f"designation-exception entry {key!r} team field "
+                        f"{field!r} has wrong type or is empty"
+                    )
+            normalized_teams.append(dict(team))
+        team_ids = [team["nba_team_id"] for team in normalized_teams]
+        if team_ids != sorted(team_ids):
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} teams must be sorted"
+            )
+        if len(set(team_ids)) != 2:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has duplicate teams"
+            )
+        abbreviations = {
+            team["team_abbreviation_raw"] for team in normalized_teams
+        }
+        expected_abbreviations = {
+            entry["expected_home_abbreviation"],
+            entry["expected_away_abbreviation"],
+        }
+        if len(expected_abbreviations) != 2 or expected_abbreviations != abbreviations:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has invalid sides"
+            )
+        expected_franchises = {
+            entry["expected_home_franchise_id"],
+            entry["expected_away_franchise_id"],
+        }
+        if len(expected_franchises) != 2:
+            raise PlayerLogValidationError(
+                f"designation-exception entry {key!r} has invalid franchises"
+            )
+        parsed[key] = {**entry, "teams": normalized_teams}
+    return parsed
+
+
+def load_designation_exceptions(
+    path: Path = DESIGNATION_EXCEPTIONS_PATH,
+) -> dict[str, dict]:
+    """Load and parse the packaged neutral-game designation ledger."""
+    try:
+        payload = Path(path).read_bytes()
+    except OSError as exc:
+        raise PlayerLogValidationError(
+            f"designation-exception ledger could not be read: {path}"
+        ) from exc
+    return parse_designation_exceptions(payload)
 
 
 def _decode_payload(payload: bytes) -> object:
@@ -624,14 +852,16 @@ def _box_column(values: pd.Series, source_name: str) -> pd.Series:
     return numeric.astype("Int64")
 
 
-def normalize_payload_with_matchup_evidence(
+def normalize_payload_with_exception_evidence(
     payload: bytes,
     *,
     season: int,
     game_type: str,
     matchup_exceptions: Mapping[str, Mapping[str, object]],
-) -> tuple[pd.DataFrame, dict[str, dict]]:
-    """Normalize a payload and return exact applied matchup evidence."""
+    designation_exceptions: Mapping[str, Mapping[str, object]],
+    franchise_resolver: franchises.FranchiseResolver | None = None,
+) -> tuple[pd.DataFrame, dict[str, dict], dict[str, dict]]:
+    """Normalize a payload and return exact applied exception evidence."""
     if game_type not in GAME_TYPES:
         raise PlayerLogValidationError(f"unknown game type: {game_type!r}")
     season_label(season)
@@ -680,9 +910,14 @@ def normalize_payload_with_matchup_evidence(
     person_id = _exact_integer_series(raw["PLAYER_ID"], "PLAYER_ID")
     nba_team_id = _exact_integer_series(raw["TEAM_ID"], "TEAM_ID")
     game_date = pd.to_datetime(raw["GAME_DATE"]).dt.date
-    franchise_id = raw["TEAM_NAME"].map(
-        lambda name: franchises.resolve(str(name), season)
-    )
+    if franchise_resolver is None:
+        franchise_id = raw["TEAM_NAME"].map(
+            lambda name: franchises.resolve(str(name), season)
+        )
+    else:
+        franchise_id = raw["TEAM_NAME"].map(
+            lambda name: franchise_resolver.resolve(str(name), season)
+        )
 
     matchup = raw["MATCHUP"].astype(str)
     away_extract = matchup.str.extract(r"^(?P<left>\S+)\s@\s(?P<right>\S+)$")
@@ -886,6 +1121,257 @@ def normalize_payload_with_matchup_evidence(
             },
         }
 
+    designation_subset = {
+        key: dict(entry)
+        for key, entry in designation_exceptions.items()
+        if (
+            entry.get("season") == season
+            and entry.get("game_type") == game_type
+            and entry.get("game_id") in set(game_id)
+        )
+    }
+    identity_columns = ["TEAM_ID", "TEAM_NAME", "TEAM_ABBREVIATION"]
+    designation_groups = {}
+    for game_id_value, group_indexes in game_id.groupby(game_id, sort=False).groups.items():
+        identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+        }
+        home_identities_before = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_home_side.at[index])
+        }
+        away_identities_before = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_away_side.at[index])
+        }
+        if (
+            len(identities) == 2
+            and len(home_identities_before) == 0
+            and len(away_identities_before) == 2
+        ):
+            designation_groups[
+                f"{season}|{game_type}|{game_id_value}"
+            ] = list(group_indexes)
+
+    observed_designations = set(designation_groups)
+    unapproved_designations = sorted(
+        observed_designations - set(designation_subset)
+    )
+    stale_designations = sorted(
+        set(designation_subset) - observed_designations
+    )
+    if unapproved_designations:
+        raise PlayerLogValidationError(
+            "reciprocal-away designation games require exact approval: "
+            f"{unapproved_designations}"
+        )
+    if stale_designations:
+        raise PlayerLogValidationError(
+            f"stale designation approvals not observed: {stale_designations}"
+        )
+
+    designation_evidence = {}
+    for key, group_indexes in sorted(designation_groups.items()):
+        approval = designation_subset[key]
+        game_id_value = str(game_id.at[group_indexes[0]])
+        dates = {game_date.at[index] for index in group_indexes}
+        identities = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+        }
+        resolved_franchises = {
+            str(franchise_id.at[index]) for index in group_indexes
+        }
+        group_malformed = [
+            index for index in group_indexes if not bool(valid_matchup.at[index])
+        ]
+        if game_type != "regular":
+            raise PlayerLogValidationError(
+                f"designation approval {key} is not a regular-season game"
+            )
+        if len(dates) != 1:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} has multiple dates"
+            )
+        if len(identities) != 2 or len(resolved_franchises) != 2:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} must have exactly two raw "
+                "identities and resolved franchises"
+            )
+        if group_malformed:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} contains malformed rows"
+            )
+        if not all(bool(matched_away.at[index]) for index in group_indexes):
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} must use only @ syntax"
+            )
+        if not all(
+            str(away_extract.at[index, "left"])
+            == str(team_abbr.at[index])
+            for index in group_indexes
+        ):
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} requires every team on the "
+                "listed away side"
+            )
+
+        team_proof = []
+        for team_id, team_name, abbreviation in sorted(
+            identities, key=lambda value: int(value[0])
+        ):
+            team_indexes = [
+                index
+                for index in group_indexes
+                if int(nba_team_id.at[index]) == int(team_id)
+                and raw.at[index, "TEAM_NAME"] == team_name
+                and raw.at[index, "TEAM_ABBREVIATION"] == abbreviation
+            ]
+            raw_matchups = {
+                str(raw.at[index, "MATCHUP"]) for index in team_indexes
+            }
+            if len(raw_matchups) != 1:
+                raise PlayerLogValidationError(
+                    f"designation game {game_id_value} identity "
+                    f"{abbreviation!r} has multiple raw matchup strings"
+                )
+            team_proof.append({
+                "nba_team_id": int(team_id),
+                "team_name_raw": str(team_name),
+                "team_abbreviation_raw": str(abbreviation),
+                "matchup_raw": next(iter(raw_matchups)),
+                "row_count": len(team_indexes),
+            })
+        if team_proof != approval.get("teams"):
+            raise PlayerLogValidationError(
+                f"designation approval raw-team drift for {key}"
+            )
+
+        exact_source = {
+            "season": season,
+            "game_type": game_type,
+            "game_id": game_id_value,
+            "game_date": next(iter(dates)).isoformat(),
+        }
+        drift = {
+            field: (approval.get(field), value)
+            for field, value in exact_source.items()
+            if approval.get(field) != value
+        }
+        if drift:
+            raise PlayerLogValidationError(
+                f"designation approval raw-field drift for {key}: {drift}"
+            )
+
+        abbreviations = [
+            team["team_abbreviation_raw"] for team in team_proof
+        ]
+        if len(set(abbreviations)) != 2:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} has duplicate abbreviations"
+            )
+        expected_raw = {
+            abbreviation: f"{abbreviation} @ {next(value for value in abbreviations if value != abbreviation)}"
+            for abbreviation in abbreviations
+        }
+        if any(
+            team["matchup_raw"]
+            != expected_raw[team["team_abbreviation_raw"]]
+            for team in team_proof
+        ):
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} raw strings are not reciprocal"
+            )
+        unordered_pairs = {
+            tuple(sorted((
+                str(matchup_home_abbr.at[index]),
+                str(matchup_away_abbr.at[index]),
+            )))
+            for index in group_indexes
+        }
+        if len(unordered_pairs) != 1:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} has multiple matchup pairs"
+            )
+
+        expected_home = approval.get("expected_home_abbreviation")
+        expected_away = approval.get("expected_away_abbreviation")
+        if {expected_home, expected_away} != set(abbreviations):
+            raise PlayerLogValidationError(
+                f"designation approval expected-side drift for {key}"
+            )
+        abbreviation_franchises = {}
+        for abbreviation in abbreviations:
+            values = {
+                str(franchise_id.at[index])
+                for index in group_indexes
+                if str(team_abbr.at[index]) == abbreviation
+            }
+            if len(values) != 1:
+                raise PlayerLogValidationError(
+                    f"designation game {game_id_value} identity resolves "
+                    "inconsistently"
+                )
+            abbreviation_franchises[abbreviation] = next(iter(values))
+        if (
+            abbreviation_franchises[expected_home]
+            != approval.get("expected_home_franchise_id")
+            or abbreviation_franchises[expected_away]
+            != approval.get("expected_away_franchise_id")
+        ):
+            raise PlayerLogValidationError(
+                f"designation approval expected-franchise drift for {key}"
+            )
+
+        home_identities_before = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_home_side.at[index])
+        }
+        away_identities_before = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_away_side.at[index])
+        }
+        for index in group_indexes:
+            is_home_side.at[index] = str(team_abbr.at[index]) == expected_home
+            is_away_side.at[index] = str(team_abbr.at[index]) == expected_away
+        home_identities_after = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_home_side.at[index])
+        }
+        away_identities_after = {
+            tuple(raw.loc[index, identity_columns].tolist())
+            for index in group_indexes
+            if bool(is_away_side.at[index])
+        }
+        if len(home_identities_after) != 1 or len(away_identities_after) != 1:
+            raise PlayerLogValidationError(
+                f"designation game {game_id_value} did not resolve exactly one "
+                "identity per side"
+            )
+        designation_evidence[key] = {
+            "approval": approval,
+            "raw": {
+                "game_date": next(iter(dates)).isoformat(),
+                "rows": len(group_indexes),
+                "raw_team_identities": len(identities),
+                "resolved_franchises": len(resolved_franchises),
+                "valid_xor_rows": len(group_indexes) - len(group_malformed),
+                "malformed_rows": len(group_malformed),
+                "unordered_matchup_pairs": len(unordered_pairs),
+                "home_identities_before": len(home_identities_before),
+                "away_identities_before": len(away_identities_before),
+                "home_identities_after": len(home_identities_after),
+                "away_identities_after": len(away_identities_after),
+                "teams": team_proof,
+            },
+        }
+
     working = pd.DataFrame({
         "game_id": game_id,
         "person_id": person_id,
@@ -962,7 +1448,32 @@ def normalize_payload_with_matchup_evidence(
         opponents[(row.game_id, row.franchise_id)]
         for row in working[["game_id", "franchise_id"]].itertuples(index=False)
     ]
-    return working[PLAYER_GAME_COLUMNS], evidence
+    return working[PLAYER_GAME_COLUMNS], evidence, designation_evidence
+
+
+def normalize_payload_with_matchup_evidence(
+    payload: bytes,
+    *,
+    season: int,
+    game_type: str,
+    matchup_exceptions: Mapping[str, Mapping[str, object]],
+    designation_exceptions: Mapping[str, Mapping[str, object]] | None = None,
+    franchise_resolver: franchises.FranchiseResolver | None = None,
+) -> tuple[pd.DataFrame, dict[str, dict]]:
+    """Normalize while preserving the established two-value matchup API."""
+    if designation_exceptions is None:
+        designation_exceptions = load_designation_exceptions()
+    frame, matchup_evidence, _designation_evidence = (
+        normalize_payload_with_exception_evidence(
+            payload,
+            season=season,
+            game_type=game_type,
+            matchup_exceptions=matchup_exceptions,
+            designation_exceptions=designation_exceptions,
+            franchise_resolver=franchise_resolver,
+        )
+    )
+    return frame, matchup_evidence
 
 
 def normalize_payload(
@@ -971,14 +1482,20 @@ def normalize_payload(
     season: int,
     game_type: str,
     matchup_exceptions: Mapping[str, Mapping[str, object]] | None = None,
+    designation_exceptions: Mapping[str, Mapping[str, object]] | None = None,
+    franchise_resolver: franchises.FranchiseResolver | None = None,
 ) -> pd.DataFrame:
     """Normalize a source-shaped ``LeagueGameLog`` response."""
     if matchup_exceptions is None:
         matchup_exceptions = load_matchup_exceptions()
+    if designation_exceptions is None:
+        designation_exceptions = load_designation_exceptions()
     frame, _evidence = normalize_payload_with_matchup_evidence(
         payload,
         season=season,
         game_type=game_type,
         matchup_exceptions=matchup_exceptions,
+        designation_exceptions=designation_exceptions,
+        franchise_resolver=franchise_resolver,
     )
     return frame

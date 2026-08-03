@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 from pathlib import Path
 import shutil
 import stat
@@ -26,6 +27,7 @@ EXCEPTIONS_PATH = (
     / "reference/player_game_validation_exceptions.json"
 )
 MATCHUP_EXCEPTIONS_PATH = player_logs.MATCHUP_EXCEPTIONS_PATH
+DESIGNATION_EXCEPTIONS_PATH = player_logs.DESIGNATION_EXCEPTIONS_PATH
 FRANCHISE_REFERENCE_PATH = (
     Path(__file__).resolve().parent / "reference/franchises.csv"
 )
@@ -758,6 +760,15 @@ def _merge_matchup_evidence(target: dict, observed: dict) -> None:
     target.update(observed)
 
 
+def _merge_designation_evidence(target: dict, observed: dict) -> None:
+    duplicates = sorted(set(target) & set(observed))
+    if duplicates:
+        raise PlayerGamesBuildError(
+            f"duplicate applied designation evidence: {duplicates}"
+        )
+    target.update(observed)
+
+
 def _scoped_matchup_exceptions(matchup_exceptions: dict) -> dict:
     return {
         key: entry
@@ -782,14 +793,43 @@ def _require_exact_matchup_evidence(
         )
 
 
+def _scoped_designation_exceptions(designation_exceptions: dict) -> dict:
+    return {
+        key: entry
+        for key, entry in designation_exceptions.items()
+        if entry["season"] in SEASONS
+        and entry["game_type"] in _applicable_game_types(entry["season"])
+    }
+
+
+def _require_exact_designation_evidence(
+    designation_exceptions: dict,
+    designation_evidence: dict,
+) -> None:
+    expected = set(_scoped_designation_exceptions(designation_exceptions))
+    observed = set(designation_evidence)
+    missing = sorted(expected - observed)
+    unexpected = sorted(observed - expected)
+    if missing or unexpected:
+        raise PlayerGamesBuildError(
+            "applied designation repair set drift: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+
 def _assemble_season(
     data_dir: Path,
     season: int,
     matchup_exceptions: dict | None = None,
     matchup_evidence: dict | None = None,
+    designation_exceptions: dict | None = None,
+    designation_evidence: dict | None = None,
+    franchise_resolver: franchises.FranchiseResolver | None = None,
 ) -> pa.Table:
     if matchup_exceptions is None:
         matchup_exceptions = player_logs.load_matchup_exceptions()
+    if designation_exceptions is None:
+        designation_exceptions = player_logs.load_designation_exceptions()
     frames = []
     for game_type in _applicable_game_types(season):
         cached = player_logs.read_cached(Path(data_dir), season, game_type)
@@ -806,16 +846,31 @@ def _assemble_season(
                     season=season,
                     game_type=game_type,
                     matchup_exceptions=matchup_exceptions,
+                    designation_exceptions=designation_exceptions,
+                    franchise_resolver=franchise_resolver,
                 )
             )
         else:
-            frame, observed = player_logs.normalize_payload_with_matchup_evidence(
-                payload,
-                season=season,
-                game_type=game_type,
-                matchup_exceptions=matchup_exceptions,
+            frame, observed_matchups, observed_designations = (
+                player_logs.normalize_payload_with_exception_evidence(
+                    payload,
+                    season=season,
+                    game_type=game_type,
+                    matchup_exceptions=matchup_exceptions,
+                    designation_exceptions=designation_exceptions,
+                    franchise_resolver=franchise_resolver,
+                )
             )
-            _merge_matchup_evidence(matchup_evidence, observed)
+            _merge_matchup_evidence(matchup_evidence, observed_matchups)
+            if designation_evidence is None:
+                if observed_designations:
+                    raise PlayerGamesBuildError(
+                        "designation evidence target is required"
+                    )
+            else:
+                _merge_designation_evidence(
+                    designation_evidence, observed_designations
+                )
             frames.append(frame)
 
     frame = pd.concat(frames, ignore_index=True)
@@ -834,21 +889,34 @@ def _assemble_seasons(
     data_dir: Path,
     matchup_exceptions: dict | None = None,
     matchup_evidence: dict | None = None,
+    designation_exceptions: dict | None = None,
+    designation_evidence: dict | None = None,
+    franchise_resolver: franchises.FranchiseResolver | None = None,
 ) -> pa.Table:
     if matchup_exceptions is None:
         matchup_exceptions = player_logs.load_matchup_exceptions()
     if matchup_evidence is None:
         matchup_evidence = {}
+    if designation_exceptions is None:
+        designation_exceptions = player_logs.load_designation_exceptions()
+    if designation_evidence is None:
+        designation_evidence = {}
     tables = [
         _assemble_season(
             data_dir,
             season,
             matchup_exceptions,
             matchup_evidence,
+            designation_exceptions,
+            designation_evidence,
+            franchise_resolver,
         )
         for season in SEASONS
     ]
     _require_exact_matchup_evidence(matchup_exceptions, matchup_evidence)
+    _require_exact_designation_evidence(
+        designation_exceptions, designation_evidence
+    )
     return pa.concat_tables(tables)
 
 
@@ -859,27 +927,69 @@ def audit_source(data_dir: Path) -> dict:
     matchup_snapshot = _capture_stable_file(
         MATCHUP_EXCEPTIONS_PATH, "matchup exception ledger"
     )
+    designation_snapshot = _capture_stable_file(
+        DESIGNATION_EXCEPTIONS_PATH, "designation exception ledger"
+    )
+    franchise_snapshot = _capture_stable_file(
+        FRANCHISE_REFERENCE_PATH, "franchise reference"
+    )
+    parquet_dir = data_dir / "parquet"
+    games_snapshot = _capture_stable_file(
+        parquet_dir / "games.parquet", "games.parquet"
+    )
+    team_games_snapshot = _capture_stable_file(
+        parquet_dir / "team_games.parquet", "team_games.parquet"
+    )
     matchup_exceptions = player_logs.parse_matchup_exceptions(
         matchup_snapshot["payload"]
     )
+    designation_exceptions = player_logs.parse_designation_exceptions(
+        designation_snapshot["payload"]
+    )
+    franchise_resolver = franchises.FranchiseResolver.from_payload(
+        franchise_snapshot["payload"]
+    )
     matchup_repairs = {}
+    designation_repairs = {}
     player_games = _assemble_seasons(
         data_dir,
         matchup_exceptions,
         matchup_repairs,
+        designation_exceptions,
+        designation_repairs,
+        franchise_resolver,
     ).to_pandas()
     team_aggregates = aggregate_team_games(player_games)
-    parquet_dir = data_dir / "parquet"
+    regular_games = pd.read_parquet(io.BytesIO(games_snapshot["payload"]))
+    regular_team_games = pd.read_parquet(
+        io.BytesIO(team_games_snapshot["payload"])
+    )
+    postseason_games = pd.read_parquet(
+        parquet_dir / "playoff_games.parquet"
+    )
+    _validate_designation_references(
+        player_games,
+        designation_repairs,
+        regular_games,
+        regular_team_games,
+        postseason_games,
+    )
     validated_team_games = cross_validate_coverage(
         team_aggregates,
-        pd.read_parquet(parquet_dir / "games.parquet"),
-        pd.read_parquet(parquet_dir / "team_games.parquet"),
-        pd.read_parquet(parquet_dir / "playoff_games.parquet"),
+        regular_games,
+        regular_team_games,
+        postseason_games,
     )
     discrepancies = collect_discrepancies(validated_team_games)
     _require_snapshot_unchanged(
         matchup_snapshot, "matchup exception ledger"
     )
+    _require_snapshot_unchanged(
+        designation_snapshot, "designation exception ledger"
+    )
+    _require_snapshot_unchanged(franchise_snapshot, "franchise reference")
+    _require_snapshot_unchanged(games_snapshot, "games.parquet")
+    _require_snapshot_unchanged(team_games_snapshot, "team_games.parquet")
     return {
         "player_games": player_games,
         "team_aggregates": team_aggregates,
@@ -887,6 +997,7 @@ def audit_source(data_dir: Path) -> dict:
         "discrepancies": discrepancies,
         "approved_exceptions": load_exceptions(),
         "matchup_repairs": matchup_repairs,
+        "designation_repairs": designation_repairs,
     }
 
 
@@ -1013,6 +1124,8 @@ def _assemble_season_from_root(
     franchise_resolver: franchises.FranchiseResolver,
     matchup_exceptions: dict,
     matchup_evidence: dict,
+    designation_exceptions: dict,
+    designation_evidence: dict,
 ) -> pa.Table:
     frames = []
     for game_type in _applicable_game_types(season):
@@ -1027,13 +1140,20 @@ def _assemble_season_from_root(
                 f"missing player-log cache entry for {destination}"
             )
         payload, _metadata = cached
-        frame, observed = player_logs.normalize_payload_with_matchup_evidence(
-            payload,
-            season=season,
-            game_type=game_type,
-            matchup_exceptions=matchup_exceptions,
+        frame, observed_matchups, observed_designations = (
+            player_logs.normalize_payload_with_exception_evidence(
+                payload,
+                season=season,
+                game_type=game_type,
+                matchup_exceptions=matchup_exceptions,
+                designation_exceptions=designation_exceptions,
+                franchise_resolver=franchise_resolver,
+            )
         )
-        _merge_matchup_evidence(matchup_evidence, observed)
+        _merge_matchup_evidence(matchup_evidence, observed_matchups)
+        _merge_designation_evidence(
+            designation_evidence, observed_designations
+        )
         frames.append(_resolve_franchises(frame, franchise_resolver))
     frame = pd.concat(frames, ignore_index=True).sort_values(
         ["season", "game_date", "game_id", "franchise_id", "person_id"],
@@ -1104,11 +1224,156 @@ def _require_snapshot_unchanged(snapshot: dict, label: str) -> None:
         raise PlayerGamesBuildError(f"{label} changed during recomputation")
 
 
+def _reference_date(value: object) -> str:
+    try:
+        return pd.Timestamp(value).date().isoformat()
+    except (TypeError, ValueError) as exc:
+        raise PlayerGamesBuildError(
+            f"designation reference has invalid date: {value!r}"
+        ) from exc
+
+
+def _validate_designation_references(
+    player_games: pd.DataFrame,
+    designation_evidence: dict,
+    regular_games: pd.DataFrame,
+    regular_team_games: pd.DataFrame,
+    postseason_games: pd.DataFrame,
+) -> None:
+    """Attach exact committed-reference proof to applied designations."""
+    required_games = {
+        "game_id", "season", "game_date", "home_franchise_id",
+        "away_franchise_id", "neutral_site", "neutral_site_source",
+        "venue_name", "venue_city",
+    }
+    required_team_games = {
+        "game_id", "season", "game_date", "franchise_id",
+        "opponent_franchise_id", "is_home",
+    }
+    if designation_evidence and not required_games.issubset(regular_games.columns):
+        missing = sorted(required_games - set(regular_games.columns))
+        raise PlayerGamesBuildError(
+            f"designation reference games fields missing: {missing}"
+        )
+    if designation_evidence and not required_team_games.issubset(
+        regular_team_games.columns
+    ):
+        missing = sorted(required_team_games - set(regular_team_games.columns))
+        raise PlayerGamesBuildError(
+            f"designation reference team-games fields missing: {missing}"
+        )
+    if designation_evidence and "game_id" not in postseason_games.columns:
+        raise PlayerGamesBuildError(
+            "designation reference postseason game_id field missing"
+        )
+
+    for key, evidence in sorted(designation_evidence.items()):
+        approval = evidence["approval"]
+        game_id = approval["game_id"]
+
+        def fail(reason: str) -> None:
+            raise PlayerGamesBuildError(
+                f"designation reference proof failed for {key}: {reason}"
+            )
+
+        game_rows = regular_games.loc[
+            regular_games["game_id"].astype(str).eq(game_id)
+        ]
+        if len(game_rows) != 1:
+            fail(f"games rows={len(game_rows)}, expected 1")
+        game = game_rows.iloc[0]
+        if int(game["season"]) != approval["season"]:
+            fail("season drift")
+        game_date = _reference_date(game["game_date"])
+        if game_date != approval["game_date"]:
+            fail("date drift")
+        expected_home = approval["expected_home_franchise_id"]
+        expected_away = approval["expected_away_franchise_id"]
+        if (
+            str(game["home_franchise_id"]) != expected_home
+            or str(game["away_franchise_id"]) != expected_away
+        ):
+            fail("designated sides drift")
+        if bool(game["neutral_site"]) is not approval["reference_neutral_site"]:
+            fail("neutral-site flag drift")
+        if (
+            str(game["neutral_site_source"])
+            != approval["reference_neutral_site_source"]
+        ):
+            fail("neutral-site source drift")
+
+        postseason_rows = postseason_games.loc[
+            postseason_games["game_id"].astype(str).eq(game_id)
+        ]
+        if len(postseason_rows) != 0:
+            fail("postseason reference collision")
+
+        team_rows = regular_team_games.loc[
+            regular_team_games["game_id"].astype(str).eq(game_id)
+        ]
+        if len(team_rows) != 2:
+            fail(f"team_games rows={len(team_rows)}, expected 2")
+        if any(int(value) != approval["season"] for value in team_rows["season"]):
+            fail("team-games season drift")
+        if {
+            _reference_date(value) for value in team_rows["game_date"]
+        } != {approval["game_date"]}:
+            fail("team-games date drift")
+        expected_team_rows = {
+            (expected_home, expected_away, True),
+            (expected_away, expected_home, False),
+        }
+        observed_team_rows = {
+            (
+                str(row.franchise_id),
+                str(row.opponent_franchise_id),
+                bool(row.is_home),
+            )
+            for row in team_rows[
+                ["franchise_id", "opponent_franchise_id", "is_home"]
+            ].itertuples(index=False)
+        }
+        if observed_team_rows != expected_team_rows:
+            fail("team-games rows are not exact reciprocal designated sides")
+
+        normalized = player_games.loc[
+            player_games["game_id"].astype(str).eq(game_id)
+        ]
+        normalized_home = set(
+            normalized.loc[normalized["is_home"], "franchise_id"].astype(str)
+        )
+        normalized_away = set(
+            normalized.loc[~normalized["is_home"], "franchise_id"].astype(str)
+        )
+        if normalized_home != {expected_home} or normalized_away != {expected_away}:
+            fail("normalized player roles drift")
+
+        evidence["reference"] = {
+            "games_rows": len(game_rows),
+            "team_games_rows": len(team_rows),
+            "postseason_rows": len(postseason_rows),
+            "game_date": game_date,
+            "home_franchise_id": expected_home,
+            "away_franchise_id": expected_away,
+            "neutral_site": bool(game["neutral_site"]),
+            "neutral_site_source": str(game["neutral_site_source"]),
+            "venue_name": str(game["venue_name"]),
+            "venue_city": str(game["venue_city"]),
+            "reciprocal_team_games": True,
+            "normalized_home_identities": len(normalized_home),
+            "normalized_away_identities": len(normalized_away),
+        }
+
+
 def _audit_from_roots(
     raw_root: Path,
     reference_dir: Path,
     franchise_resolver: franchises.FranchiseResolver,
     matchup_exceptions: dict,
+    designation_exceptions: dict,
+    regular_games: pd.DataFrame,
+    regular_team_games: pd.DataFrame,
+    postseason_games: pd.DataFrame,
 ) -> tuple[dict, tuple[Path, ...]]:
     try:
         bodies = player_logs.validate_cache_inventory_root(raw_root)
@@ -1121,6 +1386,7 @@ def _audit_from_roots(
     _require_regular_file(EXCEPTIONS_PATH, "exception ledger")
 
     matchup_repairs = {}
+    designation_repairs = {}
     tables = [
         _assemble_season_from_root(
             raw_root,
@@ -1128,18 +1394,30 @@ def _audit_from_roots(
             franchise_resolver,
             matchup_exceptions,
             matchup_repairs,
+            designation_exceptions,
+            designation_repairs,
         )
         for season in SEASONS
     ]
     _require_exact_matchup_evidence(matchup_exceptions, matchup_repairs)
+    _require_exact_designation_evidence(
+        designation_exceptions, designation_repairs
+    )
     player_games = pa.concat_tables(tables).to_pandas()
     team_aggregates = aggregate_team_games(player_games)
+    _validate_designation_references(
+        player_games,
+        designation_repairs,
+        regular_games,
+        regular_team_games,
+        postseason_games,
+    )
     try:
         validated_team_games = cross_validate_coverage(
             team_aggregates,
-            pd.read_parquet(reference_dir / "games.parquet"),
-            pd.read_parquet(reference_dir / "team_games.parquet"),
-            pd.read_parquet(reference_dir / "playoff_games.parquet"),
+            regular_games,
+            regular_team_games,
+            postseason_games,
         )
     except (OSError, pa.ArrowException) as exc:
         raise PlayerGamesBuildError(
@@ -1155,6 +1433,7 @@ def _audit_from_roots(
         "discrepancies": discrepancies,
         "approved_exceptions": approved,
         "matchup_repairs": matchup_repairs,
+        "designation_repairs": designation_repairs,
     }, bodies)
 
 
@@ -1283,6 +1562,10 @@ def _validation_manifest(audit: dict, source_count: int) -> dict:
         key: value["approval"]
         for key, value in sorted(audit["matchup_repairs"].items())
     }
+    applied_designations = {
+        key: value
+        for key, value in sorted(audit["designation_repairs"].items())
+    }
     return {
         "rows": int(len(rows)),
         "games": int(rows["game_id"].nunique()),
@@ -1308,6 +1591,12 @@ def _validation_manifest(audit: dict, source_count: int) -> dict:
                 _manifest_bytes(applied_matchups)
             ).hexdigest(),
         },
+        "designation_repairs": {
+            "count": len(applied_designations),
+            "sha256": hashlib.sha256(
+                _manifest_bytes(applied_designations)
+            ).hexdigest(),
+        },
     }
 
 
@@ -1323,6 +1612,15 @@ def _recompute_manifest(
     )
     matchup_snapshot = _capture_stable_file(
         MATCHUP_EXCEPTIONS_PATH, "matchup exception ledger"
+    )
+    designation_snapshot = _capture_stable_file(
+        DESIGNATION_EXCEPTIONS_PATH, "designation exception ledger"
+    )
+    games_snapshot = _capture_stable_file(
+        reference_dir / "games.parquet", "games.parquet"
+    )
+    team_games_snapshot = _capture_stable_file(
+        reference_dir / "team_games.parquet", "team_games.parquet"
     )
     try:
         franchise_resolver = franchises.FranchiseResolver.from_payload(
@@ -1341,11 +1639,36 @@ def _recompute_manifest(
         raise PlayerGamesBuildError(
             f"matchup exception ledger is invalid: {MATCHUP_EXCEPTIONS_PATH}"
         ) from exc
+    try:
+        designation_exceptions = player_logs.parse_designation_exceptions(
+            designation_snapshot["payload"]
+        )
+    except ValueError as exc:
+        raise PlayerGamesBuildError(
+            "designation exception ledger is invalid: "
+            f"{DESIGNATION_EXCEPTIONS_PATH}"
+        ) from exc
+    try:
+        regular_games = pd.read_parquet(io.BytesIO(games_snapshot["payload"]))
+        regular_team_games = pd.read_parquet(
+            io.BytesIO(team_games_snapshot["payload"])
+        )
+        postseason_games = pd.read_parquet(
+            reference_dir / "playoff_games.parquet"
+        )
+    except (OSError, pa.ArrowException) as exc:
+        raise PlayerGamesBuildError(
+            f"committed reference publication could not be read: {exc}"
+        ) from exc
     audit, bodies = _audit_from_roots(
         raw_root,
         reference_dir,
         franchise_resolver,
         matchup_exceptions,
+        designation_exceptions,
+        regular_games,
+        regular_team_games,
+        postseason_games,
     )
     partitions = {}
     for season in SEASONS:
@@ -1376,7 +1699,13 @@ def _recompute_manifest(
         )
 
     references = {
-        name: _file_binding(reference_dir / name, name)
+        name: (
+            _payload_binding(games_snapshot["payload"], name)
+            if name == "games.parquet"
+            else _payload_binding(team_games_snapshot["payload"], name)
+            if name == "team_games.parquet"
+            else _file_binding(reference_dir / name, name)
+        )
         for name in REFERENCE_FILENAMES
     }
     manifest = {
@@ -1411,6 +1740,10 @@ def _recompute_manifest(
                 matchup_snapshot["payload"],
                 "src/nba_data/reference/player_game_matchup_exceptions.json",
             ),
+            "designations": _payload_binding(
+                designation_snapshot["payload"],
+                "src/nba_data/reference/player_game_designation_exceptions.json",
+            ),
         },
         "partitions": {
             season: partitions[season] for season in sorted(partitions)
@@ -1421,6 +1754,11 @@ def _recompute_manifest(
     _require_snapshot_unchanged(
         matchup_snapshot, "matchup exception ledger"
     )
+    _require_snapshot_unchanged(
+        designation_snapshot, "designation exception ledger"
+    )
+    _require_snapshot_unchanged(games_snapshot, "games.parquet")
+    _require_snapshot_unchanged(team_games_snapshot, "team_games.parquet")
     return manifest
 
 
@@ -1497,6 +1835,29 @@ def write_source_review(output_dir: Path, audit: dict) -> None:
             f"{consensus['valid_home_identities']} | "
             f"{consensus['valid_away_identities']} |"
         )
+    designation_rows = []
+    for key, evidence in sorted(audit["designation_repairs"].items()):
+        approval = evidence["approval"]
+        raw_proof = evidence["raw"]
+        reference = evidence["reference"]
+        raw_teams = "; ".join(
+            f"{team['team_abbreviation_raw']}: {team['matchup_raw']} "
+            f"({team['row_count']})"
+            for team in raw_proof["teams"]
+        )
+        designation_rows.append(
+            f"| {key} | {approval['game_date']} | {raw_teams} | "
+            f"{approval['expected_home_abbreviation']} | "
+            f"{approval['expected_away_abbreviation']} | "
+            f"{reference['neutral_site_source']} | "
+            f"{reference['venue_name']}, {reference['venue_city']} | "
+            f"{raw_proof['valid_xor_rows']} | "
+            f"{raw_proof['raw_team_identities']} | "
+            f"{raw_proof['unordered_matchup_pairs']} | "
+            f"{reference['games_rows']} | "
+            f"{reference['team_games_rows']} | "
+            f"{reference['postseason_rows']} |"
+        )
     markdown = "\n".join([
         "# Player game source audit",
         "",
@@ -1521,6 +1882,13 @@ def write_source_review(output_dir: Path, audit: dict) -> None:
         "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         *matchup_rows,
         "" if matchup_rows else "| (none) | | | | | | | | | | | |",
+        "",
+        "## Approved neutral-site designations",
+        "",
+        "| Key | Date | Raw teams / strings / rows | Expected home | Expected away | Reference source | Venue | Valid raw rows | Raw identities | Raw pairs | Reference games | Reference team games | Postseason rows |",
+        "| --- | --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        *designation_rows,
+        "" if designation_rows else "| (none) | | | | | | | | | | | | |",
         "",
         "Warning: a missing appearance does not prove roster membership, "
         "eligibility, injury, rest, or expected participation.",

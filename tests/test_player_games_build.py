@@ -104,6 +104,56 @@ MATCHUP_FIXTURE_LEDGER_BYTES = (
     b'}\n'
 )
 
+DESIGNATION_FIXTURE_KEY = "1984|regular|0028300001"
+DESIGNATION_FIXTURE_NOTE = (
+    "Reviewed neutral-site designation anomaly; exact reciprocal player-log "
+    "shape and unique hoopR-backed committed reference agree on the "
+    "designated sides."
+)
+DESIGNATION_FIXTURE_ENTRY = {
+    "season": 1984,
+    "game_type": "regular",
+    "game_id": "0028300001",
+    "game_date": "1983-10-28",
+    "teams": [
+        {
+            "nba_team_id": 1610612738,
+            "team_name_raw": "Boston Celtics",
+            "team_abbreviation_raw": "BOS",
+            "matchup_raw": "BOS @ CHI",
+            "row_count": 1,
+        },
+        {
+            "nba_team_id": 1610612741,
+            "team_name_raw": "Chicago Bulls",
+            "team_abbreviation_raw": "CHI",
+            "matchup_raw": "CHI @ BOS",
+            "row_count": 1,
+        },
+    ],
+    "expected_home_abbreviation": "BOS",
+    "expected_away_abbreviation": "CHI",
+    "expected_home_franchise_id": "BOS",
+    "expected_away_franchise_id": "CHI",
+    "reference_neutral_site": True,
+    "reference_neutral_site_source": "hoopr",
+    "note": DESIGNATION_FIXTURE_NOTE,
+}
+DESIGNATION_FIXTURE_LEDGER_BYTES = (
+    json.dumps(
+        {
+            "schema_version": 1,
+            "designations": {
+                DESIGNATION_FIXTURE_KEY: DESIGNATION_FIXTURE_ENTRY,
+            },
+        },
+        sort_keys=True,
+        indent=2,
+    )
+    + "\n"
+).encode("utf-8")
+EMPTY_DESIGNATION_LEDGER_BYTES = b'{"designations":{},"schema_version":1}\n'
+
 
 def _matchup_payload(season, game_type):
     document = json.loads(_payload(season, game_type))
@@ -116,6 +166,13 @@ def _matchup_payload(season, game_type):
     valid_same_team[HEADERS.index("PLAYER_NAME")] = "Player 3"
     valid_same_team[HEADERS.index("MATCHUP")] = "CHI @ BOS"
     rows.insert(1, valid_same_team)
+    return json.dumps(document).encode()
+
+
+def _designation_payload(season, game_type):
+    document = json.loads(_payload(season, game_type))
+    rows = document["resultSets"][0]["rowSet"]
+    rows[1][HEADERS.index("MATCHUP")] = "BOS @ CHI"
     return json.dumps(document).encode()
 
 
@@ -176,6 +233,10 @@ def _publish_references(data_dir, seasons=(1984, 1985)):
             "away_franchise_id": "CHI",
             "home_pts": 2,
             "away_pts": 2,
+            "neutral_site": False,
+            "neutral_site_source": None,
+            "venue_name": None,
+            "venue_city": None,
         })
         regular_team_games.extend([
             {
@@ -259,6 +320,14 @@ def _seed_build_inputs(monkeypatch, data_dir):
         matchup_ledger,
         raising=False,
     )
+    designation_ledger = data_dir / "fixture-designation-exceptions.json"
+    designation_ledger.write_bytes(EMPTY_DESIGNATION_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "DESIGNATION_EXCEPTIONS_PATH",
+        designation_ledger,
+        raising=False,
+    )
     ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
     return data_dir / "raw/stats_nba/player_logs", references, ledger
 
@@ -297,12 +366,69 @@ def _seed_matchup_build_inputs(monkeypatch, data_dir):
         matchup_ledger,
         raising=False,
     )
+    designation_ledger = data_dir / "fixture-designation-exceptions.json"
+    designation_ledger.write_bytes(EMPTY_DESIGNATION_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "DESIGNATION_EXCEPTIONS_PATH",
+        designation_ledger,
+        raising=False,
+    )
     ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
     return (
         data_dir / "raw/stats_nba/player_logs",
         references,
         ledger,
         matchup_ledger,
+    )
+
+
+def _seed_designation_build_inputs(monkeypatch, data_dir):
+    _use_one_season_scope(monkeypatch)
+    for game_type in ("regular", "playoff"):
+        destination = player_logs.cache_path(data_dir, 1984, game_type)
+        payload = (
+            _designation_payload(1984, game_type)
+            if game_type == "regular"
+            else _payload(1984, game_type)
+        )
+        cache.publish_bytes(
+            destination,
+            payload,
+            _metadata(1984, game_type),
+            player_logs.validate_payload,
+        )
+    references = _publish_references(data_dir, seasons=(1984,))
+    games = pd.read_parquet(references / "games.parquet")
+    games.loc[games.game_id.eq("0028300001"), "neutral_site"] = True
+    games.loc[games.game_id.eq("0028300001"), "neutral_site_source"] = "hoopr"
+    games.loc[games.game_id.eq("0028300001"), "venue_name"] = "Fixture Arena"
+    games.loc[games.game_id.eq("0028300001"), "venue_city"] = "Fixture City"
+    games.to_parquet(references / "games.parquet", index=False)
+
+    matchup_ledger = data_dir / "fixture-matchup-exceptions.json"
+    matchup_ledger.write_bytes(b'{"exceptions":{},"schema_version":1}\n')
+    monkeypatch.setattr(
+        player_games_build,
+        "MATCHUP_EXCEPTIONS_PATH",
+        matchup_ledger,
+        raising=False,
+    )
+    designation_ledger = data_dir / "fixture-designation-exceptions.json"
+    designation_ledger.write_bytes(DESIGNATION_FIXTURE_LEDGER_BYTES)
+    monkeypatch.setattr(
+        player_games_build,
+        "DESIGNATION_EXCEPTIONS_PATH",
+        designation_ledger,
+        raising=False,
+    )
+    ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
+    return (
+        data_dir / "raw/stats_nba/player_logs",
+        references,
+        ledger,
+        matchup_ledger,
+        designation_ledger,
     )
 
 
@@ -1273,6 +1399,7 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
         "discrepancies",
         "approved_exceptions",
         "matchup_repairs",
+        "designation_repairs",
     ]
     assert len(audit["player_games"]) == 8
     assert len(audit["team_aggregates"]) == 8
@@ -1281,6 +1408,7 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
     assert audit["discrepancies"]["points"] == {}
     assert audit["approved_exceptions"] == _ledger()
     assert audit["matchup_repairs"] == {}
+    assert audit["designation_repairs"] == {}
 
 
 def test_audit_source_returns_exact_matchup_approval_and_consensus_evidence(
@@ -1310,6 +1438,110 @@ def test_audit_source_returns_exact_matchup_approval_and_consensus_evidence(
             },
         }
     }
+
+
+def _expected_designation_evidence():
+    return {
+        DESIGNATION_FIXTURE_KEY: {
+            "approval": DESIGNATION_FIXTURE_ENTRY,
+            "raw": {
+                "game_date": "1983-10-28",
+                "rows": 2,
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "valid_xor_rows": 2,
+                "malformed_rows": 0,
+                "unordered_matchup_pairs": 1,
+                "home_identities_before": 0,
+                "away_identities_before": 2,
+                "home_identities_after": 1,
+                "away_identities_after": 1,
+                "teams": DESIGNATION_FIXTURE_ENTRY["teams"],
+            },
+            "reference": {
+                "games_rows": 1,
+                "team_games_rows": 2,
+                "postseason_rows": 0,
+                "game_date": "1983-10-28",
+                "home_franchise_id": "BOS",
+                "away_franchise_id": "CHI",
+                "neutral_site": True,
+                "neutral_site_source": "hoopr",
+                "venue_name": "Fixture Arena",
+                "venue_city": "Fixture City",
+                "reciprocal_team_games": True,
+                "normalized_home_identities": 1,
+                "normalized_away_identities": 1,
+            },
+        }
+    }
+
+
+def test_audit_source_returns_exact_designation_raw_and_reference_evidence(
+    monkeypatch, tmp_path,
+):
+    """Would fail if a neutral designation lost either proof layer."""
+    _seed_designation_build_inputs(monkeypatch, tmp_path)
+
+    audit = player_games_build.audit_source(tmp_path)
+
+    assert audit["designation_repairs"] == _expected_designation_evidence()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_game",
+        "ambiguous_game",
+        "non_neutral",
+        "wrong_source",
+        "wrong_sides",
+        "nonreciprocal_team_games",
+        "postseason_collision",
+    ],
+)
+def test_designation_reference_proof_fails_closed(
+    monkeypatch, tmp_path, mutation,
+):
+    """Would fail if mutable or ambiguous reference evidence were accepted."""
+    _raw, references, *_rest = _seed_designation_build_inputs(
+        monkeypatch, tmp_path
+    )
+    games_path = references / "games.parquet"
+    team_games_path = references / "team_games.parquet"
+    postseason_path = references / "playoff_games.parquet"
+    games = pd.read_parquet(games_path)
+    team_games = pd.read_parquet(team_games_path)
+    postseason = pd.read_parquet(postseason_path)
+    if mutation == "missing_game":
+        games = games.loc[~games.game_id.eq("0028300001")]
+    elif mutation == "ambiguous_game":
+        games = pd.concat([games, games], ignore_index=True)
+    elif mutation == "non_neutral":
+        games.loc[games.game_id.eq("0028300001"), "neutral_site"] = False
+    elif mutation == "wrong_source":
+        games.loc[games.game_id.eq("0028300001"), "neutral_site_source"] = "manual"
+    elif mutation == "wrong_sides":
+        games.loc[games.game_id.eq("0028300001"), [
+            "home_franchise_id", "away_franchise_id",
+        ]] = ["CHI", "BOS"]
+    elif mutation == "nonreciprocal_team_games":
+        team_games.loc[
+            team_games.franchise_id.eq("CHI"), "opponent_franchise_id"
+        ] = "CHI"
+    else:
+        collision = postseason.iloc[[0]].copy()
+        collision.loc[:, "game_id"] = "0028300001"
+        postseason = pd.concat([postseason, collision], ignore_index=True)
+    games.to_parquet(games_path, index=False)
+    team_games.to_parquet(team_games_path, index=False)
+    postseason.to_parquet(postseason_path, index=False)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="designation reference",
+    ):
+        player_games_build.audit_source(tmp_path)
 
 
 def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
@@ -1376,6 +1608,10 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
             "count": 0,
             "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
         },
+        "designation_repairs": {
+            "count": 0,
+            "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+        },
         "games": 4,
         "players": 2,
         "rows": 8,
@@ -1387,7 +1623,7 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
     assert "NaN" not in rendered
 
 
-def test_build_binds_both_ledgers_and_the_exact_applied_matchup_digest(
+def test_build_binds_all_ledgers_and_the_exact_applied_matchup_digest(
     monkeypatch, tmp_path,
 ):
     """Would fail if manifest bytes and normalization semantics could diverge."""
@@ -1412,12 +1648,91 @@ def test_build_binds_both_ledgers_and_the_exact_applied_matchup_digest(
             "sha256": "3c5ef85bbf6b284a5972fca3ae84d61a7e1f0cbc10f4bf339befe519bb5701ac",
             "bytes": 585,
         },
+        "designations": {
+            "path": "src/nba_data/reference/player_game_designation_exceptions.json",
+            "sha256": hashlib.sha256(
+                EMPTY_DESIGNATION_LEDGER_BYTES
+            ).hexdigest(),
+            "bytes": len(EMPTY_DESIGNATION_LEDGER_BYTES),
+        },
     }
     assert matchup_ledger.read_bytes() == MATCHUP_FIXTURE_LEDGER_BYTES
     assert manifest["validation"]["matchup_repairs"] == {
         "count": 1,
         "sha256": "d78415f5cd5ceb85af4512a68474ca15b101f7d01fe92805e6289dd77cb56ce7",
     }
+    assert manifest["validation"]["designation_repairs"] == {
+        "count": 0,
+        "sha256": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    }
+
+
+def test_build_binds_designation_ledger_and_exact_two_layer_proof(
+    monkeypatch, tmp_path,
+):
+    """Would fail if designation bytes and proof semantics could diverge."""
+    raw_root, references, _points, _matchups, designation_ledger = (
+        _seed_designation_build_inputs(monkeypatch, tmp_path)
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    manifest = player_games_build.build_from_roots(raw_root, references, stage)
+
+    expected_evidence = _expected_designation_evidence()
+    assert manifest["exception_ledger"]["designations"] == {
+        "path": "src/nba_data/reference/player_game_designation_exceptions.json",
+        "sha256": hashlib.sha256(designation_ledger.read_bytes()).hexdigest(),
+        "bytes": len(designation_ledger.read_bytes()),
+    }
+    assert manifest["validation"]["designation_repairs"] == {
+        "count": 1,
+        "sha256": hashlib.sha256(
+            player_games_build._manifest_bytes(expected_evidence)
+        ).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("mutation", ["designation", "games", "team_games"])
+def test_build_rejects_designation_or_reference_mutation_during_recomputation(
+    monkeypatch, tmp_path, mutation,
+):
+    """Would fail if proof used bytes different from the manifest binding."""
+    raw_root, references, _points, _matchups, designation_ledger = (
+        _seed_designation_build_inputs(monkeypatch, tmp_path)
+    )
+    real_assemble = player_games_build._assemble_season_from_root
+    mutated = False
+
+    def mutate_after_assembly(*args, **kwargs):
+        nonlocal mutated
+        result = real_assemble(*args, **kwargs)
+        if not mutated:
+            if mutation == "designation":
+                target = designation_ledger
+            else:
+                target = references / f"{mutation}.parquet"
+            target.write_bytes(target.read_bytes() + b" ")
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        player_games_build,
+        "_assemble_season_from_root",
+        mutate_after_assembly,
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=(
+            "designation exception ledger changed"
+            if mutation == "designation"
+            else f"{mutation}.parquet changed"
+        ),
+    ):
+        player_games_build.build_from_roots(raw_root, references, stage)
 
 
 def test_build_rejects_matchup_ledger_mutation_during_recomputation(
@@ -1718,6 +2033,37 @@ def test_validate_publication_recomputes_matchup_ledger_and_repair_evidence(
         player_games_build.validate_publication(raw_root, stage, references)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ["ledger_binding", "repair_count", "repair_digest"],
+)
+def test_validate_publication_recomputes_designation_ledger_and_proof(
+    monkeypatch, tmp_path, mutation,
+):
+    """Would fail if validation trusted stored neutral-designation claims."""
+    raw_root, references, *_rest = _seed_designation_build_inputs(
+        monkeypatch, tmp_path
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    manifest_path = stage / "_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "ledger_binding":
+        manifest["exception_ledger"]["designations"]["sha256"] = "0" * 64
+    elif mutation == "repair_count":
+        manifest["validation"]["designation_repairs"]["count"] = 2
+    else:
+        manifest["validation"]["designation_repairs"]["sha256"] = "f" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
 def test_validate_publication_rejects_live_matchup_ledger_byte_drift(
     monkeypatch, tmp_path,
 ):
@@ -1871,6 +2217,27 @@ def test_write_source_review_deterministically_enumerates_matchup_repairs(
     assert (
         b"| 1984|regular|0028300001|2 | 1983-10-28 | CHI @ CHI | "
         b"BOS | CHI | 2 | 2 | 2 | 1 | 2 | 1 | 1 |\n"
+    ) in first
+
+
+def test_write_source_review_deterministically_enumerates_designations(
+    monkeypatch, tmp_path,
+):
+    """Would fail if the designation table omitted raw or reference proof."""
+    _seed_designation_build_inputs(monkeypatch, tmp_path)
+    audit = player_games_build.audit_source(tmp_path)
+    outputs = [tmp_path / "designation-a", tmp_path / "designation-b"]
+
+    for output in outputs:
+        player_games_build.write_source_review(output, audit)
+
+    first = (outputs[0] / "source-audit.md").read_bytes()
+    second = (outputs[1] / "source-audit.md").read_bytes()
+    assert first == second
+    assert (
+        b"| 1984|regular|0028300001 | 1983-10-28 | "
+        b"BOS: BOS @ CHI (1); CHI: CHI @ BOS (1) | BOS | CHI | hoopr | "
+        b"Fixture Arena, Fixture City | 2 | 2 | 1 | 1 | 2 | 0 |\n"
     ) in first
 
 
