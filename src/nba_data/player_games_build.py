@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib.metadata
 from pathlib import Path
+import shutil
 import stat
+import sys
+import tempfile
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nba_data import cache, player_logs
+from nba_data import cache, player_logs, publication
 
 
 SEASONS = player_logs.SEASONS
@@ -20,6 +25,16 @@ MAX_OVERTIME_PERIODS = 6
 EXCEPTIONS_PATH = (
     Path(__file__).resolve().parent
     / "reference/player_game_validation_exceptions.json"
+)
+FRANCHISE_REFERENCE_PATH = (
+    Path(__file__).resolve().parent / "reference/franchises.csv"
+)
+REFERENCE_FILENAMES = (
+    "build_manifest.json",
+    "games.parquet",
+    "playoff_games.parquet",
+    "playoff_games_manifest.json",
+    "team_games.parquet",
 )
 
 
@@ -865,3 +880,604 @@ def stage_partitions(data_dir: Path, stage_dir: Path) -> tuple[Path, ...]:
         _write_partition(_assemble_season(data_dir, season), stage_dir, season)
         for season in SEASONS
     )
+
+
+def _assemble_season_from_root(raw_root: Path, season: int) -> pa.Table:
+    frames = []
+    for game_type in _applicable_game_types(season):
+        destination = (
+            raw_root / f"season={season}" / f"{game_type}.json"
+        )
+        cached = player_logs._read_cached_entry(
+            destination, season, game_type
+        )
+        if cached is None:
+            raise cache.CacheIntegrityError(
+                f"missing player-log cache entry for {destination}"
+            )
+        payload, _metadata = cached
+        frames.append(
+            player_logs.normalize_payload(
+                payload, season=season, game_type=game_type
+            )
+        )
+    frame = pd.concat(frames, ignore_index=True).sort_values(
+        ["season", "game_date", "game_id", "franchise_id", "person_id"],
+        kind="stable",
+    ).reset_index(drop=True)
+    if frame.duplicated(["game_id", "person_id"]).any():
+        raise PlayerGamesBuildError(
+            f"season {season} has duplicate (game_id, person_id)"
+        )
+    return _table_from_frame(frame)
+
+
+def _require_regular_file(path: Path, label: str) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise PlayerGamesBuildError(f"missing {label}: {path}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise PlayerGamesBuildError(
+            f"{label} must be a regular file: {path}"
+        )
+
+
+def _audit_from_roots(
+    raw_root: Path, reference_dir: Path
+) -> tuple[dict, tuple[Path, ...]]:
+    try:
+        bodies = player_logs.validate_cache_inventory_root(raw_root)
+    except cache.CacheIntegrityError as exc:
+        raise PlayerGamesBuildError(
+            f"source cache validation failed: {exc}"
+        ) from exc
+    for name in REFERENCE_FILENAMES:
+        _require_regular_file(reference_dir / name, f"reference {name}")
+    _require_regular_file(EXCEPTIONS_PATH, "exception ledger")
+    _require_regular_file(FRANCHISE_REFERENCE_PATH, "franchise reference")
+
+    tables = [_assemble_season_from_root(raw_root, season) for season in SEASONS]
+    player_games = pa.concat_tables(tables).to_pandas()
+    team_aggregates = aggregate_team_games(player_games)
+    try:
+        validated_team_games = cross_validate_coverage(
+            team_aggregates,
+            pd.read_parquet(reference_dir / "games.parquet"),
+            pd.read_parquet(reference_dir / "team_games.parquet"),
+            pd.read_parquet(reference_dir / "playoff_games.parquet"),
+        )
+    except (OSError, pa.ArrowException) as exc:
+        raise PlayerGamesBuildError(
+            f"committed reference publication could not be read: {exc}"
+        ) from exc
+    discrepancies = collect_discrepancies(validated_team_games)
+    approved = load_exceptions(EXCEPTIONS_PATH)
+    validate_exceptions(discrepancies, approved)
+    return ({
+        "player_games": player_games,
+        "team_aggregates": team_aggregates,
+        "validated_team_games": validated_team_games,
+        "discrepancies": discrepancies,
+        "approved_exceptions": approved,
+    }, bodies)
+
+
+def _versions() -> dict:
+    return {
+        "nba_api": importlib.metadata.version("nba_api"),
+        "pandas": pd.__version__,
+        "pyarrow": pa.__version__,
+        "python": (
+            f"{sys.version_info.major}.{sys.version_info.minor}."
+            f"{sys.version_info.micro}"
+        ),
+    }
+
+
+def _file_binding(path: Path, logical_path: str) -> dict:
+    _require_regular_file(path, logical_path)
+    payload = path.read_bytes()
+    return {
+        "path": logical_path,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    }
+
+
+def _source_entry(body_path: Path, raw_root: Path) -> dict:
+    sidecar_path = body_path.with_name(body_path.name + ".meta.json")
+    _require_regular_file(body_path, "source body")
+    _require_regular_file(sidecar_path, "source sidecar")
+    body = body_path.read_bytes()
+    sidecar = sidecar_path.read_bytes()
+    try:
+        metadata = json.loads(sidecar.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PlayerGamesBuildError(
+            f"source sidecar is invalid JSON: {sidecar_path}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise PlayerGamesBuildError(
+            f"source sidecar must contain an object: {sidecar_path}"
+        )
+    relative = body_path.relative_to(raw_root).as_posix()
+    identity = {
+        key: metadata[key]
+        for key in sorted(metadata)
+        if key not in {"content_length", "fetched_at", "sha256"}
+    }
+    return {
+        "body_path": relative,
+        "body_sha256": hashlib.sha256(body).hexdigest(),
+        "body_content_length": len(body),
+        "sidecar_path": sidecar_path.relative_to(raw_root).as_posix(),
+        "sidecar_sha256": hashlib.sha256(sidecar).hexdigest(),
+        "sidecar_content_length": len(sidecar),
+        "identity": identity,
+    }
+
+
+def _logical_row_sha256(table: pa.Table) -> str:
+    """Hash typed logical rows independently of their Parquet encoding."""
+    table = table.combine_chunks()
+    if table.schema.metadata:
+        table = table.replace_schema_metadata(None)
+    digest = hashlib.sha256()
+    digest.update(PLAYER_GAMES_ARROW_SCHEMA.serialize().to_pybytes())
+    for batch in table.to_batches(max_chunksize=65_536):
+        if batch.schema.metadata:
+            batch = batch.replace_schema_metadata(None)
+        payload = batch.serialize().to_pybytes()
+        digest.update(len(payload).to_bytes(8, "big"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def _partition_entry(table: pa.Table, path: Path, season: int) -> dict:
+    frame = table.select(
+        ["game_id", "person_id", "game_type"]
+    ).to_pandas()
+    game_counts = (
+        frame[["game_id", "game_type"]]
+        .drop_duplicates()["game_type"]
+        .value_counts()
+    )
+    return {
+        "path": f"season={season}/player_games.parquet",
+        "rows": int(table.num_rows),
+        "players": int(frame["person_id"].nunique()),
+        "game_counts": {
+            game_type: int(game_counts.get(game_type, 0))
+            for game_type in sorted(_applicable_game_types(season))
+        },
+        "bytes": int(path.stat().st_size),
+        "sha256": cache.sha256_file(path),
+        "row_sha256": _logical_row_sha256(table),
+    }
+
+
+def _schema_manifest() -> list[dict]:
+    return [
+        {
+            "name": field.name,
+            "arrow_type": str(field.type),
+            "nullable": bool(field.nullable),
+        }
+        for field in PLAYER_GAMES_ARROW_SCHEMA
+    ]
+
+
+def _validation_manifest(audit: dict, source_count: int) -> dict:
+    rows = audit["player_games"]
+    validated = audit["validated_team_games"]
+    return {
+        "rows": int(len(rows)),
+        "games": int(rows["game_id"].nunique()),
+        "players": int(rows["person_id"].nunique()),
+        "cache_entries": int(source_count),
+        "coverage": {
+            "status": "passed",
+            "team_games": int(len(validated)),
+            "regular_team_games": int(
+                validated["game_type"].eq("regular").sum()
+            ),
+            "postseason_team_games": int(
+                validated["game_type"].isin(["playoff", "play_in"]).sum()
+            ),
+        },
+        "exceptions": {
+            section: int(len(audit["discrepancies"][section]))
+            for section in ("minutes", "points")
+        },
+    }
+
+
+def _recompute_manifest(
+    raw_root: Path,
+    reference_dir: Path,
+    publication_dir: Path,
+    *,
+    write_partitions: bool,
+) -> dict:
+    audit, bodies = _audit_from_roots(raw_root, reference_dir)
+    partitions = {}
+    for season in SEASONS:
+        expected_frame = audit["player_games"].loc[
+            audit["player_games"]["season"].eq(season)
+        ].copy()
+        expected = _table_from_frame(expected_frame)
+        if write_partitions:
+            partition_path = _write_partition(
+                expected, publication_dir, season
+            )
+        else:
+            partition_path = (
+                publication_dir
+                / f"season={season}"
+                / "player_games.parquet"
+            )
+        try:
+            reread = _validate_partition(
+                expected, partition_path, season=season
+            )
+        except (OSError, pa.ArrowException) as exc:
+            raise PlayerGamesBuildError(
+                f"season {season} partition could not be read: {exc}"
+            ) from exc
+        partitions[str(season)] = _partition_entry(
+            reread, partition_path, season
+        )
+
+    references = {
+        name: _file_binding(reference_dir / name, name)
+        for name in REFERENCE_FILENAMES
+    }
+    manifest = {
+        "schema_version": 1,
+        "scope": {
+            "ending_seasons": list(sorted(SEASONS)),
+            "game_types": sorted({
+                game_type
+                for season in SEASONS
+                for game_type in _applicable_game_types(season)
+            }),
+        },
+        "schema": _schema_manifest(),
+        "versions": _versions(),
+        "sources": {
+            "player_logs": sorted(
+                (_source_entry(path, raw_root) for path in bodies),
+                key=lambda entry: entry["body_path"],
+            ),
+            "franchise_reference": _file_binding(
+                FRANCHISE_REFERENCE_PATH,
+                "src/nba_data/reference/franchises.csv",
+            ),
+        },
+        "references": references,
+        "exception_ledger": _file_binding(
+            EXCEPTIONS_PATH,
+            "src/nba_data/reference/player_game_validation_exceptions.json",
+        ),
+        "partitions": {
+            season: partitions[season] for season in sorted(partitions)
+        },
+        "validation": _validation_manifest(audit, len(bodies)),
+    }
+    return manifest
+
+
+def _manifest_bytes(manifest: dict) -> bytes:
+    return (
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def write_source_review(output_dir: Path, audit: dict) -> None:
+    """Write deterministic source-only review evidence into a safe directory."""
+    output_dir = Path(output_dir)
+    try:
+        observed = output_dir.lstat()
+    except FileNotFoundError:
+        observed = None
+    if observed is not None:
+        if not stat.S_ISDIR(observed.st_mode):
+            raise PlayerGamesBuildError(
+                f"source-review output is not a real directory: {output_dir}"
+            )
+        if any(output_dir.iterdir()):
+            raise PlayerGamesBuildError(
+                f"source-review output directory must be empty: {output_dir}"
+            )
+    else:
+        output_dir.mkdir(parents=True)
+
+    candidates = {"minutes": {}, "points": {}}
+    for section in ("minutes", "points"):
+        for key, entry in audit["discrepancies"][section].items():
+            if section == "points":
+                note = (
+                    f"Compared player-log total {entry['player_total']} with "
+                    f"committed reference total {entry['published_total']}; "
+                    "raw source semantics are retained pending human review."
+                )
+            else:
+                note = (
+                    f"Compared player-log minute total {entry['player_total']} "
+                    f"and opponent total {entry['opponent_total']} with inferred "
+                    f"overtime {entry['inferred_overtime_periods']} and committed "
+                    f"overtime {entry['published_overtime_periods']}; raw source "
+                    "semantics are retained pending human review."
+                )
+            candidates[section][key] = {**entry, "note": note}
+
+    rows = audit["player_games"]
+    groups = rows.groupby(["season", "game_type"], sort=True)
+    table_rows = []
+    for (season, game_type), frame in groups:
+        table_rows.append(
+            f"| {int(season)} | {game_type} | {len(frame)} | "
+            f"{frame['game_id'].nunique()} | {frame['person_id'].nunique()} |"
+        )
+    cache_entries = sum(
+        len(_applicable_game_types(season)) for season in SEASONS
+    )
+    point_keys = sorted(candidates["points"])
+    minute_keys = sorted(candidates["minutes"])
+    markdown = "\n".join([
+        "# Player game source audit",
+        "",
+        f"Scope: ending seasons {sorted(int(value) for value in rows['season'].unique())}; "
+        f"game types {sorted(str(value) for value in rows['game_type'].unique())}.",
+        "",
+        f"Cache entries: {cache_entries}",
+        "",
+        "Coverage status: passed",
+        "",
+        "| Ending season | Game type | Rows | Games | Players |",
+        "| ---: | --- | ---: | ---: | ---: |",
+        *table_rows,
+        "",
+        "Point candidate keys: " + (", ".join(point_keys) or "(none)"),
+        "",
+        "Minute candidate keys: " + (", ".join(minute_keys) or "(none)"),
+        "",
+        "Warning: a missing appearance does not prove roster membership, "
+        "eligibility, injury, rest, or expected participation.",
+        "",
+    ])
+    (output_dir / "source-audit.md").write_text(markdown, encoding="utf-8")
+    (output_dir / "player_game_validation_exceptions.json").write_bytes(
+        _manifest_bytes(candidates)
+    )
+
+
+def build_from_roots(
+    raw_root: Path,
+    reference_dir: Path,
+    stage_dir: Path,
+) -> dict:
+    """Build a deterministic player-game publication from explicit roots."""
+    raw_root = Path(raw_root)
+    reference_dir = Path(reference_dir)
+    stage_dir = Path(stage_dir)
+    _require_empty_stage(stage_dir)
+    manifest = _recompute_manifest(
+        raw_root, reference_dir, stage_dir, write_partitions=True
+    )
+    (stage_dir / "_manifest.json").write_bytes(_manifest_bytes(manifest))
+    return manifest
+
+
+def build_tree(data_dir: Path, stage_dir: Path) -> dict:
+    """Build from the repository data-directory layout."""
+    data_dir = Path(data_dir)
+    return build_from_roots(
+        data_dir / "raw/stats_nba/player_logs",
+        data_dir / "parquet",
+        Path(stage_dir),
+    )
+
+
+def _require_exact_publication_layout(publication_dir: Path) -> None:
+    try:
+        root_info = publication_dir.lstat()
+    except FileNotFoundError as exc:
+        raise PlayerGamesBuildError(
+            f"publication directory does not exist: {publication_dir}"
+        ) from exc
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise PlayerGamesBuildError(
+            f"publication root must be a real directory: {publication_dir}"
+        )
+    expected = {"_manifest.json"} | {
+        f"season={season}" for season in SEASONS
+    }
+    observed = {entry.name for entry in publication_dir.iterdir()}
+    if observed != expected:
+        missing = sorted(expected - observed)
+        extra = sorted(observed - expected)
+        raise PlayerGamesBuildError(
+            f"publication layout mismatch: missing={missing}, extra={extra}"
+        )
+    for name in sorted(expected):
+        path = publication_dir / name
+        info = path.lstat()
+        if name == "_manifest.json":
+            if not stat.S_ISREG(info.st_mode):
+                raise PlayerGamesBuildError(
+                    "publication manifest must be a regular file"
+                )
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise PlayerGamesBuildError(
+                f"publication partition must be a real directory: {name}"
+            )
+        children = list(path.iterdir())
+        if [child.name for child in children] != ["player_games.parquet"]:
+            raise PlayerGamesBuildError(
+                f"publication partition has unexpected entries: {name}"
+            )
+        child_info = children[0].lstat()
+        if not stat.S_ISREG(child_info.st_mode):
+            raise PlayerGamesBuildError(
+                f"publication partition file must be regular: {name}"
+            )
+
+
+def _read_publication_manifest(publication_dir: Path) -> dict:
+    path = publication_dir / "_manifest.json"
+    try:
+        payload = path.read_bytes()
+        manifest = json.loads(
+            payload.decode("utf-8"),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid numeric constant {value}")
+            ),
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise PlayerGamesBuildError(
+            f"publication manifest is invalid: {path}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise PlayerGamesBuildError("publication manifest must be an object")
+    if payload != _manifest_bytes(manifest):
+        raise PlayerGamesBuildError(
+            "publication manifest is not canonical deterministic JSON"
+        )
+    return manifest
+
+
+def validate_publication(
+    raw_root: Path,
+    publication_dir: Path,
+    reference_dir: Path,
+) -> dict:
+    """Independently recompute and validate a complete publication."""
+    raw_root = Path(raw_root)
+    publication_dir = Path(publication_dir)
+    reference_dir = Path(reference_dir)
+    _require_exact_publication_layout(publication_dir)
+    stored = _read_publication_manifest(publication_dir)
+    recomputed = _recompute_manifest(
+        raw_root, reference_dir, publication_dir, write_partitions=False
+    )
+    expected_top = {
+        "schema_version", "scope", "schema", "versions", "sources",
+        "references", "exception_ledger", "partitions", "validation",
+    }
+    if set(stored) != expected_top:
+        raise PlayerGamesBuildError("manifest top-level keys mismatch")
+    checks = (
+        ("schema_version", "manifest schema version"),
+        ("scope", "manifest scope"),
+        ("schema", "manifest schema"),
+        ("versions", "manifest versions"),
+        ("references", "manifest reference"),
+        ("exception_ledger", "manifest exception ledger"),
+        ("partitions", "manifest partition"),
+        ("validation", "manifest validation"),
+    )
+    stored_sources = stored.get("sources")
+    if (
+        not isinstance(stored_sources, dict)
+        or set(stored_sources) != {"franchise_reference", "player_logs"}
+    ):
+        raise PlayerGamesBuildError("manifest source mismatch")
+    if (
+        stored_sources.get("player_logs")
+        != recomputed["sources"]["player_logs"]
+    ):
+        raise PlayerGamesBuildError("manifest source mismatch")
+    if (
+        stored_sources.get("franchise_reference")
+        != recomputed["sources"]["franchise_reference"]
+    ):
+        raise PlayerGamesBuildError("manifest franchise reference mismatch")
+    for key, label in checks:
+        if stored.get(key) != recomputed[key]:
+            raise PlayerGamesBuildError(f"{label} mismatch")
+    return recomputed
+
+
+def render_final_audit(
+    manifest: dict,
+    *,
+    manifest_sha256: str,
+    snapshot_name: str,
+    restore_verified: bool,
+) -> str:
+    """Render final evidence only for an exact manifest and verified restore."""
+    actual = hashlib.sha256(_manifest_bytes(manifest)).hexdigest()
+    if manifest_sha256 != actual:
+        raise PlayerGamesBuildError(
+            f"final manifest hash mismatch: expected {manifest_sha256}, actual {actual}"
+        )
+    if not snapshot_name or "\n" in snapshot_name:
+        raise PlayerGamesBuildError("snapshot name must be non-empty and single-line")
+    if restore_verified is not True:
+        raise PlayerGamesBuildError("final audit requires a verified restore")
+    validation = manifest["validation"]
+    return "\n".join([
+        "# Player game final audit",
+        "",
+        f"Manifest SHA-256: `{manifest_sha256}`",
+        f"Snapshot: `{snapshot_name}`",
+        "Restore verified: yes",
+        "",
+        f"Rows: {validation['rows']}",
+        f"Games: {validation['games']}",
+        f"Players: {validation['players']}",
+        "",
+    ])
+
+
+def run(data_dir: Path) -> None:
+    """Build, reread, validate, and transactionally publish offline."""
+    data_dir = Path(data_dir)
+    output_dir = data_dir / "parquet-large/player_games"
+    staging_root = output_dir.parent
+    staging_root.mkdir(parents=True, exist_ok=True)
+    stage_dir = Path(
+        tempfile.mkdtemp(prefix=".player-games-build-", dir=staging_root)
+    )
+    stage_info = stage_dir.lstat()
+    identity = (stage_info.st_dev, stage_info.st_ino)
+    raw_root = data_dir / "raw/stats_nba/player_logs"
+    reference_dir = data_dir / "parquet"
+    try:
+        manifest = build_tree(data_dir, stage_dir)
+        reread = validate_publication(raw_root, stage_dir, reference_dir)
+        if reread != manifest:
+            raise PlayerGamesBuildError(
+                "staged player-games publication failed independent reread"
+            )
+    except Exception:
+        try:
+            current = stage_dir.lstat()
+        except FileNotFoundError:
+            current = None
+        if (
+            current is not None
+            and stat.S_ISDIR(current.st_mode)
+            and (current.st_dev, current.st_ino) == identity
+        ):
+            shutil.rmtree(stage_dir)
+        raise
+
+    rollback = publication.publish_tree(
+        stage_dir,
+        output_dir,
+        label="player-games publication",
+    )
+    active = validate_publication(raw_root, output_dir, reference_dir)
+    if active != manifest:
+        raise PlayerGamesBuildError(
+            "active player-games publication failed independent reread"
+        )
+    if rollback is not None:
+        raise PlayerGamesBuildError(
+            "player-games publication succeeded but rollback cleanup failed; "
+            f"operator cleanup required at {rollback}"
+        )

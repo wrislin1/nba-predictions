@@ -1,5 +1,6 @@
 import json
 import hashlib
+import os
 from pathlib import Path
 
 import pyarrow as pa
@@ -7,7 +8,7 @@ import pyarrow.parquet as pq
 import pandas as pd
 import pytest
 
-from nba_data import cache, player_games_build, player_logs
+from nba_data import cache, player_games_build, player_logs, publication
 
 
 HEADERS = [
@@ -85,6 +86,103 @@ def _use_tiny_scope(monkeypatch):
     for module in (player_games_build, player_logs):
         monkeypatch.setattr(module, "SEASONS", (1984, 1985))
         monkeypatch.setattr(module, "PLAY_IN_SEASONS", ())
+
+
+def _publish_references(data_dir, seasons=(1984, 1985)):
+    parquet_dir = data_dir / "parquet"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    regular_games = []
+    regular_team_games = []
+    postseason_games = []
+    for season in seasons:
+        year = season - 1
+        game_date = pd.Timestamp(f"{year}-10-28").date()
+        regular_id = f"002{str(year)[-2:]}00001"
+        regular_games.append({
+            "game_id": regular_id,
+            "season": season,
+            "game_date": game_date,
+            "home_franchise_id": "BOS",
+            "away_franchise_id": "CHI",
+            "home_pts": 2,
+            "away_pts": 2,
+        })
+        regular_team_games.extend([
+            {
+                "game_id": regular_id,
+                "season": season,
+                "game_date": game_date,
+                "franchise_id": "BOS",
+                "opponent_franchise_id": "CHI",
+                "is_home": True,
+                "pts": 2,
+            },
+            {
+                "game_id": regular_id,
+                "season": season,
+                "game_date": game_date,
+                "franchise_id": "CHI",
+                "opponent_franchise_id": "BOS",
+                "is_home": False,
+                "pts": 2,
+            },
+        ])
+        postseason_games.append({
+            "game_id": f"bref-{year}1028BOS",
+            "season": season,
+            "game_date": game_date,
+            "game_type": "playoff",
+            "home_franchise_id": "BOS",
+            "away_franchise_id": "CHI",
+            "home_pts": 2,
+            "away_pts": 2,
+            "overtime_periods": 0,
+        })
+    pd.DataFrame(regular_games).to_parquet(
+        parquet_dir / "games.parquet", index=False
+    )
+    pd.DataFrame(regular_team_games).to_parquet(
+        parquet_dir / "team_games.parquet", index=False
+    )
+    pd.DataFrame(postseason_games).to_parquet(
+        parquet_dir / "playoff_games.parquet", index=False
+    )
+    (parquet_dir / "build_manifest.json").write_text(
+        '{"fixture":"modern"}\n', encoding="utf-8"
+    )
+    (parquet_dir / "playoff_games_manifest.json").write_text(
+        '{"fixture":"playoffs"}\n', encoding="utf-8"
+    )
+    return parquet_dir
+
+
+def _write_reviewed_fixture_ledger(monkeypatch, data_dir):
+    observed = player_games_build.audit_source(data_dir)["discrepancies"]
+    approved = {
+        section: {
+            key: {
+                **entry,
+                "note": "Reviewed fixture evidence; raw source semantics are retained.",
+            }
+            for key, entry in entries.items()
+        }
+        for section, entries in observed.items()
+    }
+    ledger = data_dir / "fixture-exceptions.json"
+    ledger.write_text(
+        json.dumps(approved, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(player_games_build, "EXCEPTIONS_PATH", ledger)
+    return ledger
+
+
+def _seed_build_inputs(monkeypatch, data_dir):
+    _use_tiny_scope(monkeypatch)
+    _publish_scope(data_dir)
+    references = _publish_references(data_dir)
+    ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
+    return data_dir / "raw/stats_nba/player_logs", references, ledger
 
 
 def test_player_games_arrow_schema_has_exact_order_types_and_nullability():
@@ -1033,3 +1131,428 @@ def test_audit_source_assembles_offline_structured_evidence(monkeypatch, tmp_pat
     assert len(audit["discrepancies"]["minutes"]) == 8
     assert audit["discrepancies"]["points"] == {}
     assert audit["approved_exceptions"] == _ledger()
+
+
+def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
+    """Would fail if manifest claims depended on staging paths or write order."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    stages = [tmp_path / "first-stage", tmp_path / "second-stage"]
+    for stage in stages:
+        stage.mkdir()
+        player_games_build.build_from_roots(raw_root, references, stage)
+
+    first = (stages[0] / "_manifest.json").read_bytes()
+    second = (stages[1] / "_manifest.json").read_bytes()
+    manifest = json.loads(first)
+
+    assert first == second
+    assert first.endswith(b"\n")
+    assert set(manifest) == {
+        "schema_version",
+        "scope",
+        "schema",
+        "versions",
+        "sources",
+        "references",
+        "exception_ledger",
+        "partitions",
+        "validation",
+    }
+    assert manifest["scope"] == {
+        "ending_seasons": [1984, 1985],
+        "game_types": ["playoff", "regular"],
+    }
+    assert list(manifest["references"]) == [
+        "build_manifest.json",
+        "games.parquet",
+        "playoff_games.parquet",
+        "playoff_games_manifest.json",
+        "team_games.parquet",
+    ]
+    assert len(manifest["sources"]["player_logs"]) == 4
+    assert set(manifest["sources"]) == {
+        "franchise_reference", "player_logs"
+    }
+    assert set(manifest["partitions"]) == {"1984", "1985"}
+    for season, entry in manifest["partitions"].items():
+        assert set(entry) == {
+            "bytes", "game_counts", "path", "players", "row_sha256",
+            "rows", "sha256",
+        }
+        assert entry["path"] == f"season={season}/player_games.parquet"
+        assert entry["rows"] == 4
+        assert entry["players"] == 2
+        assert entry["game_counts"] == {"playoff": 1, "regular": 1}
+        assert len(entry["sha256"]) == len(entry["row_sha256"]) == 64
+    assert manifest["validation"] == {
+        "cache_entries": 4,
+        "coverage": {
+            "postseason_team_games": 4,
+            "regular_team_games": 4,
+            "status": "passed",
+            "team_games": 8,
+        },
+        "exceptions": {"minutes": 8, "points": 0},
+        "games": 4,
+        "players": 2,
+        "rows": 8,
+    }
+    rendered = first.decode("utf-8")
+    assert "/home/" not in rendered
+    assert str(tmp_path) not in rendered
+    assert "fetched_at" not in rendered
+    assert "NaN" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("manifest", "manifest"),
+        ("raw_sidecar", "source"),
+        ("reference", "reference"),
+        ("ledger", "exception ledger"),
+        ("franchise", "franchise"),
+        ("partition_bytes", "partition"),
+    ],
+)
+def test_validate_publication_recomputes_live_inputs(
+    monkeypatch, tmp_path, target, expected
+):
+    """Would fail if validation trusted a stored checksum or count claim."""
+    raw_root, references, ledger = _seed_build_inputs(monkeypatch, tmp_path)
+    franchise = tmp_path / "franchises.csv"
+    franchise.write_bytes(
+        player_games_build.FRANCHISE_REFERENCE_PATH.read_bytes()
+    )
+    monkeypatch.setattr(
+        player_games_build, "FRANCHISE_REFERENCE_PATH", franchise
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+
+    if target == "manifest":
+        path = stage / "_manifest.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["validation"]["rows"] += 1
+        path.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
+    elif target == "raw_sidecar":
+        path = raw_root / "season=1984/regular.json.meta.json"
+        path.write_bytes(path.read_bytes() + b" ")
+    elif target == "reference":
+        (references / "build_manifest.json").write_bytes(
+            (references / "build_manifest.json").read_bytes() + b" "
+        )
+    elif target == "ledger":
+        ledger.write_bytes(ledger.read_bytes() + b" ")
+    elif target == "franchise":
+        franchise.write_bytes(franchise.read_bytes() + b"\n")
+    else:
+        partition = stage / "season=1984/player_games.parquet"
+        partition.write_bytes(partition.read_bytes() + b"drift")
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError, match=expected):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+def test_validate_publication_rejects_source_identity_lie(monkeypatch, tmp_path):
+    """Would fail if source metadata identity were not independently derived."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    path = stage / "_manifest.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["sources"]["player_logs"][0]["identity"]["provider"] = "lie"
+    path.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError, match="source"):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+def test_validate_publication_rejects_noncanonical_manifest_bytes(
+    monkeypatch, tmp_path
+):
+    """Would fail if deterministic serialization were enforced only on write."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    manifest_path = stage / "_manifest.json"
+    manifest_path.write_bytes(manifest_path.read_bytes() + b" ")
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="canonical",
+    ):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+def test_validate_publication_rejects_logical_row_and_schema_drift(
+    monkeypatch, tmp_path
+):
+    """Would fail if a self-consistent manifest could bless different rows."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    partition = stage / "season=1984/player_games.parquet"
+    table = pq.read_table(partition)
+    changed = table.set_column(
+        table.schema.get_field_index("pts"),
+        "pts",
+        pa.array([99] + table.column("pts").to_pylist()[1:], type=pa.int64()),
+    )
+    pq.write_table(changed, partition, compression="zstd", use_dictionary=False)
+    manifest_path = stage / "_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entry = manifest["partitions"]["1984"]
+    entry["sha256"] = hashlib.sha256(partition.read_bytes()).hexdigest()
+    entry["bytes"] = partition.stat().st_size
+    entry["row_sha256"] = player_games_build._logical_row_sha256(changed)
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError, match="rows"):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+    pq.write_table(
+        table.append_column("unexpected", pa.array([1] * table.num_rows)),
+        partition,
+        compression="zstd",
+    )
+    with pytest.raises(player_games_build.PlayerGamesBuildError, match="schema"):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+@pytest.mark.parametrize("layout", ["missing", "extra", "symlink", "fifo"])
+def test_validate_publication_requires_exact_regular_tree(
+    monkeypatch, tmp_path, layout
+):
+    """Would fail if publication walking followed or ignored unsafe entries."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    player_games_build.build_from_roots(raw_root, references, stage)
+    if layout == "missing":
+        (stage / "season=1985/player_games.parquet").unlink()
+    elif layout == "extra":
+        (stage / "unexpected.txt").write_text("unexpected")
+    elif layout == "symlink":
+        (stage / "unexpected-link").symlink_to(stage / "_manifest.json")
+    else:
+        os.mkfifo(stage / "unexpected-fifo")
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError):
+        player_games_build.validate_publication(raw_root, stage, references)
+
+
+def test_write_source_review_writes_only_canonical_candidates(
+    monkeypatch, tmp_path
+):
+    """Would fail if source review claimed correctness or omitted absence limits."""
+    _use_tiny_scope(monkeypatch)
+    _publish_scope(tmp_path)
+    _publish_references(tmp_path)
+    audit = player_games_build.audit_source(tmp_path)
+    output = tmp_path / "review"
+
+    player_games_build.write_source_review(output, audit)
+
+    assert sorted(path.name for path in output.iterdir()) == [
+        "player_game_validation_exceptions.json", "source-audit.md"
+    ]
+    assert all(path.is_file() and not path.is_symlink() for path in output.iterdir())
+    candidates = json.loads(
+        (output / "player_game_validation_exceptions.json").read_text()
+    )
+    assert set(candidates) == {"minutes", "points"}
+    assert set(candidates["minutes"]) == set(audit["discrepancies"]["minutes"])
+    for key, entry in candidates["minutes"].items():
+        assert {k: v for k, v in entry.items() if k != "note"} == (
+            audit["discrepancies"]["minutes"][key]
+        )
+        assert "raw source semantics are retained" in entry["note"]
+        assert "correct" not in entry["note"].lower()
+    markdown = (output / "source-audit.md").read_text(encoding="utf-8")
+    for required in (
+        "1984", "1985", "regular", "playoff", "Cache entries: 4",
+        "Coverage status: passed", "Point candidate keys", "Minute candidate keys",
+        "missing appearance does not prove roster membership, eligibility, injury, rest, or expected participation",
+    ):
+        assert required in markdown
+
+
+@pytest.mark.parametrize("unsafe", ["nonempty", "symlink", "fifo"])
+def test_write_source_review_refuses_unsafe_output(monkeypatch, tmp_path, unsafe):
+    """Would fail if source review could overwrite or follow an unsafe path."""
+    _use_tiny_scope(monkeypatch)
+    _publish_scope(tmp_path)
+    _publish_references(tmp_path)
+    audit = player_games_build.audit_source(tmp_path)
+    output = tmp_path / "review"
+    if unsafe == "nonempty":
+        output.mkdir()
+        (output / "keep.txt").write_text("keep")
+    elif unsafe == "symlink":
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        output.symlink_to(target, target_is_directory=True)
+    else:
+        os.mkfifo(output)
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError):
+        player_games_build.write_source_review(output, audit)
+
+
+def test_run_rereads_then_publishes_and_replaces(monkeypatch, tmp_path):
+    """Would fail if run published before independent stage validation."""
+    _seed_build_inputs(monkeypatch, tmp_path)
+    calls = []
+    real_validate = player_games_build.validate_publication
+
+    def record_validate(raw_root, publication_dir, reference_dir):
+        calls.append(Path(publication_dir))
+        return real_validate(raw_root, publication_dir, reference_dir)
+
+    monkeypatch.setattr(player_games_build, "validate_publication", record_validate)
+    player_games_build.run(tmp_path)
+    output = tmp_path / "parquet-large/player_games"
+    first_manifest = (output / "_manifest.json").read_bytes()
+    player_games_build.run(tmp_path)
+
+    assert (output / "_manifest.json").read_bytes() == first_manifest
+    assert calls[0] != output
+    assert calls[1] == output
+    assert calls[2] != output
+    assert calls[3] == output
+
+
+def test_run_reports_retained_rollback(monkeypatch, tmp_path):
+    """Would fail if a cleanup failure silently discarded its recovery path."""
+    _seed_build_inputs(monkeypatch, tmp_path)
+    player_games_build.run(tmp_path)
+    real_publish = publication.publish_tree
+
+    def retain_rollback(stage_dir, output_dir, *, label):
+        assert real_publish(stage_dir, output_dir, label=label) is None
+        return output_dir.parent / ".player_games.rollback-retained"
+
+    monkeypatch.setattr(publication, "publish_tree", retain_rollback)
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=r"rollback.*\.player_games\.rollback-retained",
+    ):
+        player_games_build.run(tmp_path)
+
+
+def test_render_final_audit_binds_manifest_hash_and_restore():
+    """Would fail if final prose could claim an unverified manifest or restore."""
+    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    payload = (
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode()
+    digest = hashlib.sha256(payload).hexdigest()
+
+    report = player_games_build.render_final_audit(
+        manifest,
+        manifest_sha256=digest,
+        snapshot_name="player-games-test.tar.zst",
+        restore_verified=True,
+    )
+
+    assert digest in report
+    assert "player-games-test.tar.zst" in report
+    assert "Restore verified: yes" in report
+    with pytest.raises(player_games_build.PlayerGamesBuildError, match="hash"):
+        player_games_build.render_final_audit(
+            manifest,
+            manifest_sha256="0" * 64,
+            snapshot_name="player-games-test.tar.zst",
+            restore_verified=True,
+        )
+
+
+def test_audit_script_normal_mode_is_offline_source_review(monkeypatch, tmp_path):
+    """Would fail if the audit command imported or called a network path."""
+    import requests
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("network access is forbidden during source review")
+
+    monkeypatch.setattr(requests.Session, "get", network_forbidden)
+    from scripts import audit_player_logs
+
+    audit = {"fixture": True}
+    calls = []
+    monkeypatch.setattr(
+        audit_player_logs.player_games_build,
+        "audit_source",
+        lambda data_dir: calls.append(("audit", data_dir)) or audit,
+    )
+    monkeypatch.setattr(
+        audit_player_logs.player_games_build,
+        "write_source_review",
+        lambda output_dir, value: calls.append(("write", output_dir, value)),
+    )
+
+    audit_player_logs.main([
+        "--data-dir", str(tmp_path),
+        "--output-dir", str(tmp_path / "review"),
+    ])
+
+    assert calls == [
+        ("audit", tmp_path),
+        ("write", tmp_path / "review", audit),
+    ]
+
+
+def test_audit_script_final_mode_requires_complete_verified_binding(
+    monkeypatch, tmp_path
+):
+    """Would fail if final audit rendering accepted partial evidence."""
+    from scripts import audit_player_logs
+
+    publication_dir = tmp_path / "parquet-large/player_games"
+    publication_dir.mkdir(parents=True)
+    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    manifest_bytes = (
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode()
+    (publication_dir / "_manifest.json").write_bytes(manifest_bytes)
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    calls = []
+    monkeypatch.setattr(
+        audit_player_logs.player_games_build,
+        "validate_publication",
+        lambda raw_root, output, references: calls.append(
+            (raw_root, output, references)
+        ) or manifest,
+    )
+
+    report = tmp_path / "final.md"
+    audit_player_logs.main([
+        "--data-dir", str(tmp_path),
+        "--output-dir", str(tmp_path / "unused-review"),
+        "--final-report", str(report),
+        "--manifest-sha256", digest,
+        "--snapshot-name", "player-games.tar.zst",
+        "--restore-verified",
+    ])
+
+    assert calls == [(
+        tmp_path / "raw/stats_nba/player_logs",
+        publication_dir,
+        tmp_path / "parquet",
+    )]
+    assert digest in report.read_text(encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        audit_player_logs.main([
+            "--data-dir", str(tmp_path),
+            "--output-dir", str(tmp_path / "unused-review"),
+            "--final-report", str(tmp_path / "incomplete.md"),
+        ])
+    assert exc_info.value.code == 2

@@ -592,3 +592,66 @@ def test_fetch_player_logs_rejects_invalid_seasons(monkeypatch, tmp_path, season
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def test_build_player_games_dispatches_only_offline_builder(monkeypatch, tmp_path):
+    """Would fail if player-game build reached any fetch or HTTP entry point."""
+    cli = load_cli()
+    calls = []
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("network access is forbidden during build-player-games")
+
+    for provider_name in (
+        "stats_nba", "hoopr", "bref", "historical_bref", "playoff_bref",
+        "pbp", "player_logs",
+    ):
+        provider = getattr(cli, provider_name)
+        monkeypatch.setattr(provider, "fetch", network_forbidden)
+    import requests
+    monkeypatch.setattr(requests.Session, "get", network_forbidden)
+    monkeypatch.setattr(
+        cli,
+        "player_games_build",
+        type("PlayerGamesBuild", (), {
+            "run": staticmethod(lambda data: calls.append(data)),
+        }),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["nba_data", "--data-dir", str(tmp_path), "build-player-games"],
+    )
+
+    cli.main()
+
+    assert calls == [tmp_path]
+
+
+def test_build_player_games_rejects_season_flag(monkeypatch, tmp_path):
+    """Would fail if an online-style partial scope reached the offline builder."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "player_games_build",
+        type("PlayerGamesBuild", (), {
+            "run": staticmethod(lambda *args: calls.append(args)),
+        }),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "build-player-games",
+            "--season", "2026",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
