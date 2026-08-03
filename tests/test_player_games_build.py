@@ -1,14 +1,23 @@
 import json
 import hashlib
+import importlib.metadata
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pandas as pd
 import pytest
 
-from nba_data import cache, player_games_build, player_logs, publication
+from nba_data import (
+    cache,
+    franchises,
+    player_games_build,
+    player_logs,
+    publication,
+)
 
 
 HEADERS = [
@@ -183,6 +192,33 @@ def _seed_build_inputs(monkeypatch, data_dir):
     references = _publish_references(data_dir)
     ledger = _write_reviewed_fixture_ledger(monkeypatch, data_dir)
     return data_dir / "raw/stats_nba/player_logs", references, ledger
+
+
+def _replace_fixture_franchise(references, ledger, old, new):
+    for name in ("games.parquet", "team_games.parquet", "playoff_games.parquet"):
+        path = references / name
+        frame = pd.read_parquet(path)
+        for column in frame.columns:
+            if "franchise_id" in column:
+                frame[column] = frame[column].replace(old, new)
+        frame.to_parquet(path, index=False)
+    document = json.loads(ledger.read_text(encoding="utf-8"))
+    for section in ("minutes", "points"):
+        rewritten = {}
+        for key, entry in document[section].items():
+            new_key = key.replace(f"|{old}", f"|{new}")
+            rewritten[new_key] = {
+                **entry,
+                "franchise_id": (
+                    new if entry["franchise_id"] == old
+                    else entry["franchise_id"]
+                ),
+            }
+        document[section] = rewritten
+    ledger.write_text(
+        json.dumps(document, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_player_games_arrow_schema_has_exact_order_types_and_nullability():
@@ -1204,6 +1240,123 @@ def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_p
     assert "NaN" not in rendered
 
 
+def test_build_uses_live_pinned_franchise_bytes_after_cache_warmup(
+    monkeypatch, tmp_path
+):
+    """Would fail if cached franchise semantics were bound to newer CSV bytes."""
+    raw_root, references, ledger = _seed_build_inputs(monkeypatch, tmp_path)
+    franchises.load_reference.cache_clear()
+    assert franchises.resolve("Boston Celtics", 1984) == "BOS"
+    fixture = tmp_path / "franchises.csv"
+    fixture.write_bytes(
+        player_games_build.FRANCHISE_REFERENCE_PATH.read_bytes().replace(
+            b"Boston Celtics,BOS,,", b"Boston Celtics,BOS_LIVE,,"
+        )
+    )
+    _replace_fixture_franchise(references, ledger, "BOS", "BOS_LIVE")
+    monkeypatch.setattr(
+        player_games_build, "FRANCHISE_REFERENCE_PATH", fixture
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    player_games_build.build_from_roots(raw_root, references, stage)
+
+    table = pq.read_table(stage / "season=1984/player_games.parquet")
+    assert set(table.column("franchise_id").to_pylist()) == {
+        "BOS_LIVE", "CHI"
+    }
+    manifest = json.loads((stage / "_manifest.json").read_text())
+    assert manifest["sources"]["franchise_reference"]["sha256"] == (
+        hashlib.sha256(fixture.read_bytes()).hexdigest()
+    )
+
+
+def test_build_rejects_franchise_reference_mutation_during_recomputation(
+    monkeypatch, tmp_path
+):
+    """Would fail if semantics and pinned bytes came from different snapshots."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    fixture = tmp_path / "franchises.csv"
+    fixture.write_bytes(player_games_build.FRANCHISE_REFERENCE_PATH.read_bytes())
+    monkeypatch.setattr(
+        player_games_build, "FRANCHISE_REFERENCE_PATH", fixture
+    )
+    real_assemble = player_games_build._assemble_season_from_root
+    mutated = False
+
+    def mutate_after_assembly(*args, **kwargs):
+        nonlocal mutated
+        result = real_assemble(*args, **kwargs)
+        if not mutated:
+            fixture.write_bytes(fixture.read_bytes() + b"\n")
+            mutated = True
+        return result
+
+    monkeypatch.setattr(
+        player_games_build,
+        "_assemble_season_from_root",
+        mutate_after_assembly,
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="franchise reference changed",
+    ):
+        player_games_build.build_from_roots(raw_root, references, stage)
+
+
+def test_manifest_versions_ignore_runtime_discovery(monkeypatch):
+    """Would fail if host package or Python patch versions entered a manifest."""
+    monkeypatch.setattr(pd, "__version__", "host-pandas")
+    monkeypatch.setattr(pa, "__version__", "host-pyarrow")
+    monkeypatch.setattr(
+        importlib.metadata, "version", lambda _name: "host-package"
+    )
+
+    assert player_games_build._versions() == {
+        "nba_api": "1.11.4",
+        "pandas": "3.0.5",
+        "pyarrow": "25.0.0",
+        "python": ">=3.12",
+    }
+
+
+def test_manifest_source_identity_uses_exact_stable_allowlist(
+    monkeypatch, tmp_path
+):
+    """Would fail if future timestamps, paths, or host fields leaked in."""
+    raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
+    sidecar = raw_root / "season=1984/regular.json.meta.json"
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata.update({
+        "future_timestamp": "2099-01-01T00:00:00Z",
+        "host_path": "/home/reviewer/cache",
+        "hostname": "review-host",
+    })
+    sidecar.write_text(
+        json.dumps(metadata, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    player_games_build.build_from_roots(raw_root, references, stage)
+
+    manifest = json.loads((stage / "_manifest.json").read_text())
+    source = next(
+        entry for entry in manifest["sources"]["player_logs"]
+        if entry["body_path"] == "season=1984/regular.json"
+    )
+    assert source["identity"] == _metadata(1984, "regular")
+    rendered = json.dumps(manifest, sort_keys=True)
+    assert "future_timestamp" not in rendered
+    assert "/home/reviewer" not in rendered
+    assert "review-host" not in rendered
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [
@@ -1448,6 +1601,45 @@ def test_run_reports_retained_rollback(monkeypatch, tmp_path):
         player_games_build.run(tmp_path)
 
 
+def test_run_reports_retained_rollback_before_active_validation(
+    monkeypatch, tmp_path
+):
+    """Would fail if active validation hid the operator recovery path."""
+    manifest = {"validation": {"rows": 1}}
+    output = tmp_path / "parquet-large/player_games"
+    rollback = output.parent / ".player_games.rollback-retained"
+    active_calls = []
+
+    monkeypatch.setattr(
+        player_games_build,
+        "build_tree",
+        lambda _data_dir, _stage_dir: manifest,
+    )
+
+    def validate(_raw_root, publication_dir, _reference_dir):
+        if Path(publication_dir) == output:
+            active_calls.append(Path(publication_dir))
+            raise player_games_build.PlayerGamesBuildError(
+                "active validation failed"
+            )
+        return manifest
+
+    monkeypatch.setattr(player_games_build, "validate_publication", validate)
+    monkeypatch.setattr(
+        publication,
+        "publish_tree",
+        lambda *_args, **_kwargs: rollback,
+    )
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match=str(rollback),
+    ):
+        player_games_build.run(tmp_path)
+
+    assert active_calls == []
+
+
 def test_render_final_audit_binds_manifest_hash_and_restore():
     """Would fail if final prose could claim an unverified manifest or restore."""
     manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
@@ -1455,22 +1647,51 @@ def test_render_final_audit_binds_manifest_hash_and_restore():
         json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
     ).encode()
     digest = hashlib.sha256(payload).hexdigest()
+    snapshot_name = f"player-games-archive-2026-{digest[:12]}"
 
     report = player_games_build.render_final_audit(
         manifest,
         manifest_sha256=digest,
-        snapshot_name="player-games-test.tar.zst",
+        snapshot_name=snapshot_name,
         restore_verified=True,
     )
 
     assert digest in report
-    assert "player-games-test.tar.zst" in report
+    assert snapshot_name in report
     assert "Restore verified: yes" in report
     with pytest.raises(player_games_build.PlayerGamesBuildError, match="hash"):
         player_games_build.render_final_audit(
             manifest,
             manifest_sha256="0" * 64,
-            snapshot_name="player-games-test.tar.zst",
+            snapshot_name=snapshot_name,
+            restore_verified=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "snapshot_name",
+    [
+        "player-games.tar.zst",
+        "player-games-archive-2026-000000000000",
+        "other-player-games-archive-2026-{sha12}",
+    ],
+)
+def test_render_final_audit_rejects_unbound_snapshot_names(snapshot_name):
+    """Would fail if final evidence accepted a prefixless or wrong snapshot."""
+    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    digest = hashlib.sha256(
+        player_games_build._manifest_bytes(manifest)
+    ).hexdigest()
+    candidate = snapshot_name.format(sha12=digest[:12])
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="snapshot name",
+    ):
+        player_games_build.render_final_audit(
+            manifest,
+            manifest_sha256=digest,
+            snapshot_name=candidate,
             restore_verified=True,
         )
 
@@ -1509,6 +1730,32 @@ def test_audit_script_normal_mode_is_offline_source_review(monkeypatch, tmp_path
     ]
 
 
+def test_audit_script_preserves_symlink_identity_for_source_output(
+    monkeypatch, tmp_path
+):
+    """Would fail if wrapper resolution bypassed output-dir lstat safety."""
+    _use_tiny_scope(monkeypatch)
+    _publish_scope(tmp_path)
+    _publish_references(tmp_path)
+    from scripts import audit_player_logs
+
+    target = tmp_path / "target"
+    target.mkdir()
+    output = tmp_path / "review-link"
+    output.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="not a real directory",
+    ):
+        audit_player_logs.main([
+            "--data-dir", str(tmp_path),
+            "--output-dir", str(output),
+        ])
+
+    assert list(target.iterdir()) == []
+
+
 def test_audit_script_final_mode_requires_complete_verified_binding(
     monkeypatch, tmp_path
 ):
@@ -1538,7 +1785,7 @@ def test_audit_script_final_mode_requires_complete_verified_binding(
         "--output-dir", str(tmp_path / "unused-review"),
         "--final-report", str(report),
         "--manifest-sha256", digest,
-        "--snapshot-name", "player-games.tar.zst",
+        "--snapshot-name", f"player-games-archive-2026-{digest[:12]}",
         "--restore-verified",
     ])
 
@@ -1549,6 +1796,17 @@ def test_audit_script_final_mode_requires_complete_verified_binding(
     )]
     assert digest in report.read_text(encoding="utf-8")
 
+    report.write_text("safe existing regular file", encoding="utf-8")
+    audit_player_logs.main([
+        "--data-dir", str(tmp_path),
+        "--output-dir", str(tmp_path / "unused-review"),
+        "--final-report", str(report),
+        "--manifest-sha256", digest,
+        "--snapshot-name", f"player-games-archive-2026-{digest[:12]}",
+        "--restore-verified",
+    ])
+    assert digest in report.read_text(encoding="utf-8")
+
     with pytest.raises(SystemExit) as exc_info:
         audit_player_logs.main([
             "--data-dir", str(tmp_path),
@@ -1556,3 +1814,62 @@ def test_audit_script_final_mode_requires_complete_verified_binding(
             "--final-report", str(tmp_path / "incomplete.md"),
         ])
     assert exc_info.value.code == 2
+
+
+def test_audit_script_rejects_symlink_final_report(monkeypatch, tmp_path):
+    """Would fail if final-report writes followed a symlink target."""
+    from scripts import audit_player_logs
+
+    publication_dir = tmp_path / "parquet-large/player_games"
+    publication_dir.mkdir(parents=True)
+    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    manifest_bytes = player_games_build._manifest_bytes(manifest)
+    (publication_dir / "_manifest.json").write_bytes(manifest_bytes)
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    monkeypatch.setattr(
+        audit_player_logs.player_games_build,
+        "validate_publication",
+        lambda *_args: manifest,
+    )
+    sentinel = tmp_path / "sentinel.md"
+    sentinel.write_text("do not overwrite", encoding="utf-8")
+    report = tmp_path / "final-link.md"
+    report.symlink_to(sentinel)
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="final report.*regular file",
+    ):
+        audit_player_logs.main([
+            "--data-dir", str(tmp_path),
+            "--output-dir", str(tmp_path / "unused-review"),
+            "--final-report", str(report),
+            "--manifest-sha256", digest,
+            "--snapshot-name", f"player-games-archive-2026-{digest[:12]}",
+            "--restore-verified",
+        ])
+
+    assert sentinel.read_text(encoding="utf-8") == "do not overwrite"
+
+
+def test_audit_script_parser_rejects_incomplete_final_mode_in_subprocess(
+    tmp_path,
+):
+    """Would fail if CLI parsing treated partial final evidence as review mode."""
+    script = Path(__file__).parents[1] / "scripts/audit_player_logs.py"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--data-dir", str(tmp_path),
+            "--output-dir", str(tmp_path / "review"),
+            "--final-report", str(tmp_path / "final.md"),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "must be supplied together" in completed.stderr

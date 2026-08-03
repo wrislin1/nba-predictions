@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import json
 import hashlib
-import importlib.metadata
 from pathlib import Path
 import shutil
 import stat
-import sys
 import tempfile
+import tomllib
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from nba_data import cache, player_logs, publication
+from nba_data import cache, franchises, player_logs, publication
 
 
 SEASONS = player_logs.SEASONS
@@ -35,6 +34,16 @@ REFERENCE_FILENAMES = (
     "playoff_games.parquet",
     "playoff_games_manifest.json",
     "team_games.parquet",
+)
+SOURCE_IDENTITY_FIELDS = (
+    "provider",
+    "endpoint",
+    "season",
+    "season_label",
+    "game_type",
+    "season_type",
+    "league_id",
+    "player_or_team_abbreviation",
 )
 
 
@@ -882,7 +891,41 @@ def stage_partitions(data_dir: Path, stage_dir: Path) -> tuple[Path, ...]:
     )
 
 
-def _assemble_season_from_root(raw_root: Path, season: int) -> pa.Table:
+def _resolve_franchises(
+    frame: pd.DataFrame,
+    resolver: franchises.FranchiseResolver,
+) -> pd.DataFrame:
+    frame = frame.copy()
+    frame["franchise_id"] = [
+        resolver.resolve(str(name), int(season))
+        for name, season in frame[["team_name_raw", "season"]].itertuples(
+            index=False, name=None
+        )
+    ]
+    opponents = {}
+    for game_id, group in frame.groupby("game_id", sort=False):
+        franchise_ids = group["franchise_id"].unique().tolist()
+        if len(franchise_ids) != 2:
+            raise PlayerGamesBuildError(
+                f"game {game_id} has {len(franchise_ids)} live franchise "
+                "identities, expected 2"
+            )
+        for franchise_id in franchise_ids:
+            opponents[(game_id, franchise_id)] = next(
+                value for value in franchise_ids if value != franchise_id
+            )
+    frame["opponent_franchise_id"] = [
+        opponents[(row.game_id, row.franchise_id)]
+        for row in frame[["game_id", "franchise_id"]].itertuples(index=False)
+    ]
+    return frame
+
+
+def _assemble_season_from_root(
+    raw_root: Path,
+    season: int,
+    franchise_resolver: franchises.FranchiseResolver,
+) -> pa.Table:
     frames = []
     for game_type in _applicable_game_types(season):
         destination = (
@@ -897,8 +940,11 @@ def _assemble_season_from_root(raw_root: Path, season: int) -> pa.Table:
             )
         payload, _metadata = cached
         frames.append(
-            player_logs.normalize_payload(
-                payload, season=season, game_type=game_type
+            _resolve_franchises(
+                player_logs.normalize_payload(
+                    payload, season=season, game_type=game_type
+                ),
+                franchise_resolver,
             )
         )
     frame = pd.concat(frames, ignore_index=True).sort_values(
@@ -923,8 +969,57 @@ def _require_regular_file(path: Path, label: str) -> None:
         )
 
 
+def _capture_stable_file(path: Path, label: str) -> dict:
+    _require_regular_file(path, label)
+    before = path.lstat()
+    payload = path.read_bytes()
+    after = path.lstat()
+    fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    identity = tuple(getattr(before, field) for field in fields)
+    if (
+        identity != tuple(getattr(after, field) for field in fields)
+        or path.read_bytes() != payload
+    ):
+        raise PlayerGamesBuildError(f"{label} changed while being captured")
+    return {"path": path, "payload": payload, "identity": identity}
+
+
+def _require_snapshot_unchanged(snapshot: dict, label: str) -> None:
+    path = snapshot["path"]
+    fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    try:
+        current = path.lstat()
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise PlayerGamesBuildError(
+            f"{label} changed during recomputation"
+        ) from exc
+    if (
+        tuple(getattr(current, field) for field in fields)
+        != snapshot["identity"]
+        or payload != snapshot["payload"]
+    ):
+        raise PlayerGamesBuildError(f"{label} changed during recomputation")
+
+
 def _audit_from_roots(
-    raw_root: Path, reference_dir: Path
+    raw_root: Path,
+    reference_dir: Path,
+    franchise_resolver: franchises.FranchiseResolver,
 ) -> tuple[dict, tuple[Path, ...]]:
     try:
         bodies = player_logs.validate_cache_inventory_root(raw_root)
@@ -935,9 +1030,11 @@ def _audit_from_roots(
     for name in REFERENCE_FILENAMES:
         _require_regular_file(reference_dir / name, f"reference {name}")
     _require_regular_file(EXCEPTIONS_PATH, "exception ledger")
-    _require_regular_file(FRANCHISE_REFERENCE_PATH, "franchise reference")
 
-    tables = [_assemble_season_from_root(raw_root, season) for season in SEASONS]
+    tables = [
+        _assemble_season_from_root(raw_root, season, franchise_resolver)
+        for season in SEASONS
+    ]
     player_games = pa.concat_tables(tables).to_pandas()
     team_aggregates = aggregate_team_games(player_games)
     try:
@@ -964,20 +1061,37 @@ def _audit_from_roots(
 
 
 def _versions() -> dict:
+    repository_root = Path(__file__).resolve().parents[2]
+    requirements = {}
+    for line in (repository_root / "requirements.txt").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        requirement = line.split(";", 1)[0].strip()
+        if "==" in requirement:
+            name, version = requirement.split("==", 1)
+            requirements[name.strip()] = version.strip()
+    project = tomllib.loads(
+        (repository_root / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
     return {
-        "nba_api": importlib.metadata.version("nba_api"),
-        "pandas": pd.__version__,
-        "pyarrow": pa.__version__,
-        "python": (
-            f"{sys.version_info.major}.{sys.version_info.minor}."
-            f"{sys.version_info.micro}"
-        ),
+        "nba_api": requirements["nba-api"],
+        "pandas": requirements["pandas"],
+        "pyarrow": requirements["pyarrow"],
+        "python": project["requires-python"],
     }
 
 
 def _file_binding(path: Path, logical_path: str) -> dict:
     _require_regular_file(path, logical_path)
     payload = path.read_bytes()
+    return {
+        "path": logical_path,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+    }
+
+
+def _payload_binding(payload: bytes, logical_path: str) -> dict:
     return {
         "path": logical_path,
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -1002,11 +1116,7 @@ def _source_entry(body_path: Path, raw_root: Path) -> dict:
             f"source sidecar must contain an object: {sidecar_path}"
         )
     relative = body_path.relative_to(raw_root).as_posix()
-    identity = {
-        key: metadata[key]
-        for key in sorted(metadata)
-        if key not in {"content_length", "fetched_at", "sha256"}
-    }
+    identity = {key: metadata[key] for key in SOURCE_IDENTITY_FIELDS}
     return {
         "body_path": relative,
         "body_sha256": hashlib.sha256(body).hexdigest(),
@@ -1100,7 +1210,20 @@ def _recompute_manifest(
     *,
     write_partitions: bool,
 ) -> dict:
-    audit, bodies = _audit_from_roots(raw_root, reference_dir)
+    franchise_snapshot = _capture_stable_file(
+        FRANCHISE_REFERENCE_PATH, "franchise reference"
+    )
+    try:
+        franchise_resolver = franchises.FranchiseResolver.from_payload(
+            franchise_snapshot["payload"]
+        )
+    except (OSError, ValueError) as exc:
+        raise PlayerGamesBuildError(
+            f"franchise reference is invalid: {FRANCHISE_REFERENCE_PATH}"
+        ) from exc
+    audit, bodies = _audit_from_roots(
+        raw_root, reference_dir, franchise_resolver
+    )
     partitions = {}
     for season in SEASONS:
         expected_frame = audit["player_games"].loc[
@@ -1150,8 +1273,8 @@ def _recompute_manifest(
                 (_source_entry(path, raw_root) for path in bodies),
                 key=lambda entry: entry["body_path"],
             ),
-            "franchise_reference": _file_binding(
-                FRANCHISE_REFERENCE_PATH,
+            "franchise_reference": _payload_binding(
+                franchise_snapshot["payload"],
                 "src/nba_data/reference/franchises.csv",
             ),
         },
@@ -1165,6 +1288,7 @@ def _recompute_manifest(
         },
         "validation": _validation_manifest(audit, len(bodies)),
     }
+    _require_snapshot_unchanged(franchise_snapshot, "franchise reference")
     return manifest
 
 
@@ -1414,8 +1538,14 @@ def render_final_audit(
         raise PlayerGamesBuildError(
             f"final manifest hash mismatch: expected {manifest_sha256}, actual {actual}"
         )
-    if not snapshot_name or "\n" in snapshot_name:
-        raise PlayerGamesBuildError("snapshot name must be non-empty and single-line")
+    expected_snapshot = (
+        f"player-games-archive-2026-{manifest_sha256[:12]}"
+    )
+    if snapshot_name != expected_snapshot:
+        raise PlayerGamesBuildError(
+            "snapshot name mismatch: expected "
+            f"{expected_snapshot}, observed {snapshot_name}"
+        )
     if restore_verified is not True:
         raise PlayerGamesBuildError("final audit requires a verified restore")
     validation = manifest["validation"]
@@ -1471,13 +1601,13 @@ def run(data_dir: Path) -> None:
         output_dir,
         label="player-games publication",
     )
-    active = validate_publication(raw_root, output_dir, reference_dir)
-    if active != manifest:
-        raise PlayerGamesBuildError(
-            "active player-games publication failed independent reread"
-        )
     if rollback is not None:
         raise PlayerGamesBuildError(
             "player-games publication succeeded but rollback cleanup failed; "
             f"operator cleanup required at {rollback}"
+        )
+    active = validate_publication(raw_root, output_dir, reference_dir)
+    if active != manifest:
+        raise PlayerGamesBuildError(
+            "active player-games publication failed independent reread"
         )
