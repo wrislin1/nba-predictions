@@ -1,175 +1,295 @@
 {
-  "schema_version": 1,
   "designations": {
     "2025|regular|0022400147": {
-      "season": 2025,
-      "game_type": "regular",
-      "game_id": "0022400147",
-      "game_date": "2024-11-02",
-      "teams": [
-        {"nba_team_id": 1610612748, "team_name_raw": "Miami Heat", "team_abbreviation_raw": "MIA", "matchup_raw": "MIA @ WAS", "row_count": 13},
-        {"nba_team_id": 1610612764, "team_name_raw": "Washington Wizards", "team_abbreviation_raw": "WAS", "matchup_raw": "WAS @ MIA", "row_count": 13}
-      ],
-      "expected_home_abbreviation": "WAS",
       "expected_away_abbreviation": "MIA",
-      "expected_home_franchise_id": "WAS",
       "expected_away_franchise_id": "MIA",
+      "expected_home_abbreviation": "WAS",
+      "expected_home_franchise_id": "WAS",
+      "game_date": "2024-11-02",
+      "game_id": "0022400147",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2025,
+      "teams": [
+        {
+          "matchup_raw": "MIA @ WAS",
+          "nba_team_id": 1610612748,
+          "row_count": 13,
+          "team_abbreviation_raw": "MIA",
+          "team_name_raw": "Miami Heat"
+        },
+        {
+          "matchup_raw": "WAS @ MIA",
+          "nba_team_id": 1610612764,
+          "row_count": 13,
+          "team_abbreviation_raw": "WAS",
+          "team_name_raw": "Washington Wizards"
+        }
+      ]
     },
     "2025|regular|0022400621": {
-      "season": 2025,
-      "game_type": "regular",
-      "game_id": "0022400621",
-      "game_date": "2025-01-23",
-      "teams": [
-        {"nba_team_id": 1610612754, "team_name_raw": "Indiana Pacers", "team_abbreviation_raw": "IND", "matchup_raw": "IND @ SAS", "row_count": 13},
-        {"nba_team_id": 1610612759, "team_name_raw": "San Antonio Spurs", "team_abbreviation_raw": "SAS", "matchup_raw": "SAS @ IND", "row_count": 14}
-      ],
-      "expected_home_abbreviation": "IND",
       "expected_away_abbreviation": "SAS",
-      "expected_home_franchise_id": "IND",
       "expected_away_franchise_id": "SAS",
+      "expected_home_abbreviation": "IND",
+      "expected_home_franchise_id": "IND",
+      "game_date": "2025-01-23",
+      "game_id": "0022400621",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2025,
+      "teams": [
+        {
+          "matchup_raw": "IND @ SAS",
+          "nba_team_id": 1610612754,
+          "row_count": 13,
+          "team_abbreviation_raw": "IND",
+          "team_name_raw": "Indiana Pacers"
+        },
+        {
+          "matchup_raw": "SAS @ IND",
+          "nba_team_id": 1610612759,
+          "row_count": 14,
+          "team_abbreviation_raw": "SAS",
+          "team_name_raw": "San Antonio Spurs"
+        }
+      ]
     },
     "2025|regular|0022400633": {
-      "season": 2025,
-      "game_type": "regular",
-      "game_id": "0022400633",
-      "game_date": "2025-01-25",
-      "teams": [
-        {"nba_team_id": 1610612754, "team_name_raw": "Indiana Pacers", "team_abbreviation_raw": "IND", "matchup_raw": "IND @ SAS", "row_count": 13},
-        {"nba_team_id": 1610612759, "team_name_raw": "San Antonio Spurs", "team_abbreviation_raw": "SAS", "matchup_raw": "SAS @ IND", "row_count": 15}
-      ],
-      "expected_home_abbreviation": "SAS",
       "expected_away_abbreviation": "IND",
-      "expected_home_franchise_id": "SAS",
       "expected_away_franchise_id": "IND",
+      "expected_home_abbreviation": "SAS",
+      "expected_home_franchise_id": "SAS",
+      "game_date": "2025-01-25",
+      "game_id": "0022400633",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2025,
+      "teams": [
+        {
+          "matchup_raw": "IND @ SAS",
+          "nba_team_id": 1610612754,
+          "row_count": 13,
+          "team_abbreviation_raw": "IND",
+          "team_name_raw": "Indiana Pacers"
+        },
+        {
+          "matchup_raw": "SAS @ IND",
+          "nba_team_id": 1610612759,
+          "row_count": 15,
+          "team_abbreviation_raw": "SAS",
+          "team_name_raw": "San Antonio Spurs"
+        }
+      ]
     },
     "2025|regular|0022401229": {
-      "season": 2025,
-      "game_type": "regular",
-      "game_id": "0022401229",
-      "game_date": "2024-12-14",
-      "teams": [
-        {"nba_team_id": 1610612737, "team_name_raw": "Atlanta Hawks", "team_abbreviation_raw": "ATL", "matchup_raw": "ATL @ MIL", "row_count": 9},
-        {"nba_team_id": 1610612749, "team_name_raw": "Milwaukee Bucks", "team_abbreviation_raw": "MIL", "matchup_raw": "MIL @ ATL", "row_count": 9}
-      ],
-      "expected_home_abbreviation": "MIL",
       "expected_away_abbreviation": "ATL",
-      "expected_home_franchise_id": "MIL",
       "expected_away_franchise_id": "ATL",
+      "expected_home_abbreviation": "MIL",
+      "expected_home_franchise_id": "MIL",
+      "game_date": "2024-12-14",
+      "game_id": "0022401229",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2025,
+      "teams": [
+        {
+          "matchup_raw": "ATL @ MIL",
+          "nba_team_id": 1610612737,
+          "row_count": 9,
+          "team_abbreviation_raw": "ATL",
+          "team_name_raw": "Atlanta Hawks"
+        },
+        {
+          "matchup_raw": "MIL @ ATL",
+          "nba_team_id": 1610612749,
+          "row_count": 9,
+          "team_abbreviation_raw": "MIL",
+          "team_name_raw": "Milwaukee Bucks"
+        }
+      ]
     },
     "2025|regular|0022401230": {
-      "season": 2025,
-      "game_type": "regular",
-      "game_id": "0022401230",
-      "game_date": "2024-12-14",
-      "teams": [
-        {"nba_team_id": 1610612745, "team_name_raw": "Houston Rockets", "team_abbreviation_raw": "HOU", "matchup_raw": "HOU @ OKC", "row_count": 9},
-        {"nba_team_id": 1610612760, "team_name_raw": "Oklahoma City Thunder", "team_abbreviation_raw": "OKC", "matchup_raw": "OKC @ HOU", "row_count": 10}
-      ],
-      "expected_home_abbreviation": "OKC",
       "expected_away_abbreviation": "HOU",
-      "expected_home_franchise_id": "OKC",
       "expected_away_franchise_id": "HOU",
+      "expected_home_abbreviation": "OKC",
+      "expected_home_franchise_id": "OKC",
+      "game_date": "2024-12-14",
+      "game_id": "0022401230",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2025,
+      "teams": [
+        {
+          "matchup_raw": "HOU @ OKC",
+          "nba_team_id": 1610612745,
+          "row_count": 9,
+          "team_abbreviation_raw": "HOU",
+          "team_name_raw": "Houston Rockets"
+        },
+        {
+          "matchup_raw": "OKC @ HOU",
+          "nba_team_id": 1610612760,
+          "row_count": 10,
+          "team_abbreviation_raw": "OKC",
+          "team_name_raw": "Oklahoma City Thunder"
+        }
+      ]
     },
     "2026|regular|0022500147": {
-      "season": 2026,
-      "game_type": "regular",
-      "game_id": "0022500147",
-      "game_date": "2025-11-01",
-      "teams": [
-        {"nba_team_id": 1610612742, "team_name_raw": "Dallas Mavericks", "team_abbreviation_raw": "DAL", "matchup_raw": "DAL @ DET", "row_count": 10},
-        {"nba_team_id": 1610612765, "team_name_raw": "Detroit Pistons", "team_abbreviation_raw": "DET", "matchup_raw": "DET @ DAL", "row_count": 10}
-      ],
-      "expected_home_abbreviation": "DET",
       "expected_away_abbreviation": "DAL",
-      "expected_home_franchise_id": "DET",
       "expected_away_franchise_id": "DAL",
+      "expected_home_abbreviation": "DET",
+      "expected_home_franchise_id": "DET",
+      "game_date": "2025-11-01",
+      "game_id": "0022500147",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2026,
+      "teams": [
+        {
+          "matchup_raw": "DAL @ DET",
+          "nba_team_id": 1610612742,
+          "row_count": 10,
+          "team_abbreviation_raw": "DAL",
+          "team_name_raw": "Dallas Mavericks"
+        },
+        {
+          "matchup_raw": "DET @ DAL",
+          "nba_team_id": 1610612765,
+          "row_count": 10,
+          "team_abbreviation_raw": "DET",
+          "team_name_raw": "Detroit Pistons"
+        }
+      ]
     },
     "2026|regular|0022500578": {
-      "season": 2026,
-      "game_type": "regular",
-      "game_id": "0022500578",
-      "game_date": "2026-01-15",
-      "teams": [
-        {"nba_team_id": 1610612753, "team_name_raw": "Orlando Magic", "team_abbreviation_raw": "ORL", "matchup_raw": "ORL @ MEM", "row_count": 10},
-        {"nba_team_id": 1610612763, "team_name_raw": "Memphis Grizzlies", "team_abbreviation_raw": "MEM", "matchup_raw": "MEM @ ORL", "row_count": 10}
-      ],
-      "expected_home_abbreviation": "ORL",
       "expected_away_abbreviation": "MEM",
-      "expected_home_franchise_id": "ORL",
       "expected_away_franchise_id": "MEM",
+      "expected_home_abbreviation": "ORL",
+      "expected_home_franchise_id": "ORL",
+      "game_date": "2026-01-15",
+      "game_id": "0022500578",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2026,
+      "teams": [
+        {
+          "matchup_raw": "ORL @ MEM",
+          "nba_team_id": 1610612753,
+          "row_count": 10,
+          "team_abbreviation_raw": "ORL",
+          "team_name_raw": "Orlando Magic"
+        },
+        {
+          "matchup_raw": "MEM @ ORL",
+          "nba_team_id": 1610612763,
+          "row_count": 10,
+          "team_abbreviation_raw": "MEM",
+          "team_name_raw": "Memphis Grizzlies"
+        }
+      ]
     },
     "2026|regular|0022500602": {
-      "season": 2026,
-      "game_type": "regular",
-      "game_id": "0022500602",
-      "game_date": "2026-01-18",
-      "teams": [
-        {"nba_team_id": 1610612753, "team_name_raw": "Orlando Magic", "team_abbreviation_raw": "ORL", "matchup_raw": "ORL @ MEM", "row_count": 12},
-        {"nba_team_id": 1610612763, "team_name_raw": "Memphis Grizzlies", "team_abbreviation_raw": "MEM", "matchup_raw": "MEM @ ORL", "row_count": 11}
-      ],
-      "expected_home_abbreviation": "MEM",
       "expected_away_abbreviation": "ORL",
-      "expected_home_franchise_id": "MEM",
       "expected_away_franchise_id": "ORL",
+      "expected_home_abbreviation": "MEM",
+      "expected_home_franchise_id": "MEM",
+      "game_date": "2026-01-18",
+      "game_id": "0022500602",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2026,
+      "teams": [
+        {
+          "matchup_raw": "ORL @ MEM",
+          "nba_team_id": 1610612753,
+          "row_count": 12,
+          "team_abbreviation_raw": "ORL",
+          "team_name_raw": "Orlando Magic"
+        },
+        {
+          "matchup_raw": "MEM @ ORL",
+          "nba_team_id": 1610612763,
+          "row_count": 11,
+          "team_abbreviation_raw": "MEM",
+          "team_name_raw": "Memphis Grizzlies"
+        }
+      ]
     },
     "2026|regular|0022501229": {
-      "season": 2026,
-      "game_type": "regular",
-      "game_id": "0022501229",
-      "game_date": "2025-12-13",
-      "teams": [
-        {"nba_team_id": 1610612752, "team_name_raw": "New York Knicks", "team_abbreviation_raw": "NYK", "matchup_raw": "NYK @ ORL", "row_count": 9},
-        {"nba_team_id": 1610612753, "team_name_raw": "Orlando Magic", "team_abbreviation_raw": "ORL", "matchup_raw": "ORL @ NYK", "row_count": 11}
-      ],
-      "expected_home_abbreviation": "ORL",
       "expected_away_abbreviation": "NYK",
-      "expected_home_franchise_id": "ORL",
       "expected_away_franchise_id": "NYK",
+      "expected_home_abbreviation": "ORL",
+      "expected_home_franchise_id": "ORL",
+      "game_date": "2025-12-13",
+      "game_id": "0022501229",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2026,
+      "teams": [
+        {
+          "matchup_raw": "NYK @ ORL",
+          "nba_team_id": 1610612752,
+          "row_count": 9,
+          "team_abbreviation_raw": "NYK",
+          "team_name_raw": "New York Knicks"
+        },
+        {
+          "matchup_raw": "ORL @ NYK",
+          "nba_team_id": 1610612753,
+          "row_count": 11,
+          "team_abbreviation_raw": "ORL",
+          "team_name_raw": "Orlando Magic"
+        }
+      ]
     },
     "2026|regular|0022501230": {
-      "season": 2026,
-      "game_type": "regular",
-      "game_id": "0022501230",
-      "game_date": "2025-12-13",
-      "teams": [
-        {"nba_team_id": 1610612759, "team_name_raw": "San Antonio Spurs", "team_abbreviation_raw": "SAS", "matchup_raw": "SAS @ OKC", "row_count": 9},
-        {"nba_team_id": 1610612760, "team_name_raw": "Oklahoma City Thunder", "team_abbreviation_raw": "OKC", "matchup_raw": "OKC @ SAS", "row_count": 10}
-      ],
-      "expected_home_abbreviation": "OKC",
       "expected_away_abbreviation": "SAS",
-      "expected_home_franchise_id": "OKC",
       "expected_away_franchise_id": "SAS",
+      "expected_home_abbreviation": "OKC",
+      "expected_home_franchise_id": "OKC",
+      "game_date": "2025-12-13",
+      "game_id": "0022501230",
+      "game_type": "regular",
+      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides.",
       "reference_neutral_site": true,
       "reference_neutral_site_source": "hoopr",
-      "note": "Reviewed neutral-site designation anomaly; exact reciprocal player-log shape and unique hoopR-backed committed reference agree on the designated sides."
+      "season": 2026,
+      "teams": [
+        {
+          "matchup_raw": "SAS @ OKC",
+          "nba_team_id": 1610612759,
+          "row_count": 9,
+          "team_abbreviation_raw": "SAS",
+          "team_name_raw": "San Antonio Spurs"
+        },
+        {
+          "matchup_raw": "OKC @ SAS",
+          "nba_team_id": 1610612760,
+          "row_count": 10,
+          "team_abbreviation_raw": "OKC",
+          "team_name_raw": "Oklahoma City Thunder"
+        }
+      ]
     }
-  }
+  },
+  "schema_version": 1
 }

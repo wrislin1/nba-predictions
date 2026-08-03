@@ -1544,6 +1544,88 @@ def test_designation_reference_proof_fails_closed(
         player_games_build.audit_source(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("table", "value"),
+    [
+        ("neutral_site", 1),
+        ("neutral_site", "true"),
+        ("neutral_site", None),
+        ("is_home", 0),
+        ("is_home", ""),
+        ("is_home", None),
+    ],
+    ids=[
+        "neutral-integer",
+        "neutral-string",
+        "neutral-null",
+        "home-integer",
+        "home-string",
+        "home-null",
+    ],
+)
+def test_designation_reference_requires_exact_non_null_booleans(
+    monkeypatch, tmp_path, table, value,
+):
+    """Would fail if truthiness could replace exact reference booleans."""
+    _raw, references, *_rest = _seed_designation_build_inputs(
+        monkeypatch, tmp_path
+    )
+    audit = player_games_build.audit_source(tmp_path)
+    games = pd.read_parquet(references / "games.parquet")
+    team_games = pd.read_parquet(references / "team_games.parquet")
+    postseason = pd.read_parquet(references / "playoff_games.parquet")
+    if table == "neutral_site":
+        games["neutral_site"] = games["neutral_site"].astype(object)
+        games.loc[games.game_id.eq("0028300001"), "neutral_site"] = value
+    else:
+        team_games["is_home"] = team_games["is_home"].astype(object)
+        team_games.loc[
+            team_games.game_id.eq("0028300001")
+            & team_games.franchise_id.eq("CHI"),
+            "is_home",
+        ] = value
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="exact non-null boolean",
+    ):
+        player_games_build._validate_designation_references(
+            audit["player_games"],
+            audit["designation_repairs"],
+            games,
+            team_games,
+            postseason,
+        )
+
+
+def test_audit_rejects_playoff_mutation_after_designation_reference_proof(
+    monkeypatch, tmp_path,
+):
+    """Would fail if audit evidence and playoff bytes could diverge."""
+    _raw, references, *_rest = _seed_designation_build_inputs(
+        monkeypatch, tmp_path
+    )
+    real_validate = player_games_build._validate_designation_references
+
+    def mutate_after_reference_proof(*args, **kwargs):
+        result = real_validate(*args, **kwargs)
+        playoff_path = references / "playoff_games.parquet"
+        playoff_path.write_bytes(playoff_path.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(
+        player_games_build,
+        "_validate_designation_references",
+        mutate_after_reference_proof,
+    )
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="playoff_games.parquet changed",
+    ):
+        player_games_build.audit_source(tmp_path)
+
+
 def test_build_from_roots_writes_exact_deterministic_manifest(monkeypatch, tmp_path):
     """Would fail if manifest claims depended on staging paths or write order."""
     raw_root, references, _ledger_path = _seed_build_inputs(monkeypatch, tmp_path)
@@ -1693,7 +1775,9 @@ def test_build_binds_designation_ledger_and_exact_two_layer_proof(
     }
 
 
-@pytest.mark.parametrize("mutation", ["designation", "games", "team_games"])
+@pytest.mark.parametrize(
+    "mutation", ["designation", "games", "team_games", "playoff_games"]
+)
 def test_build_rejects_designation_or_reference_mutation_during_recomputation(
     monkeypatch, tmp_path, mutation,
 ):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 
@@ -20,6 +21,38 @@ HEADERS = [
     "REB", "AST", "STL", "BLK", "TOV", "PF", "PTS", "PLUS_MINUS",
     "FANTASY_PTS", "VIDEO_AVAILABLE",
 ]
+
+
+@pytest.mark.parametrize(
+    ("path", "collection", "count", "canonical_sha256"),
+    [
+        (
+            player_logs.MATCHUP_EXCEPTIONS_PATH,
+            "exceptions",
+            36,
+            "4abd8707a98a08318192ead3fa198476c909cad274b48395d2ebd494ee9f421b",
+        ),
+        (
+            player_logs.DESIGNATION_EXCEPTIONS_PATH,
+            "designations",
+            10,
+            "3fdec7bf1289fd94d4114dc86cb1ca4a1a4adea5c8421c353645222250e1b6eb",
+        ),
+    ],
+)
+def test_packaged_exception_ledgers_are_exact_canonical_json(
+    path, collection, count, canonical_sha256,
+):
+    """Would fail if packaged semantic mappings used non-canonical bytes."""
+    payload = path.read_bytes()
+    document = json.loads(payload)
+    canonical = (
+        json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+    assert len(document[collection]) == count
+    assert hashlib.sha256(canonical).hexdigest() == canonical_sha256
+    assert payload == canonical
 
 
 @pytest.fixture(autouse=True)

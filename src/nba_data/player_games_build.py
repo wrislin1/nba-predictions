@@ -12,6 +12,7 @@ import tempfile
 import tomllib
 
 import pandas as pd
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -940,6 +941,9 @@ def audit_source(data_dir: Path) -> dict:
     team_games_snapshot = _capture_stable_file(
         parquet_dir / "team_games.parquet", "team_games.parquet"
     )
+    playoff_games_snapshot = _capture_stable_file(
+        parquet_dir / "playoff_games.parquet", "playoff_games.parquet"
+    )
     matchup_exceptions = player_logs.parse_matchup_exceptions(
         matchup_snapshot["payload"]
     )
@@ -965,7 +969,7 @@ def audit_source(data_dir: Path) -> dict:
         io.BytesIO(team_games_snapshot["payload"])
     )
     postseason_games = pd.read_parquet(
-        parquet_dir / "playoff_games.parquet"
+        io.BytesIO(playoff_games_snapshot["payload"])
     )
     _validate_designation_references(
         player_games,
@@ -990,6 +994,9 @@ def audit_source(data_dir: Path) -> dict:
     _require_snapshot_unchanged(franchise_snapshot, "franchise reference")
     _require_snapshot_unchanged(games_snapshot, "games.parquet")
     _require_snapshot_unchanged(team_games_snapshot, "team_games.parquet")
+    _require_snapshot_unchanged(
+        playoff_games_snapshot, "playoff_games.parquet"
+    )
     return {
         "player_games": player_games,
         "team_aggregates": team_aggregates,
@@ -1294,7 +1301,10 @@ def _validate_designation_references(
             or str(game["away_franchise_id"]) != expected_away
         ):
             fail("designated sides drift")
-        if bool(game["neutral_site"]) is not approval["reference_neutral_site"]:
+        neutral_site = game["neutral_site"]
+        if not isinstance(neutral_site, (bool, np.bool_)):
+            fail("games.neutral_site must be an exact non-null boolean")
+        if bool(neutral_site) is not approval["reference_neutral_site"]:
             fail("neutral-site flag drift")
         if (
             str(game["neutral_site_source"])
@@ -1319,6 +1329,11 @@ def _validate_designation_references(
             _reference_date(value) for value in team_rows["game_date"]
         } != {approval["game_date"]}:
             fail("team-games date drift")
+        if any(
+            not isinstance(value, (bool, np.bool_))
+            for value in team_rows["is_home"]
+        ):
+            fail("team_games.is_home must be an exact non-null boolean")
         expected_team_rows = {
             (expected_home, expected_away, True),
             (expected_away, expected_home, False),
@@ -1355,7 +1370,7 @@ def _validate_designation_references(
             "game_date": game_date,
             "home_franchise_id": expected_home,
             "away_franchise_id": expected_away,
-            "neutral_site": bool(game["neutral_site"]),
+            "neutral_site": bool(neutral_site),
             "neutral_site_source": str(game["neutral_site_source"]),
             "venue_name": str(game["venue_name"]),
             "venue_city": str(game["venue_city"]),
@@ -1622,6 +1637,9 @@ def _recompute_manifest(
     team_games_snapshot = _capture_stable_file(
         reference_dir / "team_games.parquet", "team_games.parquet"
     )
+    playoff_games_snapshot = _capture_stable_file(
+        reference_dir / "playoff_games.parquet", "playoff_games.parquet"
+    )
     try:
         franchise_resolver = franchises.FranchiseResolver.from_payload(
             franchise_snapshot["payload"]
@@ -1654,7 +1672,7 @@ def _recompute_manifest(
             io.BytesIO(team_games_snapshot["payload"])
         )
         postseason_games = pd.read_parquet(
-            reference_dir / "playoff_games.parquet"
+            io.BytesIO(playoff_games_snapshot["payload"])
         )
     except (OSError, pa.ArrowException) as exc:
         raise PlayerGamesBuildError(
@@ -1704,6 +1722,8 @@ def _recompute_manifest(
             if name == "games.parquet"
             else _payload_binding(team_games_snapshot["payload"], name)
             if name == "team_games.parquet"
+            else _payload_binding(playoff_games_snapshot["payload"], name)
+            if name == "playoff_games.parquet"
             else _file_binding(reference_dir / name, name)
         )
         for name in REFERENCE_FILENAMES
@@ -1759,6 +1779,9 @@ def _recompute_manifest(
     )
     _require_snapshot_unchanged(games_snapshot, "games.parquet")
     _require_snapshot_unchanged(team_games_snapshot, "team_games.parquet")
+    _require_snapshot_unchanged(
+        playoff_games_snapshot, "playoff_games.parquet"
+    )
     return manifest
 
 
