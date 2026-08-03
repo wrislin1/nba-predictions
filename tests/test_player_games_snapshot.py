@@ -1,8 +1,14 @@
+import dataclasses
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
+import subprocess
+import time
+from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
@@ -10,6 +16,11 @@ import pyarrow.parquet as pq
 import pytest
 
 from nba_data import cache, player_games_build, player_games_snapshot, player_logs
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+ARCHIVE_SCRIPT = REPO_ROOT / "scripts/archive_player_games_snapshot.sh"
+RESTORE_SCRIPT = REPO_ROOT / "scripts/restore_player_games_snapshot.sh"
 
 
 HEADERS = [
@@ -444,3 +455,658 @@ def test_verify_rebuild_removes_only_its_own_owned_stage(snapshot_fixture):
 
     after = {entry.name for entry in stage_parent.iterdir()}
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# scripts/archive_player_games_snapshot.sh and
+# scripts/restore_player_games_snapshot.sh
+#
+# These scripts are exercised as real subprocesses: filesystem
+# orchestration, capacity gates, atomic renames, and the restore rollback
+# state machine are the things under test, not `nba_data.player_games_snapshot`
+# itself (already covered above as direct in-process calls).
+#
+# `snapshot_fixture` builds its tiny two-scope tree by monkeypatching
+# `SOURCE_SEASONS`/`PUBLICATION_SEASONS`/`PLAY_IN_SEASONS` *in this test
+# process*. A subprocess re-imports `nba_data.player_logs`/
+# `player_games_build` from scratch with their real, full (1984-2026)
+# season scope and real packaged exception ledgers, so `monkeypatch` alone
+# cannot make a subprocess agree the tiny fixture tree is a complete
+# archive. `_write_season_scope_shim` below reproduces the same
+# monkeypatches for a freshly spawned interpreter via a dynamically
+# generated (never committed) `sitecustomize.py`.
+# ---------------------------------------------------------------------------
+
+_SUBPROCESS_SOURCE_SEASONS = (1984, 2012, 2013)
+_SUBPROCESS_PUBLICATION_SEASONS = (2012, 2013)
+
+
+def _write_season_scope_shim(tmp_path):
+    """Write a `sitecustomize.py`, importable via `PYTHONPATH`, that patches
+    the narrow fixture season scope and empty exception ledgers into a
+    freshly started Python interpreter before any of its own imports run.
+
+    `site.py` imports `sitecustomize` during interpreter startup -- before
+    `-m nba_data.player_games_snapshot`'s own
+    `from nba_data import player_logs, player_games_build` executes -- so
+    that later import simply observes the already-patched module objects
+    via `sys.modules`.
+    """
+    shim_dir = tmp_path / "season_scope_shim"
+    shim_dir.mkdir(exist_ok=True)
+    matchup_ledger = shim_dir / "matchup-exceptions.json"
+    matchup_ledger.write_bytes(b'{"exceptions":{},"schema_version":1}\n')
+    designation_ledger = shim_dir / "designation-exceptions.json"
+    designation_ledger.write_bytes(b'{"designations":{},"schema_version":1}\n')
+    exceptions_ledger = shim_dir / "exceptions.json"
+    exceptions_ledger.write_text(
+        json.dumps({"minutes": {}, "points": {}}, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (shim_dir / "sitecustomize.py").write_text(
+        "from pathlib import Path\n"
+        "from nba_data import player_logs, player_games_build\n"
+        f"player_logs.SOURCE_SEASONS = {_SUBPROCESS_SOURCE_SEASONS!r}\n"
+        f"player_logs.PUBLICATION_SEASONS = {_SUBPROCESS_PUBLICATION_SEASONS!r}\n"
+        "player_logs.PLAY_IN_SEASONS = ()\n"
+        "player_games_build.SOURCE_SEASONS = player_logs.SOURCE_SEASONS\n"
+        "player_games_build.PUBLICATION_SEASONS = player_logs.PUBLICATION_SEASONS\n"
+        "player_games_build.PLAY_IN_SEASONS = player_logs.PLAY_IN_SEASONS\n"
+        f"player_games_build.MATCHUP_EXCEPTIONS_PATH = Path({str(matchup_ledger)!r})\n"
+        "player_games_build.DESIGNATION_EXCEPTIONS_PATH = "
+        f"Path({str(designation_ledger)!r})\n"
+        f"player_games_build.EXCEPTIONS_PATH = Path({str(exceptions_ledger)!r})\n"
+        "player_logs.load_matchup_exceptions = lambda *a, **k: {}\n"
+        "player_logs.load_designation_exceptions = lambda *a, **k: {}\n"
+    )
+    return shim_dir
+
+
+def _materialize_data_dir(snapshot_fixture_result):
+    """Relocate `snapshot_fixture`'s standalone publication into the
+    `$data_dir/parquet-large/player_games` layout the archive/restore
+    scripts expect. The fixture's raw archive and reference dir are
+    already at `$data_dir/raw/stats_nba/player_logs` and `$data_dir/parquet`
+    respectively."""
+    raw_root, publication_root, reference_dir, manifest_sha256 = snapshot_fixture_result
+    data_dir = raw_root.parents[2]
+    destination = data_dir / "parquet-large" / "player_games"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(publication_root, destination)
+    return data_dir, reference_dir, manifest_sha256
+
+
+def _default_capacity_shim(base_dir: Path) -> Path:
+    """A PATH-shimmed `du`/`df` reporting a generous fixed capacity.
+
+    The real capacity probe (`required = allocated source bytes + archive
+    filesystem total bytes / 5`) uses the archive root's *filesystem* total,
+    which on this host (`/`, 196 GB total) demands ~39 GB free regardless of
+    how tiny the fixture actually is. Every archive test that expects a
+    real copy to proceed installs this generous, fixed, PATH-shimmed probe
+    so success depends on the script's own logic, not on how much free
+    space `/` happens to have; the dedicated capacity test below installs
+    its own controllable shim instead, taking priority over this default.
+    """
+    shim_dir = base_dir / ".default_capacity_shim"
+    if shim_dir.is_dir():
+        return shim_dir
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    du_script = shim_dir / "du"
+    du_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in -*) continue ;; esac\n"
+        "  printf '%d\\t%s\\n' 1 \"$arg\"\n"
+        "done\n"
+    )
+    du_script.chmod(0o755)
+    df_script = shim_dir / "df"
+    df_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'Size Avail\\n'\n"
+        "printf '%d %d\\n' 1099511627776 1099511627776\n"
+    )
+    df_script.chmod(0o755)
+    return shim_dir
+
+
+def _run_archive(data_dir, archive_root, shim_dir, *, extra_env=None, path_prefix=None):
+    env = dict(os.environ)
+    env["NBA_PLAYER_GAMES_DATA_DIR"] = str(data_dir)
+    env["NBA_PLAYER_GAMES_ARCHIVE_ROOT"] = str(archive_root)
+    env["PYTHONPATH"] = str(shim_dir)
+    default_capacity = _default_capacity_shim(Path(archive_root).parent)
+    prefixes = [str(path_prefix)] if path_prefix is not None else []
+    prefixes.append(str(default_capacity))
+    env["PATH"] = ":".join(prefixes) + f":{env.get('PATH', '')}"
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(ARCHIVE_SCRIPT)],
+        env=env,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def _make_capacity_shims(shim_dir: Path) -> Path:
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    du_script = shim_dir / "du"
+    du_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in -*) continue ;; esac\n"
+        "  printf '%d\\t%s\\n' \"${FAKE_DU_BYTES_PER_PATH:-0}\" \"$arg\"\n"
+        "done\n"
+    )
+    du_script.chmod(0o755)
+    df_script = shim_dir / "df"
+    df_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf 'Size Avail\\n'\n"
+        "printf '%d %d\\n' \"${FAKE_DF_TOTAL_BYTES:-0}\" \"${FAKE_DF_AVAIL_BYTES:-0}\"\n"
+    )
+    df_script.chmod(0o755)
+    return shim_dir
+
+
+@dataclasses.dataclass(frozen=True)
+class ArchivedSnapshot:
+    archive_root: Path
+    name: str
+    manifest_sha256: str
+    reference_dir: Path
+    shim_dir: Path
+    data_dir: Path
+
+
+@pytest.fixture
+def archived_snapshot(snapshot_fixture, tmp_path):
+    """Produce a real, verified snapshot by running the real archive script
+    against a materialized copy of `snapshot_fixture`."""
+    data_dir, reference_dir, manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    result = _run_archive(data_dir, archive_root, shim_dir)
+    assert result.returncode == 0, result.stderr
+
+    name = f"player-games-archive-2026-{manifest_sha256[:12]}"
+    assert (archive_root / name).is_dir()
+    return ArchivedSnapshot(
+        archive_root=archive_root,
+        name=name,
+        manifest_sha256=manifest_sha256,
+        reference_dir=reference_dir,
+        shim_dir=shim_dir,
+        data_dir=data_dir,
+    )
+
+
+def _run_restore_script(archived_snapshot, restore_root, *, extra_env=None, path_prefix=None):
+    env = dict(os.environ)
+    env["NBA_PLAYER_GAMES_ARCHIVE_ROOT"] = str(archived_snapshot.archive_root)
+    env["NBA_PLAYER_GAMES_DATA_DIR"] = str(restore_root)
+    env["NBA_PLAYER_GAMES_REFERENCE_DIR"] = str(archived_snapshot.reference_dir)
+    env["PYTHONPATH"] = str(archived_snapshot.shim_dir)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}:{env.get('PATH', '')}"
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(RESTORE_SCRIPT), archived_snapshot.name],
+        env=env,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Archive behaviors
+# ---------------------------------------------------------------------------
+
+
+def test_archive_snapshot_copies_full_raw_and_trusted_publication(snapshot_fixture, tmp_path):
+    """Would fail if the archive silently dropped the historical raw pair
+    that the (narrower) publication manifest never consumed, or produced a
+    checksum inventory that didn't literally match every archived file."""
+    data_dir, reference_dir, manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    result = _run_archive(data_dir, archive_root, shim_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert manifest_sha256 in result.stdout
+    name = f"player-games-archive-2026-{manifest_sha256[:12]}"
+    snapshot = archive_root / name
+    assert snapshot.is_dir()
+
+    raw_dir = snapshot / "raw/stats_nba/player_logs"
+    publication_dir = snapshot / "parquet-large/player_games"
+    assert raw_dir.is_dir()
+    assert publication_dir.is_dir()
+
+    # The historical (1984) raw pair is part of the source scope but
+    # outside the (2012, 2013) publication scope: it must still be archived.
+    assert (raw_dir / "season=1984/regular.json").is_file()
+    assert (raw_dir / "season=1984/regular.json.meta.json").is_file()
+    assert (raw_dir / "season=1984/playoff.json").is_file()
+    assert (raw_dir / "season=1984/playoff.json.meta.json").is_file()
+    manifest_text = (publication_dir / "_manifest.json").read_text()
+    assert "1984" not in json.loads(manifest_text)["scope"]["ending_seasons"].__str__()
+
+    sums_path = snapshot / "SHA256SUMS"
+    lines = sums_path.read_text().splitlines()
+    listed_paths = [line.split("  ", 1)[1] for line in lines]
+    assert listed_paths == sorted(listed_paths)
+    assert "SHA256SUMS" not in listed_paths
+
+    expected_pairs = sorted(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(snapshot).as_posix()}"
+        for path in snapshot.rglob("*")
+        if path.is_file() and path.name != "SHA256SUMS"
+    )
+    assert sorted(lines) == expected_pairs
+
+    subprocess.run(
+        ["sha256sum", "--check", "--strict", "SHA256SUMS"],
+        cwd=snapshot, check=True, capture_output=True, text=True,
+    )
+
+
+def test_archive_snapshot_is_idempotent_only_for_byte_identical_final(
+    snapshot_fixture, tmp_path,
+):
+    data_dir, _reference_dir, manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    first = _run_archive(data_dir, archive_root, shim_dir)
+    assert first.returncode == 0, first.stderr
+    name = f"player-games-archive-2026-{manifest_sha256[:12]}"
+    snapshot = archive_root / name
+    mtime_before = snapshot.stat().st_mtime_ns
+
+    second = _run_archive(data_dir, archive_root, shim_dir)
+
+    assert second.returncode == 0, second.stderr
+    assert snapshot.stat().st_mtime_ns == mtime_before
+    assert [p.name for p in archive_root.iterdir()] == [name]
+
+
+def test_archive_snapshot_rejects_different_existing_final(snapshot_fixture, tmp_path):
+    data_dir, _reference_dir, manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    first = _run_archive(data_dir, archive_root, shim_dir)
+    assert first.returncode == 0, first.stderr
+    name = f"player-games-archive-2026-{manifest_sha256[:12]}"
+    snapshot = archive_root / name
+
+    sums_path = snapshot / "SHA256SUMS"
+    lines = sums_path.read_text().splitlines()
+    digest, rest = lines[0].split("  ", 1)
+    tampered_digest = ("0" if digest[0] != "0" else "1") + digest[1:]
+    lines[0] = f"{tampered_digest}  {rest}"
+    tampered_text = "\n".join(lines) + "\n"
+    sums_path.write_text(tampered_text)
+
+    second = _run_archive(data_dir, archive_root, shim_dir)
+
+    assert second.returncode != 0
+    # Never modify a published snapshot -- the tampering must survive.
+    assert sums_path.read_text() == tampered_text
+    assert [p.name for p in archive_root.iterdir()] == [name]
+
+
+def test_archive_snapshot_rejects_stale_stage(snapshot_fixture, tmp_path):
+    data_dir, _reference_dir, _manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+    stale = archive_root / ".player-games-archive.stale123"
+    stale.mkdir()
+    (stale / "leftover.txt").write_text("from a crashed prior run\n")
+
+    result = _run_archive(data_dir, archive_root, shim_dir)
+
+    assert result.returncode != 0
+    assert "stale" in result.stderr.lower()
+    # The stale entry is rejected, never silently absorbed or deleted.
+    assert stale.is_dir()
+    assert (stale / "leftover.txt").exists()
+    assert [p.name for p in archive_root.iterdir()] == [stale.name]
+
+
+def test_archive_snapshot_checks_capacity_before_copy(snapshot_fixture, tmp_path):
+    data_dir, _reference_dir, manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    capacity_shim_dir = _make_capacity_shims(tmp_path / "capacity_shims")
+    name = f"player-games-archive-2026-{manifest_sha256[:12]}"
+
+    per_path = 500
+    total = 500
+    required = per_path * 2 + total // 5  # 1000 + 100 = 1100
+
+    reject_root = tmp_path / "archive_root_reject"
+    reject_root.mkdir()
+    reject = _run_archive(
+        data_dir, reject_root, shim_dir,
+        path_prefix=str(capacity_shim_dir),
+        extra_env={
+            "FAKE_DU_BYTES_PER_PATH": str(per_path),
+            "FAKE_DF_TOTAL_BYTES": str(total),
+            "FAKE_DF_AVAIL_BYTES": str(required - 1),
+        },
+    )
+    assert reject.returncode != 0
+    assert "capacity" in reject.stderr.lower()
+    assert not any(reject_root.iterdir())
+
+    accept_root = tmp_path / "archive_root_accept"
+    accept_root.mkdir()
+    accept = _run_archive(
+        data_dir, accept_root, shim_dir,
+        path_prefix=str(capacity_shim_dir),
+        extra_env={
+            "FAKE_DU_BYTES_PER_PATH": str(per_path),
+            "FAKE_DF_TOTAL_BYTES": str(total),
+            "FAKE_DF_AVAIL_BYTES": str(required),
+        },
+    )
+    assert accept.returncode == 0, accept.stderr
+    assert (accept_root / name).is_dir()
+
+
+def test_archive_snapshot_detects_source_mutation_during_copy(snapshot_fixture, tmp_path):
+    """Would fail if the archive trusted the bytes it already copied instead
+    of independently revalidating the *live* source after the copy."""
+    data_dir, _reference_dir, _manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    mutate_shim_dir = tmp_path / "mutate_shim"
+    mutate_shim_dir.mkdir()
+    real_sha256sum = shutil.which("sha256sum")
+    target_file = data_dir / "raw/stats_nba/player_logs/season=2012/regular.json"
+    original_bytes = target_file.read_bytes()
+    # `sha256sum --check --strict SHA256SUMS` runs exactly once for a fresh
+    # archive, immediately after the stage's own checksum file is written
+    # and immediately before the live source is revalidated: mutating the
+    # live source right there lands the mutation squarely inside the
+    # already-completed copy, undetectable by anything that only re-checks
+    # the stage.
+    shim_script = mutate_shim_dir / "sha256sum"
+    shim_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$#\" -eq 3 ] && [ \"$1\" = \"--check\" ] && [ \"$2\" = \"--strict\" ] "
+        "&& [ \"$3\" = \"SHA256SUMS\" ]; then\n"
+        f"  printf '{{\"resultSets\": []}}' > {shlex.quote(str(target_file))}\n"
+        "fi\n"
+        f"exec {shlex.quote(real_sha256sum)} \"$@\"\n"
+    )
+    shim_script.chmod(0o755)
+
+    result = _run_archive(data_dir, archive_root, shim_dir, path_prefix=str(mutate_shim_dir))
+
+    assert result.returncode != 0
+    assert target_file.read_bytes() != original_bytes
+    assert list(archive_root.iterdir()) == []
+    assert list(archive_root.glob(".player-games-archive.*")) == []
+
+
+def test_archive_snapshot_signal_leaves_no_final(snapshot_fixture, tmp_path):
+    """A signal trap that doesn't itself call exit lets bash resume after
+    running it -- send SIGTERM once staging exists and is blocked in
+    (shimmed) rsync, and require the script to actually terminate nonzero
+    with staging cleaned up, not silently finish the archive and exit 0."""
+    data_dir, _reference_dir, _manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    rsync_shim_dir = tmp_path / "rsync_shim"
+    rsync_shim_dir.mkdir()
+    rsync_script = rsync_shim_dir / "rsync"
+    rsync_script.write_text("#!/usr/bin/env bash\nsleep 2\n")
+    rsync_script.chmod(0o755)
+
+    default_capacity = _default_capacity_shim(tmp_path)
+    env = dict(os.environ)
+    env["NBA_PLAYER_GAMES_DATA_DIR"] = str(data_dir)
+    env["NBA_PLAYER_GAMES_ARCHIVE_ROOT"] = str(archive_root)
+    env["PYTHONPATH"] = str(shim_dir)
+    env["PATH"] = f"{rsync_shim_dir}:{default_capacity}:{env.get('PATH', '')}"
+
+    proc = subprocess.Popen(
+        [str(ARCHIVE_SCRIPT)], env=env, cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        staging_dirs = []
+        while time.monotonic() < deadline:
+            staging_dirs = list(archive_root.glob(".player-games-archive.*"))
+            if staging_dirs:
+                break
+            time.sleep(0.05)
+        assert staging_dirs, "staging directory never appeared"
+
+        proc.send_signal(signal.SIGTERM)
+        _stdout, _stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+
+    assert proc.returncode is not None and proc.returncode != 0
+    assert list(archive_root.glob(".player-games-archive.*")) == []
+    assert list(archive_root.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# Restore behaviors
+# ---------------------------------------------------------------------------
+
+
+def test_restore_snapshot_places_raw_and_publication_after_rebuild(
+    archived_snapshot,
+    tmp_path,
+):
+    restore_root = tmp_path / "restore"
+    result = _run_restore_script(
+        archived_snapshot,
+        restore_root,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (restore_root / "raw/stats_nba/player_logs").is_dir()
+    assert (
+        restore_root / "parquet-large/player_games/_manifest.json"
+    ).is_file()
+    assert "independent rebuild: ok" in result.stdout
+
+
+@pytest.mark.parametrize("which", ["raw", "publication"])
+def test_restore_snapshot_refuses_when_either_target_exists(
+    archived_snapshot, tmp_path, which,
+):
+    restore_root = tmp_path / "restore"
+    restore_root.mkdir()
+    raw_target = restore_root / "raw/stats_nba/player_logs"
+    publication_target = restore_root / "parquet-large/player_games"
+    target = raw_target if which == "raw" else publication_target
+    other = publication_target if which == "raw" else raw_target
+    target.mkdir(parents=True)
+    (target / "sentinel.txt").write_text("pre-existing\n")
+
+    result = _run_restore_script(archived_snapshot, restore_root)
+
+    assert result.returncode != 0
+    assert (target / "sentinel.txt").read_text() == "pre-existing\n"
+    assert not other.exists()
+
+
+@pytest.mark.parametrize("which", ["raw", "publication"])
+def test_restore_snapshot_refuses_symlink_targets(archived_snapshot, tmp_path, which):
+    restore_root = tmp_path / "restore"
+    restore_root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    raw_target = restore_root / "raw/stats_nba/player_logs"
+    publication_target = restore_root / "parquet-large/player_games"
+    target = raw_target if which == "raw" else publication_target
+    other = publication_target if which == "raw" else raw_target
+    target.parent.mkdir(parents=True)
+    target.symlink_to(elsewhere)
+
+    result = _run_restore_script(archived_snapshot, restore_root)
+
+    assert result.returncode != 0
+    assert target.is_symlink()
+    assert os.readlink(target) == str(elsewhere)
+    assert not other.exists()
+
+
+def test_restore_snapshot_detects_snapshot_mutation(archived_snapshot, tmp_path):
+    """Would fail if restore trusted the archived snapshot without
+    revalidating its SHA256SUMS/layout for itself before copying from it."""
+    restore_root = tmp_path / "restore"
+    snapshot_dir = archived_snapshot.archive_root / archived_snapshot.name
+    sums_path = snapshot_dir / "SHA256SUMS"
+    original_text = sums_path.read_text()
+    lines = original_text.splitlines()
+    digest, rest = lines[0].split("  ", 1)
+    tampered_digest = ("0" if digest[0] != "0" else "1") + digest[1:]
+    lines[0] = f"{tampered_digest}  {rest}"
+
+    try:
+        sums_path.write_text("\n".join(lines) + "\n")
+
+        result = _run_restore_script(archived_snapshot, restore_root)
+
+        assert result.returncode != 0
+        assert not (restore_root / "raw/stats_nba/player_logs").exists()
+        assert not (restore_root / "parquet-large/player_games").exists()
+    finally:
+        sums_path.write_text(original_text)
+
+
+def test_restore_snapshot_rejects_rebuild_difference(archived_snapshot, tmp_path):
+    """Corrupts the *staged* raw copy -- not the archived snapshot -- right
+    between the post-copy snapshot revalidation and the independent
+    verify-rebuild call, proving verify-rebuild is a real, distinct check
+    on the staged bytes rather than a restatement of the snapshot check."""
+    restore_root = tmp_path / "restore"
+    restore_root.mkdir()
+
+    mutate_shim_dir = tmp_path / "mutate_shim"
+    mutate_shim_dir.mkdir()
+    real_sha256sum = shutil.which("sha256sum")
+    counter_file = tmp_path / "sha256sum_call_count"
+    shim_script = mutate_shim_dir / "sha256sum"
+    shim_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$#\" -eq 3 ] && [ \"$1\" = \"--check\" ] && [ \"$2\" = \"--strict\" ] "
+        "&& [ \"$3\" = \"SHA256SUMS\" ]; then\n"
+        f"  count=0\n"
+        f"  [ -f {shlex.quote(str(counter_file))} ] && "
+        f"count=\"$(cat {shlex.quote(str(counter_file))})\"\n"
+        "  count=$((count + 1))\n"
+        f"  echo \"$count\" > {shlex.quote(str(counter_file))}\n"
+        "  if [ \"$count\" -eq 2 ]; then\n"
+        f"    stage=\"$(find {shlex.quote(str(restore_root))} "
+        "-name '.player-games-restore-raw.*' -type d | head -n1)\"\n"
+        "    if [ -n \"$stage\" ]; then\n"
+        "      printf '{\"resultSets\": []}' > \"$stage/season=2012/regular.json\"\n"
+        "    fi\n"
+        "  fi\n"
+        "fi\n"
+        f"exec {shlex.quote(real_sha256sum)} \"$@\"\n"
+    )
+    shim_script.chmod(0o755)
+
+    result = _run_restore_script(
+        archived_snapshot, restore_root, path_prefix=str(mutate_shim_dir),
+    )
+
+    assert result.returncode != 0
+    assert not (restore_root / "raw/stats_nba/player_logs").exists()
+    assert not (restore_root / "parquet-large/player_games").exists()
+
+
+def test_restore_snapshot_rolls_back_partial_placement(archived_snapshot, tmp_path):
+    restore_root = tmp_path / "restore"
+    restore_root.mkdir()
+    raw_destination = restore_root / "raw/stats_nba/player_logs"
+    publication_destination = restore_root / "parquet-large/player_games"
+    raw_parent = raw_destination.parent
+    publication_parent = publication_destination.parent
+    raw_parent.mkdir(parents=True)
+    publication_parent.mkdir(parents=True)
+
+    # Locking `publication_parent` must happen strictly *after* the first
+    # (`raw_stage` -> `raw_destination`) rename -- everything up through
+    # `verify-rebuild` (which itself stages a temp rebuild directory next
+    # to the staged publication, i.e. inside `publication_parent`) must
+    # still be able to run normally. Shimming `mv` to lock right after it
+    # performs exactly that first rename lands the lock precisely between
+    # the two renames, rather than anywhere earlier in the script.
+    shim_dir = tmp_path / "lock_shim"
+    shim_dir.mkdir()
+    real_mv = shutil.which("mv")
+    mv_script = shim_dir / "mv"
+    mv_script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"{shlex.quote(real_mv)} \"$@\"\n"
+        "rc=$?\n"
+        "for arg in \"$@\"; do\n"
+        f"  if [ \"$arg\" = {shlex.quote(str(raw_destination))} ]; then\n"
+        f"    chmod 555 -- {shlex.quote(str(publication_parent))}\n"
+        "  fi\n"
+        "done\n"
+        "exit \"$rc\"\n"
+    )
+    mv_script.chmod(0o755)
+
+    try:
+        result = _run_restore_script(
+            archived_snapshot, restore_root, path_prefix=str(shim_dir),
+        )
+        assert result.returncode != 0
+        assert "rolled back" in result.stderr.lower()
+        assert not raw_destination.exists()
+        assert not publication_destination.exists()
+        assert list(raw_parent.glob(".player-games-restore-raw.*")) == []
+    finally:
+        publication_parent.chmod(0o755)
+
+
+def test_restore_snapshot_preserves_preexisting_unowned_stages(archived_snapshot, tmp_path):
+    """Would fail if cleanup swept every path merely matching the staging
+    name pattern instead of removing only the exact directory this run's
+    own `mktemp` created (matched by device/inode identity)."""
+    restore_root = tmp_path / "restore"
+    raw_parent = restore_root / "raw/stats_nba"
+    raw_parent.mkdir(parents=True)
+    unowned = raw_parent / ".player-games-restore-raw.PREEXISTING"
+    unowned.mkdir()
+    (unowned / "leftover.txt").write_text("not mine\n")
+
+    result = _run_restore_script(archived_snapshot, restore_root)
+
+    assert result.returncode == 0, result.stderr
+    assert unowned.is_dir()
+    assert (unowned / "leftover.txt").read_text() == "not mine\n"
