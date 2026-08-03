@@ -127,6 +127,33 @@ def test_tracked_venv_path_is_rejected(valid_repository: Path) -> None:
     assert "tracked generated environment path: venv/generated.txt" in result.stderr
 
 
+def test_tracked_generated_data_path_is_rejected(valid_repository: Path) -> None:
+    generated_file = (
+        valid_repository / "data/parquet-large/player_games/_manifest.json"
+    )
+    generated_file.parent.mkdir(parents=True)
+    generated_file.write_text("{}\n", encoding="utf-8")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            valid_repository,
+            "add",
+            "-f",
+            "data/parquet-large/player_games/_manifest.json",
+        ],
+        check=True,
+    )
+
+    result = run_verifier(valid_repository)
+
+    assert result.returncode == 1
+    assert (
+        "tracked generated data path: "
+        "data/parquet-large/player_games/_manifest.json" in result.stderr
+    )
+
+
 def test_missing_archive_artifact_is_reported(valid_repository: Path) -> None:
     missing = valid_repository / "archive/dashboard/start.py"
     missing.unlink()

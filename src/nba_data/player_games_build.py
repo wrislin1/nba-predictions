@@ -2103,6 +2103,28 @@ def validate_publication(
     return recomputed
 
 
+# Pinned acceptance values from the governing amendment
+# (docs/superpowers/specs/2026-08-03-player-games-release-boundary-amendment-design.md).
+# The trusted publication manifest must match every one of these before any
+# final evidence is rendered; the historical quarantine facts below them are
+# immutable reviewed evidence, not recomputed from the manifest, so removing
+# the git-ignored SDD diagnostic workspace can never erase the decision.
+_FINAL_AUDIT_EXPECTED_ENDING_SEASONS = list(range(2012, 2027))
+_FINAL_AUDIT_EXPECTED_SOURCE_COUNT = 37
+_FINAL_AUDIT_EXPECTED_PARTITION_COUNT = 15
+_FINAL_AUDIT_EXPECTED_POINT_EXCEPTIONS = 0
+_FINAL_AUDIT_EXPECTED_MINUTE_EXCEPTIONS = 0
+_FINAL_AUDIT_EXPECTED_MATCHUP_REPAIRS = 0
+_FINAL_AUDIT_EXPECTED_DESIGNATION_REPAIRS = 10
+_FINAL_AUDIT_RAW_ARCHIVE_IDENTITIES = 93
+_FINAL_AUDIT_SOURCE_AUDIT_SHA256 = (
+    "3e62e215555898ddade63322688760c24ba6c3a5d2c7f4b0face1169fd47dbd0"
+)
+_FINAL_AUDIT_CANDIDATE_JSON_SHA256 = (
+    "ade10d5af96f47ba633b8526488eb9cb94607ce024aa0ce7e0b63ed9b05d3388"
+)
+
+
 def render_final_audit(
     manifest: dict,
     *,
@@ -2110,7 +2132,18 @@ def render_final_audit(
     snapshot_name: str,
     restore_verified: bool,
 ) -> str:
-    """Render final evidence only for an exact manifest and verified restore."""
+    """Render final evidence only for an exact manifest and verified restore.
+
+    Rejects any manifest whose scope, consumed source count, partition count,
+    exception counts, or repair counts differ from the amendment's approved
+    trusted-publication release (ending seasons 2012-2026, 37 consumed
+    identities, 15 partitions, zero point/minute exceptions, zero matchup
+    repairs, ten designation repairs) before rendering anything. The
+    historical raw-archive scope, quarantine boundary, full-audit totals, and
+    cause partitions are immutable reviewed facts reproduced verbatim from the
+    governing amendment -- never recomputed from a live, git-ignored
+    diagnostic report at render time.
+    """
     actual = hashlib.sha256(_manifest_bytes(manifest)).hexdigest()
     if manifest_sha256 != actual:
         raise PlayerGamesBuildError(
@@ -2126,7 +2159,36 @@ def render_final_audit(
         )
     if restore_verified is not True:
         raise PlayerGamesBuildError("final audit requires a verified restore")
-    validation = manifest["validation"]
+
+    scope = manifest.get("scope") or {}
+    ending_seasons = scope.get("ending_seasons")
+    sources = manifest.get("sources") or {}
+    player_log_sources = sources.get("player_logs")
+    partitions = manifest.get("partitions")
+    validation = manifest.get("validation") or {}
+    exceptions = validation.get("exceptions") or {}
+    matchup_repairs = validation.get("matchup_repairs") or {}
+    designation_repairs = validation.get("designation_repairs") or {}
+
+    if (
+        ending_seasons != _FINAL_AUDIT_EXPECTED_ENDING_SEASONS
+        or not isinstance(player_log_sources, list)
+        or len(player_log_sources) != _FINAL_AUDIT_EXPECTED_SOURCE_COUNT
+        or not isinstance(partitions, dict)
+        or len(partitions) != _FINAL_AUDIT_EXPECTED_PARTITION_COUNT
+        or exceptions.get("points") != _FINAL_AUDIT_EXPECTED_POINT_EXCEPTIONS
+        or exceptions.get("minutes") != _FINAL_AUDIT_EXPECTED_MINUTE_EXCEPTIONS
+        or matchup_repairs.get("count") != _FINAL_AUDIT_EXPECTED_MATCHUP_REPAIRS
+        or designation_repairs.get("count")
+        != _FINAL_AUDIT_EXPECTED_DESIGNATION_REPAIRS
+    ):
+        raise PlayerGamesBuildError(
+            "final manifest scope/source-count/partition-count/exception-count/"
+            "repair-count disagrees with the approved trusted publication "
+            "release ([2012..2026], 37, 15, 0/0, 0/10)"
+        )
+
+    validation_summary = manifest["validation"]
     return "\n".join([
         "# Player game final audit",
         "",
@@ -2134,9 +2196,39 @@ def render_final_audit(
         f"Snapshot: `{snapshot_name}`",
         "Restore verified: yes",
         "",
-        f"Rows: {validation['rows']}",
-        f"Games: {validation['games']}",
-        f"Players: {validation['players']}",
+        "Trusted publication: ending seasons 2012–2026",
+        f"Consumed player-log cache identities: {len(player_log_sources)}",
+        "Raw archive: ending seasons 1984–2026 "
+        f"({_FINAL_AUDIT_RAW_ARCHIVE_IDENTITIES} identities)",
+        "Historical quarantine: ending seasons 1984–2011",
+        "",
+        "Raw player rows audited: 1,082,012",
+        "Source games audited: 52,529",
+        "Team-game sides audited: 105,058",
+        "Point candidates: 662",
+        "Minute candidates: 1,211",
+        "Unique affected team-game keys: 1,300",
+        "Unique affected games: 1,164",
+        "Cross-section overlaps: 573",
+        (
+            "Point causes: 627 incomplete payloads; 27 bad references; "
+            "7 phantom rows; 1 isolated discrepancy"
+        ),
+        (
+            "Minute causes: 573 point-deficit overlaps; 264 active MIN=0 sides; "
+            "228 residual-six-to-eight sides; 146 other anomalies"
+        ),
+        "Approved point exceptions: 0",
+        "Approved minute exceptions: 0",
+        f"Applied matchup repairs: {matchup_repairs.get('count')}",
+        f"Applied designation repairs: {designation_repairs.get('count')}",
+        "",
+        f"Source-audit SHA-256: `{_FINAL_AUDIT_SOURCE_AUDIT_SHA256}`",
+        f"Candidate JSON SHA-256: `{_FINAL_AUDIT_CANDIDATE_JSON_SHA256}`",
+        "",
+        f"Rows: {validation_summary['rows']}",
+        f"Games: {validation_summary['games']}",
+        f"Players: {validation_summary['players']}",
         "",
     ])
 

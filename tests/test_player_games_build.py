@@ -2821,12 +2821,39 @@ def test_run_reports_retained_rollback_before_active_validation(
     assert active_calls == []
 
 
+def _conforming_final_manifest(*, rows=8, games=4, players=2):
+    """A manifest shaped exactly like the approved trusted-publication release:
+    scope 2012-2026, 37 consumed source identities, 15 partitions, zero
+    point/minute exceptions, zero matchup repairs, ten designation repairs."""
+    identities = player_logs.cache_identities(player_games_build.PUBLICATION_SEASONS)
+    return {
+        "scope": {"ending_seasons": list(sorted(player_games_build.PUBLICATION_SEASONS))},
+        "sources": {
+            "player_logs": [
+                {"season": season, "game_type": game_type}
+                for season, game_type in identities
+            ]
+        },
+        "partitions": {
+            str(season): {} for season in player_games_build.PUBLICATION_SEASONS
+        },
+        "validation": {
+            "rows": rows,
+            "games": games,
+            "players": players,
+            "cache_entries": len(identities),
+            "exceptions": {"minutes": 0, "points": 0},
+            "matchup_repairs": {"count": 0},
+            "designation_repairs": {"count": 10},
+        },
+    }
+
+
 def test_render_final_audit_binds_manifest_hash_and_restore():
-    """Would fail if final prose could claim an unverified manifest or restore."""
-    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
-    payload = (
-        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
-    ).encode()
+    """Would fail if final prose could claim an unverified manifest or restore,
+    or omit the approved two-scope/quarantine evidence."""
+    manifest = _conforming_final_manifest()
+    payload = player_games_build._manifest_bytes(manifest)
     digest = hashlib.sha256(payload).hexdigest()
     snapshot_name = f"player-games-archive-2026-{digest[:12]}"
 
@@ -2840,6 +2867,33 @@ def test_render_final_audit_binds_manifest_hash_and_restore():
     assert digest in report
     assert snapshot_name in report
     assert "Restore verified: yes" in report
+    assert "Trusted publication: ending seasons 2012–2026" in report
+    assert "Consumed player-log cache identities: 37" in report
+    assert "Raw archive: ending seasons 1984–2026 (93 identities)" in report
+    assert "Historical quarantine: ending seasons 1984–2011" in report
+    assert "Raw player rows audited: 1,082,012" in report
+    assert "Source games audited: 52,529" in report
+    assert "Team-game sides audited: 105,058" in report
+    assert "Point candidates: 662" in report
+    assert "Minute candidates: 1,211" in report
+    assert "Unique affected team-game keys: 1,300" in report
+    assert "Unique affected games: 1,164" in report
+    assert "Cross-section overlaps: 573" in report
+    assert (
+        "Point causes: 627 incomplete payloads; 27 bad references; "
+        "7 phantom rows; 1 isolated discrepancy"
+    ) in report
+    assert (
+        "Minute causes: 573 point-deficit overlaps; 264 active MIN=0 sides; "
+        "228 residual-six-to-eight sides; 146 other anomalies"
+    ) in report
+    assert "Approved point exceptions: 0" in report
+    assert "Approved minute exceptions: 0" in report
+    assert "Applied matchup repairs: 0" in report
+    assert "Applied designation repairs: 10" in report
+    assert "3e62e215555898ddade63322688760c24ba6c3a5d2c7f4b0face1169fd47dbd0" in report
+    assert "ade10d5af96f47ba633b8526488eb9cb94607ce024aa0ce7e0b63ed9b05d3388" in report
+
     with pytest.raises(player_games_build.PlayerGamesBuildError, match="hash"):
         player_games_build.render_final_audit(
             manifest,
@@ -2859,7 +2913,7 @@ def test_render_final_audit_binds_manifest_hash_and_restore():
 )
 def test_render_final_audit_rejects_unbound_snapshot_names(snapshot_name):
     """Would fail if final evidence accepted a prefixless or wrong snapshot."""
-    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    manifest = _conforming_final_manifest()
     digest = hashlib.sha256(
         player_games_build._manifest_bytes(manifest)
     ).hexdigest()
@@ -2875,6 +2929,120 @@ def test_render_final_audit_rejects_unbound_snapshot_names(snapshot_name):
             snapshot_name=candidate,
             restore_verified=True,
         )
+
+
+def test_render_final_audit_requires_restore_verified_true():
+    """Would fail if final evidence could be rendered without a verified restore."""
+    manifest = _conforming_final_manifest()
+    digest = hashlib.sha256(
+        player_games_build._manifest_bytes(manifest)
+    ).hexdigest()
+    snapshot_name = f"player-games-archive-2026-{digest[:12]}"
+
+    with pytest.raises(
+        player_games_build.PlayerGamesBuildError,
+        match="verified restore",
+    ):
+        player_games_build.render_final_audit(
+            manifest,
+            manifest_sha256=digest,
+            snapshot_name=snapshot_name,
+            restore_verified=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest["scope"].__setitem__(
+            "ending_seasons", [2013] + list(range(2013, 2027))
+        ),
+        lambda manifest: manifest["sources"]["player_logs"].pop(),
+        lambda manifest: manifest["partitions"].pop("2012"),
+        lambda manifest: manifest["validation"]["exceptions"].__setitem__(
+            "points", 1
+        ),
+        lambda manifest: manifest["validation"]["exceptions"].__setitem__(
+            "minutes", 1
+        ),
+        lambda manifest: manifest["validation"]["matchup_repairs"].__setitem__(
+            "count", 1
+        ),
+        lambda manifest: manifest["validation"]["designation_repairs"].__setitem__(
+            "count", 9
+        ),
+    ],
+    ids=[
+        "scope",
+        "source-count",
+        "partition-count",
+        "point-exceptions",
+        "minute-exceptions",
+        "matchup-repairs",
+        "designation-repairs",
+    ],
+)
+def test_render_final_audit_rejects_manifests_that_drift_from_the_approved_release(
+    mutate,
+):
+    """Would fail if final evidence could be rendered from a manifest whose
+    scope, source count, partition count, exception counts, or repair counts
+    differ from the amendment's approved [2012..2026] / 37 / 15 / 0/0 / 0/10
+    release."""
+    manifest = _conforming_final_manifest()
+    mutate(manifest)
+    payload = player_games_build._manifest_bytes(manifest)
+    digest = hashlib.sha256(payload).hexdigest()
+    snapshot_name = f"player-games-archive-2026-{digest[:12]}"
+
+    with pytest.raises(player_games_build.PlayerGamesBuildError):
+        player_games_build.render_final_audit(
+            manifest,
+            manifest_sha256=digest,
+            snapshot_name=snapshot_name,
+            restore_verified=True,
+        )
+
+
+def test_audit_script_final_report_matches_render_final_audit_output(
+    monkeypatch, tmp_path
+):
+    """Would fail if the CLI final-report path reformatted or diverged from
+    the exact string `render_final_audit` returns for the same manifest hash,
+    snapshot name, and restore flag."""
+    from scripts import audit_player_logs
+
+    manifest = _conforming_final_manifest(rows=406843, games=19183, players=1862)
+    publication_dir = tmp_path / "parquet-large/player_games"
+    publication_dir.mkdir(parents=True)
+    manifest_bytes = player_games_build._manifest_bytes(manifest)
+    (publication_dir / "_manifest.json").write_bytes(manifest_bytes)
+    digest = hashlib.sha256(manifest_bytes).hexdigest()
+    snapshot_name = f"player-games-archive-2026-{digest[:12]}"
+
+    monkeypatch.setattr(
+        audit_player_logs.player_games_build,
+        "validate_publication",
+        lambda *_args: manifest,
+    )
+
+    report = tmp_path / "final.md"
+    audit_player_logs.main([
+        "--data-dir", str(tmp_path),
+        "--output-dir", str(tmp_path / "unused-review"),
+        "--final-report", str(report),
+        "--manifest-sha256", digest,
+        "--snapshot-name", snapshot_name,
+        "--restore-verified",
+    ])
+
+    expected = player_games_build.render_final_audit(
+        manifest,
+        manifest_sha256=digest,
+        snapshot_name=snapshot_name,
+        restore_verified=True,
+    )
+    assert report.read_text(encoding="utf-8") == expected
 
 
 def test_audit_script_normal_mode_is_offline_source_review(monkeypatch, tmp_path):
@@ -2946,10 +3114,8 @@ def test_audit_script_final_mode_requires_complete_verified_binding(
 
     publication_dir = tmp_path / "parquet-large/player_games"
     publication_dir.mkdir(parents=True)
-    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
-    manifest_bytes = (
-        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
-    ).encode()
+    manifest = _conforming_final_manifest()
+    manifest_bytes = player_games_build._manifest_bytes(manifest)
     (publication_dir / "_manifest.json").write_bytes(manifest_bytes)
     digest = hashlib.sha256(manifest_bytes).hexdigest()
     calls = []
@@ -3004,7 +3170,7 @@ def test_audit_script_rejects_symlink_final_report(monkeypatch, tmp_path):
 
     publication_dir = tmp_path / "parquet-large/player_games"
     publication_dir.mkdir(parents=True)
-    manifest = {"validation": {"rows": 8, "games": 4, "players": 2}}
+    manifest = _conforming_final_manifest()
     manifest_bytes = player_games_build._manifest_bytes(manifest)
     (publication_dir / "_manifest.json").write_bytes(manifest_bytes)
     digest = hashlib.sha256(manifest_bytes).hexdigest()

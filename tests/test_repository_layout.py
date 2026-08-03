@@ -1216,3 +1216,63 @@ def test_restore_raw_rejects_tampered_snapshot(tmp_path) -> None:
 
     assert completed.returncode != 0
     assert not (repo / "data/raw").exists()
+
+
+def test_player_games_archive_scripts_are_executable_and_tracked() -> None:
+    """Would fail if the player-games archive/restore scripts were missing,
+    untracked, or not marked executable in Git."""
+    recovery_scripts = {
+        "scripts/archive_player_games_snapshot.sh",
+        "scripts/restore_player_games_snapshot.sh",
+    }
+    tracked = subprocess.run(
+        ["git", "ls-files", "-s", *sorted(recovery_scripts)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    tracked_modes = {
+        fields[3]: fields[0]
+        for line in tracked
+        if len(fields := line.split(maxsplit=3)) == 4
+    }
+    assert set(tracked_modes) == recovery_scripts
+    assert all(mode == "100755" for mode in tracked_modes.values())
+
+
+def test_player_games_final_audit_is_present() -> None:
+    """Would fail if the committed final player-games audit were missing or
+    did not carry the rendered two-scope/restore evidence."""
+    audit_path = ROOT / "docs/audits/2026-08-02-player-games-source-audit.md"
+    assert audit_path.is_file()
+    audit = audit_path.read_text(encoding="utf-8")
+    assert "Restore verified: yes" in audit
+    assert "Trusted publication: ending seasons 2012–2026" in audit
+    assert "Historical quarantine: ending seasons 1984–2011" in audit
+
+
+def test_player_games_generated_data_paths_remain_ignored_and_untracked() -> None:
+    """Would fail if a player-games raw cache or large-Parquet path could be
+    added."""
+    paths = [
+        "data/raw/stats_nba/player_logs/season=2026/regular.json",
+        "data/parquet-large/player_games/season=2026/player_games.parquet",
+    ]
+    checked = subprocess.run(
+        ["git", "check-ignore", *paths],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert set(checked.stdout.splitlines()) == set(paths)
+
+    tracked = subprocess.run(
+        ["git", "ls-files", *paths],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert tracked == []

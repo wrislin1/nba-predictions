@@ -89,6 +89,11 @@ def main() -> int:
                     f"tracked generated environment path: {path}; "
                     "remove venv/ from the index and history"
                 )
+            if path.startswith("data/raw/") or path.startswith("data/parquet-large/"):
+                errors.append(
+                    f"tracked generated data path: {path}; "
+                    "remove data/raw and data/parquet-large from the index"
+                )
 
     required_artifacts = REQUIRED_ARCHIVE_FILES | REQUIRED_DASHBOARD_IMAGES
     for relative_path in sorted(required_artifacts):
