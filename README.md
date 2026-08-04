@@ -226,7 +226,7 @@ python -m nba_data build-player-games
 # Independent immutable combined raw-plus-Parquet NAS recovery, covering
 # the full 93-pair raw archive and the narrower 15-partition publication.
 scripts/archive_player_games_snapshot.sh
-scripts/restore_player_games_snapshot.sh
+scripts/restore_player_games_snapshot.sh player-games-archive-2026-<manifest-sha12>
 ```
 
 `fetch-player-logs` is the only player-log network path; `build-player-games`,

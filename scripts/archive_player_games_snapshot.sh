@@ -35,13 +35,23 @@ require_regular_tree() {
 
 require_exact_snapshot_layout() {
   local dir="$1"
-  local entries expected
+  local entries expected component
   entries="$(cd "$dir" && find . -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
   expected="$(printf 'SHA256SUMS\nparquet-large\nraw\n' | LC_ALL=C sort)"
   if [ "$entries" != "$expected" ]; then
     printf 'unexpected snapshot top-level entries in %s:\n%s\n' "$dir" "$entries" >&2
     return 1
   fi
+  # Every wrapper component must itself be a real directory: a symlinked
+  # `raw` (or `stats_nba`/`parquet-large`) would be followed by `test -d`
+  # and by rsync while `find`'s lstat walk never descends into it, so the
+  # SHA256SUMS inventory would silently cover none of the linked tree.
+  for component in "$dir/raw" "$dir/raw/stats_nba" "$dir/parquet-large"; do
+    test -d "$component" && test ! -L "$component" || {
+      printf 'missing or unsafe snapshot component: %s\n' "$component" >&2
+      return 1
+    }
+  done
   test -d "$dir/raw/stats_nba/player_logs" && test ! -L "$dir/raw/stats_nba/player_logs" || {
     printf 'missing or unsafe raw/stats_nba/player_logs under %s\n' "$dir" >&2
     return 1
@@ -78,10 +88,30 @@ write_checksum_inventory() {
   )
 }
 
-staging=
+staging=""
+staging_dev=""
+staging_ino=""
+staging_owned=0
+
+# Cleanup removes only the exact real directory this process itself
+# created, matched by the device/inode identity captured right after
+# `mktemp` returned it -- never anything else that merely occupies the
+# staging path, which could be a concurrent replacement this run does
+# not own.
+remove_owned_stage() {
+  local path="$1" expected_dev="$2" expected_ino="$3" current
+  if [ -z "$path" ] || [ -L "$path" ] || [ ! -d "$path" ]; then
+    return 0
+  fi
+  current="$(stat -c '%d %i' "$path" 2>/dev/null)" || return 0
+  if [ "$current" = "$expected_dev $expected_ino" ]; then
+    rm -rf -- "$path"
+  fi
+}
+
 cleanup() {
-  if [ -n "${staging:-}" ] && [ ! -L "$staging" ] && [ -d "$staging" ]; then
-    rm -rf -- "$staging"
+  if [ "$staging_owned" -eq 1 ]; then
+    remove_owned_stage "$staging" "$staging_dev" "$staging_ino"
   fi
 }
 # A signal trap that does not itself call exit does not stop the script --
@@ -144,6 +174,8 @@ test ! -L "$staging" && test -d "$staging" || {
   printf 'failed to create a real staging directory under %s\n' "$archive_root" >&2
   exit 1
 }
+read -r staging_dev staging_ino < <(stat -c '%d %i' "$staging")
+staging_owned=1
 
 mkdir -p "$staging/raw/stats_nba/player_logs" "$staging/parquet-large/player_games"
 rsync -a --no-times --checksum "$raw_source/" "$staging/raw/stats_nba/player_logs/"
@@ -172,6 +204,23 @@ manifest_sha256="$(
   --reference-dir "$reference_dir" \
   --manifest-sha256 "$manifest_sha256"
 
+# The manifest digest above pins the publication bytes, but the raw archive
+# outside the publication scope (pre-2012 seasons) is only structurally
+# validated by it: a body mutated together with a coherently rewritten
+# sidecar would still pass. Byte-compare the live source trees against the
+# just-checksummed stage so ANY live mutation since the copy -- coherent or
+# not, historical or published -- fails the archive.
+live_drift="$(
+  rsync -a --no-times --checksum --delete --dry-run --itemize-changes \
+    "$raw_source/" "$staging/raw/stats_nba/player_logs/"
+  rsync -a --no-times --checksum --delete --dry-run --itemize-changes \
+    "$publication_source/" "$staging/parquet-large/player_games/"
+)"
+if [ -n "$live_drift" ]; then
+  printf 'live source changed during archive copy:\n%s\n' "$live_drift" >&2
+  exit 1
+fi
+
 snapshot_name="player-games-archive-2026-${manifest_sha256:0:12}"
 snapshot="$archive_root/$snapshot_name"
 
@@ -180,6 +229,7 @@ if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
   # only if it already matches the freshly staged copy exactly, and fail
   # otherwise without touching it in any way.
   require_exact_snapshot_layout "$snapshot"
+  require_regular_tree "$snapshot"
   (cd "$snapshot" && sha256sum --check --strict SHA256SUMS >/dev/null)
   existing_manifest_sha256="$(
     sha256sum "$snapshot/parquet-large/player_games/_manifest.json" | cut -d' ' -f1
@@ -202,8 +252,8 @@ if [ -e "$snapshot" ] || [ -L "$snapshot" ]; then
       "$changes" >&2
     exit 1
   fi
-  rm -rf -- "$staging"
-  staging=
+  remove_owned_stage "$staging" "$staging_dev" "$staging_ino"
+  staging_owned=0
   printf 'verified player-games snapshot: %s\n' "$snapshot"
   printf 'manifest_sha256: %s\n' "$manifest_sha256"
   exit 0
@@ -229,7 +279,7 @@ if [ -d "$staging" ]; then
     "$snapshot" >&2
   exit 1
 fi
-staging=
+staging_owned=0
 
 printf 'verified player-games snapshot: %s\n' "$snapshot"
 printf 'manifest_sha256: %s\n' "$manifest_sha256"

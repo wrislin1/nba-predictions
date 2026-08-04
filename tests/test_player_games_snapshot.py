@@ -867,6 +867,126 @@ def test_archive_snapshot_detects_source_mutation_during_copy(snapshot_fixture, 
     assert list(archive_root.glob(".player-games-archive.*")) == []
 
 
+def test_archive_snapshot_detects_coherent_historical_mutation_during_copy(
+    snapshot_fixture, tmp_path,
+):
+    """Would fail if the post-copy live revalidation relied only on the
+    publication-manifest digest plus structural raw validation: a
+    quarantined-season body mutated together with a coherently rewritten
+    sidecar passes both, and only a byte comparison of the live trees
+    against the just-checksummed stage can catch it."""
+    data_dir, _reference_dir, _manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+
+    target_body = data_dir / "raw/stats_nba/player_logs/season=1984/regular.json"
+    original_bytes = target_body.read_bytes()
+    mutate_py = tmp_path / "mutate_1984_coherently.py"
+    mutate_py.write_text(
+        "import hashlib, json\n"
+        "from pathlib import Path\n"
+        f"body = Path({str(target_body)!r})\n"
+        "sidecar = body.with_name(body.name + '.meta.json')\n"
+        "payload = json.loads(body.read_text(encoding='utf-8'))\n"
+        "payload['resultSets'][0]['rowSet'][0][2] = 'Coherently Mutated'\n"
+        "data = json.dumps(payload).encode('utf-8')\n"
+        "body.write_bytes(data)\n"
+        "meta = json.loads(sidecar.read_text(encoding='utf-8'))\n"
+        "meta['sha256'] = hashlib.sha256(data).hexdigest()\n"
+        "meta['content_length'] = len(data)\n"
+        "sidecar.write_text(json.dumps(meta), encoding='utf-8')\n"
+    )
+
+    mutate_shim_dir = tmp_path / "mutate_shim"
+    mutate_shim_dir.mkdir()
+    real_sha256sum = shutil.which("sha256sum")
+    venv_python = REPO_ROOT / ".venv/bin/python"
+    shim_script = mutate_shim_dir / "sha256sum"
+    shim_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$#\" -eq 3 ] && [ \"$1\" = \"--check\" ] && [ \"$2\" = \"--strict\" ] "
+        "&& [ \"$3\" = \"SHA256SUMS\" ]; then\n"
+        f"  {shlex.quote(str(venv_python))} {shlex.quote(str(mutate_py))}\n"
+        "fi\n"
+        f"exec {shlex.quote(real_sha256sum)} \"$@\"\n"
+    )
+    shim_script.chmod(0o755)
+
+    result = _run_archive(data_dir, archive_root, shim_dir, path_prefix=str(mutate_shim_dir))
+
+    assert result.returncode != 0
+    assert "changed during archive copy" in result.stderr
+    assert target_body.read_bytes() != original_bytes
+    assert list(archive_root.iterdir()) == []
+
+
+def test_archive_snapshot_cleanup_preserves_swapped_stage(snapshot_fixture, tmp_path):
+    """Would fail if the EXIT cleanup deleted whatever currently occupies
+    the staging path instead of only the exact directory (by device/inode)
+    this run's own `mktemp` created."""
+    data_dir, _reference_dir, _manifest_sha256 = _materialize_data_dir(snapshot_fixture)
+    shim_dir = _write_season_scope_shim(tmp_path)
+    archive_root = tmp_path / "archive_root"
+    archive_root.mkdir()
+    aside = tmp_path / "stage_moved_aside"
+
+    # Swap the owned stage for a foreign directory exactly while the stage's
+    # own SHA256SUMS check runs; the manifest read right after then fails
+    # (the replacement is empty), forcing the exit path whose cleanup must
+    # leave the unowned replacement untouched.
+    swap_shim_dir = tmp_path / "swap_shim"
+    swap_shim_dir.mkdir()
+    real_sha256sum = shutil.which("sha256sum")
+    shim_script = swap_shim_dir / "sha256sum"
+    shim_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"$#\" -eq 3 ] && [ \"$1\" = \"--check\" ] && [ \"$2\" = \"--strict\" ] "
+        "&& [ \"$3\" = \"SHA256SUMS\" ]; then\n"
+        f"  stage=\"$(find {shlex.quote(str(archive_root))} -mindepth 1 -maxdepth 1 "
+        "-name '.player-games-archive.*' -type d -print -quit)\"\n"
+        "  if [ -n \"$stage\" ]; then\n"
+        f"    mv \"$stage\" {shlex.quote(str(aside))}\n"
+        "    mkdir \"$stage\"\n"
+        "    printf 'not mine\\n' > \"$stage/sentinel.txt\"\n"
+        "  fi\n"
+        "fi\n"
+        f"exec {shlex.quote(real_sha256sum)} \"$@\"\n"
+    )
+    shim_script.chmod(0o755)
+
+    result = _run_archive(data_dir, archive_root, shim_dir, path_prefix=str(swap_shim_dir))
+
+    assert result.returncode != 0
+    replacements = list(archive_root.glob(".player-games-archive.*"))
+    assert len(replacements) == 1
+    assert (replacements[0] / "sentinel.txt").read_text() == "not mine\n"
+    assert aside.is_dir()
+
+
+def test_archive_snapshot_rejects_symlinked_existing_snapshot_wrapper(
+    archived_snapshot, tmp_path,
+):
+    """Would fail if the idempotency path's layout check only rejected
+    symlinks at the leaf components: a symlinked `raw` wrapper is followed
+    by every byte-level comparison while the lstat-visible inventory covers
+    none of it."""
+    snapshot_dir = archived_snapshot.archive_root / archived_snapshot.name
+    outside_raw = tmp_path / "outside_raw"
+    shutil.move(str(snapshot_dir / "raw"), str(outside_raw))
+    (snapshot_dir / "raw").symlink_to(outside_raw)
+
+    result = _run_archive(
+        archived_snapshot.data_dir,
+        archived_snapshot.archive_root,
+        archived_snapshot.shim_dir,
+    )
+
+    assert result.returncode != 0
+    assert "unsafe" in result.stderr
+    assert (snapshot_dir / "raw").is_symlink()
+
+
 def test_archive_snapshot_signal_leaves_no_final(snapshot_fixture, tmp_path):
     """A signal trap that doesn't itself call exit lets bash resume after
     running it -- send SIGTERM once staging exists and is blocked in
@@ -1092,6 +1212,79 @@ def test_restore_snapshot_rolls_back_partial_placement(archived_snapshot, tmp_pa
         assert list(raw_parent.glob(".player-games-restore-raw.*")) == []
     finally:
         publication_parent.chmod(0o755)
+
+
+def test_restore_snapshot_rejects_symlinked_raw_wrapper(archived_snapshot, tmp_path):
+    """Would fail if the snapshot layout check only rejected symlinks at the
+    leaf components: a symlinked `raw` wrapper is followed by `test -d`,
+    rsync, and validate-layout, while `find`'s lstat inventory sees no raw
+    files at all -- so a SHA256SUMS covering zero raw files still passes the
+    inventory-equality check and the restore trusts unchecksummed bytes."""
+    tampered_root = tmp_path / "tampered_root"
+    tampered_root.mkdir()
+    snapshot_dir = archived_snapshot.archive_root / archived_snapshot.name
+    tampered = tampered_root / archived_snapshot.name
+    tampered.mkdir()
+    shutil.copytree(snapshot_dir / "parquet-large", tampered / "parquet-large")
+    outside_raw = tmp_path / "outside_raw"
+    shutil.copytree(snapshot_dir / "raw", outside_raw)
+    (tampered / "raw").symlink_to(outside_raw)
+    sums_lines = []
+    for path in sorted((tampered / "parquet-large").rglob("*")):
+        if not path.is_file():
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        sums_lines.append(f"{digest}  {path.relative_to(tampered)}")
+    (tampered / "SHA256SUMS").write_text("\n".join(sums_lines) + "\n")
+
+    restore_root = tmp_path / "restore"
+    result = _run_restore_script(
+        archived_snapshot,
+        restore_root,
+        extra_env={"NBA_PLAYER_GAMES_ARCHIVE_ROOT": str(tampered_root)},
+    )
+
+    assert result.returncode != 0
+    assert "unsafe" in result.stderr
+    assert not (restore_root / "raw/stats_nba/player_logs").exists()
+    assert not (restore_root / "parquet-large/player_games").exists()
+
+
+def test_restore_snapshot_sigterm_between_renames_rolls_back(archived_snapshot, tmp_path):
+    """Would fail if a signal landing between the two publish renames only
+    ran the owned-stage cleanup: the raw destination would stay published
+    while the publication stage was deleted -- the exact half-published
+    state the rollback state machine exists to prevent. The `du` integrity
+    probe runs precisely between the renames, so a shimmed `du` that
+    SIGTERMs the script parent lands the signal deterministically inside
+    the window."""
+    restore_root = tmp_path / "restore"
+    raw_destination = restore_root / "raw/stats_nba/player_logs"
+    publication_destination = restore_root / "parquet-large/player_games"
+
+    shim_dir = tmp_path / "term_shim"
+    shim_dir.mkdir()
+    real_du = shutil.which("du")
+    du_script = shim_dir / "du"
+    du_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "kill -TERM \"$PPID\"\n"
+        f"exec {shlex.quote(real_du)} \"$@\"\n"
+    )
+    du_script.chmod(0o755)
+
+    result = _run_restore_script(
+        archived_snapshot, restore_root, path_prefix=str(shim_dir),
+    )
+
+    assert result.returncode != 0
+    assert "rolled back" in result.stderr.lower()
+    assert not raw_destination.exists()
+    assert not publication_destination.exists()
+    assert list(raw_destination.parent.glob(".player-games-restore-raw.*")) == []
+    assert list(
+        publication_destination.parent.glob(".player-games-restore-publication.*")
+    ) == []
 
 
 def test_restore_snapshot_preserves_preexisting_unowned_stages(archived_snapshot, tmp_path):
