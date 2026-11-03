@@ -1,0 +1,1888 @@
+"""Tests for exact NBA player game-log normalization."""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import os
+from pathlib import Path
+
+import pytest
+import requests
+
+from nba_data import cache, player_logs
+
+
+HEADERS = [
+    "SEASON_ID", "PLAYER_ID", "PLAYER_NAME", "TEAM_ID",
+    "TEAM_ABBREVIATION", "TEAM_NAME", "GAME_ID", "GAME_DATE",
+    "MATCHUP", "WL", "MIN", "FGM", "FGA", "FG_PCT", "FG3M",
+    "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT", "OREB", "DREB",
+    "REB", "AST", "STL", "BLK", "TOV", "PF", "PTS", "PLUS_MINUS",
+    "FANTASY_PTS", "VIDEO_AVAILABLE",
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "collection", "count", "canonical_sha256"),
+    [
+        (
+            player_logs.MATCHUP_EXCEPTIONS_PATH,
+            "exceptions",
+            36,
+            "4abd8707a98a08318192ead3fa198476c909cad274b48395d2ebd494ee9f421b",
+        ),
+        (
+            player_logs.DESIGNATION_EXCEPTIONS_PATH,
+            "designations",
+            10,
+            "3fdec7bf1289fd94d4114dc86cb1ca4a1a4adea5c8421c353645222250e1b6eb",
+        ),
+    ],
+)
+def test_packaged_exception_ledgers_are_exact_canonical_json(
+    path, collection, count, canonical_sha256,
+):
+    """Would fail if packaged semantic mappings used non-canonical bytes."""
+    payload = path.read_bytes()
+    document = json.loads(payload)
+    canonical = (
+        json.dumps(document, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+    assert len(document[collection]) == count
+    assert hashlib.sha256(canonical).hexdigest() == canonical_sha256
+    assert payload == canonical
+
+
+@pytest.fixture(autouse=True)
+def _keep_fetch_tests_offline(request, monkeypatch):
+    if not request.node.name.startswith("test_fetch"):
+        return
+
+    def successful_response(*args, **kwargs):
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        return response
+
+    monkeypatch.setattr(player_logs.requests, "get", successful_response)
+
+
+def _row(
+    player_id: int,
+    player_name: str,
+    team_id: int,
+    abbreviation: str,
+    team_name: str,
+    matchup: str,
+    minutes: int,
+    points: int,
+) -> list[object]:
+    return [
+        "21983", player_id, player_name, team_id, abbreviation, team_name,
+        "0028300001", "1983-10-28", matchup, "W" if abbreviation == "BOS" else "L",
+        minutes, 1 if points else 0, 2 if points else 0, 0.5 if points else 0.0,
+        0, 0, 0.0, 0, 0, 0.0, 0, 1 if minutes else 0,
+        1 if minutes else 0, 1 if minutes else 0, 0, 0, 0, 1 if minutes else 0,
+        points, None, 0.0, 0,
+    ]
+
+
+REGULAR_ROWS = [
+    _row(1, "Chicago One", 1610612741, "CHI", "Chicago Bulls", "CHI @ BOS", 48, 2),
+    _row(2, "Chicago Zero", 1610612741, "CHI", "Chicago Bulls", "CHI @ BOS", 0, 0),
+    _row(3, "Boston One", 1610612738, "BOS", "Boston Celtics", "BOS vs. CHI", 48, 2),
+    _row(4, "Boston Two", 1610612738, "BOS", "Boston Celtics", "BOS vs. CHI", 24, 2),
+]
+
+
+def _payload(rows: list[list[object]], headers=HEADERS) -> bytes:
+    return json.dumps({
+        "resultSets": [{
+            "name": "LeagueGameLog",
+            "headers": list(headers),
+            "rowSet": rows,
+        }]
+    }).encode("utf-8")
+
+
+def test_normalize_payload_preserves_source_and_nullable_semantics():
+    frame = player_logs.normalize_payload(
+        _payload(REGULAR_ROWS), season=1984, game_type="regular"
+    )
+    assert frame.columns.tolist() == player_logs.PLAYER_GAME_COLUMNS
+    assert frame["game_id"].unique().tolist() == ["0028300001"]
+    assert frame["person_id"].dtype == "int64"
+    assert frame.loc[frame.person_id.eq(2), "min"].item() == 0
+    assert frame["plus_minus"].isna().all()
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"BOS"}
+    assert set(frame.loc[~frame.is_home, "franchise_id"]) == {"CHI"}
+    assert set(frame.loc[frame.franchise_id.eq("BOS"), "opponent_franchise_id"]) == {"CHI"}
+
+
+def _document(rows=REGULAR_ROWS, headers=HEADERS, *, result_sets=None):
+    return {
+        "resultSets": result_sets if result_sets is not None else [{
+            "name": "LeagueGameLog",
+            "headers": list(headers),
+            "rowSet": [list(row) for row in rows],
+        }]
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (b"{", "invalid player-log JSON"),
+        (json.dumps([]).encode(), "must be a JSON object"),
+        (json.dumps({}).encode(), "missing resultSets"),
+        (_payload(REGULAR_ROWS, HEADERS + ["MIN"]), "duplicate header"),
+        (_payload(REGULAR_ROWS, [header for header in HEADERS if header != "PTS"]), "missing required header"),
+        (json.dumps(_document(result_sets=[{
+            "name": "Other", "headers": HEADERS, "rowSet": REGULAR_ROWS,
+        }])).encode(), "expected exactly one 'LeagueGameLog' result set"),
+        (json.dumps(_document(result_sets=[
+            {"name": "LeagueGameLog", "headers": HEADERS, "rowSet": REGULAR_ROWS},
+            {"name": "LeagueGameLog", "headers": HEADERS, "rowSet": REGULAR_ROWS},
+        ])).encode(), "expected exactly one 'LeagueGameLog' result set"),
+        (json.dumps(_document(result_sets=[{
+            "name": "LeagueGameLog", "headers": HEADERS, "rowSet": {},
+        }])).encode(), "rowSet must be a list"),
+        (_payload([REGULAR_ROWS[0][:-1]]), "has width 31, expected row width 32"),
+    ],
+)
+def test_validate_payload_bytes_rejects_invalid_source_envelopes(payload, match):
+    with pytest.raises(ValueError, match=match):
+        player_logs.validate_payload_bytes(payload)
+
+
+def test_validate_payload_bytes_rejects_an_extra_wrong_result_set():
+    payload = json.dumps(_document(result_sets=[
+        {"name": "Other", "headers": HEADERS, "rowSet": REGULAR_ROWS},
+        {"name": "LeagueGameLog", "headers": HEADERS, "rowSet": REGULAR_ROWS},
+    ])).encode()
+    with pytest.raises(ValueError, match="expected exactly one 'LeagueGameLog' result set"):
+        player_logs.validate_payload_bytes(payload)
+
+
+def test_source_helpers_define_season_scope_cache_location_and_file_validation(tmp_path):
+    assert player_logs.season_label(1984) == "1983-84"
+    assert player_logs.applicable_game_types(1984) == ("regular", "playoff")
+    assert player_logs.applicable_game_types(2020) == (
+        "regular", "playoff", "play_in"
+    )
+    assert player_logs.cache_path(tmp_path, 1984, "regular") == (
+        tmp_path / "raw/stats_nba/player_logs/season=1984/regular.json"
+    )
+    payload_path = tmp_path / "source.json"
+    payload_path.write_bytes(_payload(REGULAR_ROWS))
+    assert player_logs.validate_payload(payload_path) is None
+
+
+def test_cache_identities_separate_source_archive_from_publication():
+    source = player_logs.cache_identities()
+    publication = player_logs.cache_identities(
+        player_logs.PUBLICATION_SEASONS
+    )
+
+    assert len(source) == 93
+    assert source[:2] == ((1984, "regular"), (1984, "playoff"))
+    assert source[-3:] == (
+        (2026, "regular"),
+        (2026, "playoff"),
+        (2026, "play_in"),
+    )
+    assert len(publication) == 37
+    assert publication[:2] == ((2012, "regular"), (2012, "playoff"))
+    assert publication[-3:] == source[-3:]
+
+
+def test_source_helpers_still_accept_quarantined_1984():
+    assert player_logs.season_label(1984) == "1983-84"
+    assert player_logs.cache_path(Path("/data"), 1984, "regular") == (
+        Path("/data/raw/stats_nba/player_logs/season=1984/regular.json")
+    )
+
+
+def test_cache_identities_reject_season_outside_source_archive():
+    with pytest.raises(
+        player_logs.PlayerLogValidationError,
+        match="1984..2026",
+    ):
+        player_logs.cache_identities((2012, 2027))
+
+
+def test_read_cached_accepts_only_the_exact_sidecar_identity(tmp_path):
+    """Would fail if a cache pair from a different LeagueGameLog request passed."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    expected = {
+        "provider": "stats_nba",
+        "endpoint": "LeagueGameLog",
+        "season": 1984,
+        "season_label": "1983-84",
+        "game_type": "regular",
+        "season_type": "Regular Season",
+        "league_id": "00",
+        "player_or_team_abbreviation": "P",
+    }
+    payload = _payload(REGULAR_ROWS)
+    cache.publish_bytes(destination, payload, expected, player_logs.validate_payload)
+
+    cached_payload, metadata = player_logs.read_cached(tmp_path, 1984, "regular")
+
+    assert cached_payload == payload
+    assert {key: metadata[key] for key in expected} == expected
+    assert metadata["content_length"] == len(payload)
+
+
+def _cache_metadata(season=1984, game_type="regular"):
+    return {
+        "provider": "stats_nba",
+        "endpoint": "LeagueGameLog",
+        "season": season,
+        "season_label": f"{season - 1}-{season % 100:02d}",
+        "game_type": game_type,
+        "season_type": {
+            "regular": "Regular Season", "playoff": "Playoffs", "play_in": "PlayIn",
+        }[game_type],
+        "league_id": "00",
+        "player_or_team_abbreviation": "P",
+    }
+
+
+@pytest.mark.parametrize("missing", ["body", "sidecar"])
+def test_read_cached_rejects_incomplete_pairs(tmp_path, missing):
+    """Would fail if a partial immutable cache pair were treated as a hit."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    (destination if missing == "body" else destination.with_name(
+        destination.name + ".meta.json"
+    )).unlink()
+
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+@pytest.mark.parametrize("field", tuple(_cache_metadata()))
+def test_read_cached_rejects_each_wrong_identity_field(tmp_path, field):
+    """Would fail if a response for a different endpoint identity passed."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    sidecar = destination.with_name(destination.name + ".meta.json")
+    metadata = json.loads(sidecar.read_text())
+    metadata[field] = "wrong"
+    sidecar.write_text(json.dumps(metadata))
+
+    with pytest.raises(cache.CacheIntegrityError, match="metadata mismatch"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+@pytest.mark.parametrize("field", tuple(_cache_metadata()))
+def test_read_cached_rejects_missing_identity_field(tmp_path, field):
+    """Would fail if a sidecar could omit one identity constraint."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    sidecar = destination.with_name(destination.name + ".meta.json")
+    metadata = json.loads(sidecar.read_text())
+    del metadata[field]
+    sidecar.write_text(json.dumps(metadata))
+
+    with pytest.raises(cache.CacheIntegrityError, match="metadata mismatch"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+def test_read_cached_rejects_content_length_mismatch(tmp_path):
+    """Would fail if an attested body length was not bound to its sidecar."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    sidecar = destination.with_name(destination.name + ".meta.json")
+    metadata = json.loads(sidecar.read_text())
+    metadata["content_length"] += 1
+    sidecar.write_text(json.dumps(metadata))
+
+    with pytest.raises(cache.CacheIntegrityError, match="content length mismatch"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+def test_read_cached_rejects_a_stable_body_sidecar_sha_mismatch(tmp_path):
+    """Would fail if a persisted body mutation did not invalidate its sidecar."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    destination.write_bytes(_payload(REGULAR_ROWS) + b" ")
+
+    with pytest.raises(cache.CacheIntegrityError, match="SHA-256 mismatch"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "fifo"])
+def test_read_cached_rejects_symlink_and_special_body_entries(tmp_path, unsafe_kind):
+    """Would fail if an unsafe filesystem entry were opened as cache data."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    destination.parent.mkdir(parents=True)
+    sidecar = destination.with_name(destination.name + ".meta.json")
+    sidecar.write_text(json.dumps({"sha256": "unused"}))
+    if unsafe_kind == "symlink":
+        target = tmp_path / "target.json"
+        target.write_bytes(_payload(REGULAR_ROWS))
+        destination.symlink_to(target)
+    else:
+        os.mkfifo(destination)
+
+    with pytest.raises(cache.CacheIntegrityError, match="regular files"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+@pytest.mark.parametrize("mutated", ["body", "sidecar"])
+def test_read_cached_rejects_pair_mutated_during_attestation(
+    tmp_path, monkeypatch, mutated
+):
+    """Would fail if read_cached returned a snapshot changed while it was read."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        destination, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    target = (
+        destination if mutated == "body"
+        else destination.with_name(destination.name + ".meta.json")
+    )
+    original_read_bytes = Path.read_bytes
+    did_mutate = False
+
+    def mutate_after_read(path):
+        nonlocal did_mutate
+        value = original_read_bytes(path)
+        if path == target and not did_mutate:
+            did_mutate = True
+            path.write_bytes(b"changed")
+        return value
+
+    monkeypatch.setattr(Path, "read_bytes", mutate_after_read)
+
+    with pytest.raises(cache.CacheIntegrityError, match="changed while"):
+        player_logs.read_cached(tmp_path, 1984, "regular")
+
+
+def _seed_full_player_log_cache(data_dir):
+    bodies = []
+    for season, game_type in player_logs.cache_identities():
+        destination = player_logs.cache_path(data_dir, season, game_type)
+        cache.publish_bytes(
+            destination,
+            _payload(REGULAR_ROWS),
+            _cache_metadata(season, game_type),
+            player_logs.validate_payload,
+        )
+        bodies.append(destination)
+    return data_dir / "raw/stats_nba/player_logs", tuple(bodies)
+
+
+def test_validate_cache_inventory_root_requires_all_exact_cache_pairs(tmp_path):
+    """Would fail if one missing or renamed cache entry passed the inventory."""
+    root, bodies = _seed_full_player_log_cache(tmp_path)
+
+    inventory = player_logs.validate_cache_inventory_root(root)
+
+    assert len(inventory) == 93
+    assert inventory == bodies
+    assert inventory[:3] == (
+        root / "season=1984/regular.json",
+        root / "season=1984/playoff.json",
+        root / "season=1985/regular.json",
+    )
+
+
+def test_validate_cache_inventory_uses_the_player_log_raw_root(tmp_path):
+    """Would fail if the data-directory wrapper inspected a sibling cache root."""
+    _, bodies = _seed_full_player_log_cache(tmp_path)
+
+    assert player_logs.validate_cache_inventory(tmp_path) == bodies
+
+
+@pytest.mark.parametrize("unsafe_kind", ["symlink", "fifo"])
+def test_validate_cache_inventory_root_rejects_unsafe_entries(
+    tmp_path, unsafe_kind
+):
+    """Would fail if a symlink or special filesystem entry escaped validation."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    entry = root / "season=1984" / "unsafe"
+    if unsafe_kind == "symlink":
+        entry.symlink_to(root / "season=1984/regular.json")
+    else:
+        os.mkfifo(entry)
+
+    with pytest.raises(cache.CacheIntegrityError, match="unsafe|unexpected"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+def test_validate_cache_inventory_root_rejects_an_unexpected_file(tmp_path):
+    """Would fail if an unrecognized cache file were silently ignored."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    (root / "season=1984" / "extra.json").write_bytes(b"unexpected")
+
+    with pytest.raises(cache.CacheIntegrityError, match="unexpected"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+@pytest.mark.parametrize("missing", ["body", "sidecar"])
+def test_validate_cache_inventory_root_rejects_missing_expected_pair_member(
+    tmp_path, missing
+):
+    """Would fail if a missing exact inventory member were treated as complete."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    destination = root / "season=1984" / "regular.json"
+    target = destination if missing == "body" else destination.with_name(
+        destination.name + ".meta.json"
+    )
+    target.unlink()
+
+    with pytest.raises(cache.CacheIntegrityError, match="missing"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+@pytest.mark.parametrize("renamed", ["body", "sidecar"])
+def test_validate_cache_inventory_root_rejects_renamed_expected_pair_member(
+    tmp_path, renamed
+):
+    """Would fail if a renamed exact inventory member were treated as complete."""
+    root, _ = _seed_full_player_log_cache(tmp_path)
+    destination = root / "season=1984" / "regular.json"
+    target = destination if renamed == "body" else destination.with_name(
+        destination.name + ".meta.json"
+    )
+    target.rename(target.with_name("renamed-" + target.name))
+
+    with pytest.raises(cache.CacheIntegrityError, match="unexpected"):
+        player_logs.validate_cache_inventory_root(root)
+
+
+def test_fetch_retries_four_times_then_publishes(monkeypatch, tmp_path):
+    """Would fail if transient endpoint failures did not use five total attempts."""
+    attempts = []
+    sleeps = []
+    published = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) < 5:
+                raise requests.Timeout("transient")
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode("utf-8")
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    fake_time = FakeTime
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog, raising=False)
+    monkeypatch.setattr(
+        player_logs, "applicable_game_types", lambda season: ("regular",)
+    )
+    monkeypatch.setattr(
+        player_logs,
+        "available_bytes",
+        lambda path: player_logs.FETCH_HEADROOM_BYTES,
+        raising=False,
+    )
+    monkeypatch.setattr(player_logs, "read_cached", lambda *args: None)
+    monkeypatch.setattr(
+        player_logs,
+        "stats_nba",
+        type("StatsNBA", (), {"preflight_dns": staticmethod(lambda: ("203.0.113.1",))}),
+        raising=False,
+    )
+    monkeypatch.setattr(player_logs, "time", fake_time, raising=False)
+    monkeypatch.setattr(
+        player_logs.cache,
+        "publish_bytes",
+        lambda *args: published.append(args),
+    )
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert sleeps == [5.0, 10.0, 20.0, 40.0]
+    assert len(attempts) == 5
+    assert {key: attempts[-1][key] for key in (
+        "league_id", "player_or_team_abbreviation", "season",
+        "season_type_all_star", "direction", "sorter", "timeout",
+    )} == {
+        "league_id": "00",
+        "player_or_team_abbreviation": "P",
+        "season": "1983-84",
+        "season_type_all_star": "Regular Season",
+        "direction": "ASC",
+        "sorter": "DATE",
+        "timeout": 90,
+    }
+    assert attempts[-1]["get_request"] is False
+    assert len(published) == 1
+
+
+def test_fetch_retries_real_http_429_before_endpoint_parsing(monkeypatch, tmp_path):
+    """Would fail if nba_api parsed a 429 body before fetch handled its status."""
+    attempts = []
+    sleeps = []
+    responses = []
+    for status, retry_after in ((429, "15"), (200, None)):
+        response = requests.Response()
+        response.status_code = status
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b'{}'
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        responses.append(response)
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if kwargs.get("get_request", True):
+                raise KeyError("resultSet")
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(
+        player_logs.requests, "get", lambda *args, **kwargs: responses.pop(0)
+    )
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert len(attempts) == 2
+    assert all(item["get_request"] is False for item in attempts)
+    assert sleeps == [15.0]
+
+
+def test_fetch_skips_only_complete_valid_pairs(monkeypatch, tmp_path):
+    """Would fail if a valid pair was fetched again or a miss was skipped."""
+    complete = player_logs.cache_path(tmp_path, 1984, "regular")
+    cache.publish_bytes(
+        complete, _payload(REGULAR_ROWS), _cache_metadata(), player_logs.validate_payload
+    )
+    requests_seen = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            requests_seen.append(kwargs)
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular", "playoff"))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert [item["season_type_all_star"] for item in requests_seen] == ["Playoffs"]
+
+
+def test_fetch_requests_exact_endpoint_identity(monkeypatch, tmp_path):
+    """Would fail if fetching selected an aggregate or team LeagueGameLog view."""
+    requests_seen = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            requests_seen.append(kwargs)
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert [{key: item[key] for key in (
+        "league_id", "player_or_team_abbreviation", "season",
+        "season_type_all_star", "direction", "sorter", "timeout",
+    )} for item in requests_seen] == [{
+        "league_id": "00", "player_or_team_abbreviation": "P",
+        "season": "1983-84", "season_type_all_star": "Regular Season",
+        "direction": "ASC", "sorter": "DATE", "timeout": 90,
+    }]
+    assert [item["get_request"] for item in requests_seen] == [False]
+
+
+def test_fetch_spaces_request_starts_at_least_1_5_seconds(monkeypatch, tmp_path):
+    """Would fail if two serialized requests could start less than 1.5 seconds apart."""
+    starts = []
+    sleeps = []
+
+    class FakeTime:
+        now = 10.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            pass
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    def raw_response(*args, **kwargs):
+        starts.append(FakeTime.monotonic())
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        return response
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs.requests, "get", raw_response)
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular", "playoff"))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert starts == [10.0, 11.5]
+    assert sleeps == [1.5]
+
+
+def test_fetch_spaces_raw_http_request_starts_at_least_1_5_seconds(
+    monkeypatch, tmp_path
+):
+    """Would fail if constructor time were mistaken for the HTTP request start."""
+    starts = []
+
+    class FakeTime:
+        now = 10.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        constructed = 0
+
+        def __init__(self, **kwargs):
+            type(self).constructed += 1
+            if type(self).constructed == 1:
+                FakeTime.now += 1.4
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    def raw_response(*args, **kwargs):
+        starts.append(FakeTime.monotonic())
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        return response
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(player_logs, "requests", type(
+        "Requests", (), {"get": staticmethod(raw_response), "RequestException": requests.RequestException,
+                            "HTTPError": requests.HTTPError}
+    ))
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular", "playoff"))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert starts[1] - starts[0] >= 1.5
+
+
+def test_fetch_honors_numeric_retry_after_through_120(monkeypatch, tmp_path):
+    """Would fail if a permitted server retry delay were ignored or capped early."""
+    attempts = []
+    sleeps = []
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if kwargs.get("get_request", True):
+                raise KeyError("resultSet")
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    responses = []
+    for status, retry_after in ((429, "120"), (200, None)):
+        response = requests.Response()
+        response.status_code = status
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        responses.append(response)
+    monkeypatch.setattr(
+        player_logs.requests, "get", lambda *args, **kwargs: responses.pop(0)
+    )
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert len(attempts) == 2
+    assert sleeps == [120.0]
+
+
+def test_fetch_ignores_nonnumeric_retry_after_and_uses_fixed_backoff(
+    monkeypatch, tmp_path
+):
+    """Would fail if a malformed transient Retry-After stopped acquisition."""
+    sleeps = []
+    responses = []
+    for status, retry_after in ((503, "soon"), (200, None)):
+        response = requests.Response()
+        response.status_code = status
+        response.url = "https://stats.nba.com/stats/leaguegamelog"
+        response._content = b"{}"
+        if retry_after is not None:
+            response.headers["Retry-After"] = retry_after
+        responses.append(response)
+
+    class FakeTime:
+        now = 0.0
+
+        @classmethod
+        def monotonic(cls):
+            return cls.now
+
+        @classmethod
+        def sleep(cls, delay):
+            sleeps.append(delay)
+            cls.now += delay
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            assert kwargs["get_request"] is False
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(
+        player_logs.requests, "get", lambda *args, **kwargs: responses.pop(0)
+    )
+    monkeypatch.setattr(player_logs, "time", FakeTime)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    player_logs.fetch(tmp_path, [1984])
+
+    assert sleeps == [5.0]
+
+
+def test_fetch_stops_on_retry_after_over_120(monkeypatch, tmp_path):
+    """Would fail if an excessive server retry delay still issued another request."""
+    attempts = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if kwargs.get("get_request", True):
+                raise KeyError("resultSet")
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    response = requests.Response()
+    response.status_code = 429
+    response.url = "https://stats.nba.com/stats/leaguegamelog"
+    response._content = b"{}"
+    response.headers["Retry-After"] = "121"
+    monkeypatch.setattr(player_logs.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    with pytest.raises(cache.SourceAccessError, match="exceeds 120"):
+        player_logs.fetch(tmp_path, [1984])
+
+    assert len(attempts) == 1
+
+
+def test_fetch_stops_on_non_429_4xx(monkeypatch, tmp_path):
+    """Would fail if a permanent client error were retried as a transient failure."""
+    attempts = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if kwargs.get("get_request", True):
+                raise KeyError("resultSet")
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    response = requests.Response()
+    response.status_code = 404
+    response.url = "https://stats.nba.com/stats/leaguegamelog"
+    response._content = b"{}"
+    monkeypatch.setattr(player_logs.requests, "get", lambda *args, **kwargs: response)
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.stats_nba, "preflight_dns", lambda: ("203.0.113.1",))
+
+    with pytest.raises(cache.SourceAccessError, match="HTTP 404"):
+        player_logs.fetch(tmp_path, [1984])
+
+    assert len(attempts) == 1
+
+
+def test_fetch_does_not_replace_invalid_existing_pair(monkeypatch, tmp_path):
+    """Would fail if fetch repaired or replaced an incomplete immutable cache pair."""
+    destination = player_logs.cache_path(tmp_path, 1984, "regular")
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(_payload(REGULAR_ROWS))
+
+    monkeypatch.setattr(
+        player_logs, "LeagueGameLog", lambda **kwargs: pytest.fail("endpoint called")
+    )
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        player_logs.fetch(tmp_path, [1984])
+
+
+def test_fetch_validates_every_selected_cache_pair_before_any_acquisition(
+    monkeypatch, tmp_path
+):
+    """Would fail if an early miss fetched before a later invalid selected pair."""
+    invalid = player_logs.cache_path(tmp_path, 1984, "playoff")
+    invalid.parent.mkdir(parents=True)
+    invalid.write_bytes(_payload(REGULAR_ROWS))
+    constructors = []
+    published = []
+
+    class FakeLeagueGameLog:
+        def __init__(self, **kwargs):
+            constructors.append(kwargs)
+
+        def get_json(self):
+            return _payload(REGULAR_ROWS).decode()
+
+    monkeypatch.setattr(player_logs, "LeagueGameLog", FakeLeagueGameLog)
+    monkeypatch.setattr(
+        player_logs, "applicable_game_types", lambda _: ("regular", "playoff")
+    )
+    monkeypatch.setattr(player_logs, "available_bytes", lambda _: player_logs.FETCH_HEADROOM_BYTES)
+    monkeypatch.setattr(player_logs.cache, "publish_bytes", lambda *args: published.append(args))
+
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        player_logs.fetch(tmp_path, [1984])
+
+    assert constructors == []
+    assert published == []
+
+
+def test_fetch_requires_five_gibibytes_free_before_first_uncached_request(
+    monkeypatch, tmp_path
+):
+    """Would fail if fetch started a request without its fixed staging headroom."""
+    capacity_paths = []
+    monkeypatch.setattr(player_logs, "applicable_game_types", lambda _: ("regular",))
+    monkeypatch.setattr(
+        player_logs,
+        "available_bytes",
+        lambda path: capacity_paths.append(path) or player_logs.FETCH_HEADROOM_BYTES - 1,
+    )
+    monkeypatch.setattr(
+        player_logs, "LeagueGameLog", lambda **kwargs: pytest.fail("endpoint called")
+    )
+    monkeypatch.setattr(
+        player_logs.stats_nba, "preflight_dns", lambda: pytest.fail("DNS called")
+    )
+
+    with pytest.raises(ValueError, match="insufficient fetch capacity"):
+        player_logs.fetch(tmp_path, [1984])
+
+    assert capacity_paths == [tmp_path]
+
+
+@pytest.mark.parametrize("season", [1983, 2027])
+def test_source_helpers_reject_seasons_outside_the_publication_range(season):
+    with pytest.raises(ValueError, match="1984..2026"):
+        player_logs.season_label(season)
+
+
+def _rows_with(field: str, value: object) -> list[list[object]]:
+    rows = [list(row) for row in REGULAR_ROWS]
+    rows[0][HEADERS.index(field)] = value
+    return rows
+
+
+@pytest.mark.parametrize(
+    ("payload", "season", "game_type", "match"),
+    [
+        (_payload(REGULAR_ROWS), 1984, "exhibition", "unknown game type"),
+        (_payload(REGULAR_ROWS), 1983, "regular", "1984..2026"),
+        (_payload(_rows_with("SEASON_ID", "21982")), 1984, "regular", "ending season mismatch"),
+        (_payload(_rows_with("GAME_ID", "0048300001")), 1984, "regular", "GAME_ID prefix mismatch"),
+        (_payload(_rows_with("MATCHUP", "CHI - BOS")), 1984, "regular", "MATCHUP does not match"),
+        (_payload(_rows_with("TEAM_ABBREVIATION", "NYK")), 1984, "regular", "exactly one side"),
+        (_payload(_rows_with("MATCHUP", "CHI @ CHI")), 1984, "regular", "exactly one side"),
+        (_payload(_rows_with("PLAYER_ID", 1.5)), 1984, "regular", "PLAYER_ID must be an exact integer"),
+        (_payload(_rows_with("PTS", 1.5)), 1984, "regular", "PTS must be an exact integer"),
+        (_payload(_rows_with("PTS", -1)), 1984, "regular", "PTS must be non-negative"),
+        (_payload(_rows_with("PLAYER_NAME", None)), 1984, "regular", "PLAYER_NAME must not be null"),
+    ],
+)
+def test_normalize_payload_rejects_invalid_source_values(
+    payload, season, game_type, match
+):
+    with pytest.raises(ValueError, match=match):
+        player_logs.normalize_payload(payload, season=season, game_type=game_type)
+
+
+def test_normalize_payload_rejects_games_with_one_or_three_team_identities():
+    one_team_rows = [list(row) for row in REGULAR_ROWS]
+    for row in one_team_rows:
+        if row[HEADERS.index("TEAM_ABBREVIATION")] == "BOS":
+            row[HEADERS.index("TEAM_ID")] = 1610612741
+            row[HEADERS.index("TEAM_NAME")] = "Chicago Bulls"
+            row[HEADERS.index("TEAM_ABBREVIATION")] = "CHI"
+            row[HEADERS.index("MATCHUP")] = "CHI @ BOS"
+    three_team_rows = [list(row) for row in REGULAR_ROWS]
+    third = list(three_team_rows[0])
+    third[HEADERS.index("PLAYER_ID")] = 5
+    third[HEADERS.index("TEAM_ID")] = 1610612752
+    third[HEADERS.index("TEAM_ABBREVIATION")] = "NYK"
+    third[HEADERS.index("TEAM_NAME")] = "New York Knicks"
+    third[HEADERS.index("MATCHUP")] = "NYK @ BOS"
+    three_team_rows.append(third)
+
+    for rows in (one_team_rows, three_team_rows):
+        with pytest.raises(ValueError, match="team identities, expected 2"):
+            player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_two_source_teams_resolving_to_one_franchise():
+    rows = [list(row) for row in REGULAR_ROWS]
+    for row in rows:
+        if row[HEADERS.index("TEAM_ABBREVIATION")] == "CHI":
+            row[HEADERS.index("TEAM_NAME")] = "Boston Celtics"
+    with pytest.raises(ValueError, match="same resolved franchise"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_duplicate_game_and_person_key():
+    rows = [list(row) for row in REGULAR_ROWS]
+    rows.append(list(rows[0]))
+    with pytest.raises(ValueError, match=r"duplicate \(game_id, person_id\)"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_assigns_neutral_style_rows_by_each_players_position():
+    rows = [list(row) for row in REGULAR_ROWS]
+    for row in rows:
+        row[HEADERS.index("MATCHUP")] = "CHI @ BOS"
+
+    frame = player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"BOS"}
+    assert set(frame.loc[~frame.is_home, "franchise_id"]) == {"CHI"}
+
+
+def test_normalize_payload_rejects_identifier_outside_signed_int64_range():
+    rows = _rows_with("PLAYER_ID", 1e20)
+    with pytest.raises(ValueError, match="PLAYER_ID must be an exact integer"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_non_standard_json_numeric_constants():
+    rows = _rows_with("PTS", float("nan"))
+    with pytest.raises(ValueError, match="invalid player-log JSON"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_rejects_team_rows_that_disagree_on_matchup_pair():
+    rows = [list(row) for row in REGULAR_ROWS]
+    rows[3][HEADERS.index("MATCHUP")] = "BOS vs. NYK"
+    with pytest.raises(ValueError, match="rows disagree on MATCHUP team pair"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def test_normalize_payload_requires_exactly_one_home_team_identity():
+    rows = [list(row) for row in REGULAR_ROWS]
+    for row in rows:
+        if row[HEADERS.index("TEAM_ABBREVIATION")] == "CHI":
+            row[HEADERS.index("MATCHUP")] = "CHI vs. BOS"
+    with pytest.raises(ValueError, match="has 2 home team identities, expected 1"):
+        player_logs.normalize_payload(_payload(rows), season=1984, game_type="regular")
+
+
+def _approved_matchup_rows():
+    rows = [
+        _row(
+            891, "Charles Oakley", 1610612752, "NYK", "New York Knicks",
+            "NYK vs. NYK", 40, 8,
+        ),
+        _row(
+            892, "Patrick Ewing", 1610612752, "NYK", "New York Knicks",
+            "NYK vs. CHH", 42, 24,
+        ),
+        _row(
+            893, "Glen Rice", 1610612766, "CHH", "Charlotte Hornets",
+            "CHH @ NYK", 41, 22,
+        ),
+    ]
+    for row in rows:
+        row[HEADERS.index("SEASON_ID")] = "41996"
+        row[HEADERS.index("GAME_ID")] = "0049600001"
+        row[HEADERS.index("GAME_DATE")] = "1997-04-24"
+    return rows
+
+
+MATCHUP_EXCEPTION_KEY = "1997|playoff|0049600001|891"
+MATCHUP_EXCEPTION_NOTE = (
+    "Reviewed source anomaly; same-game valid rows and committed references "
+    "agree on the expected ordered matchup."
+)
+
+
+def _approved_matchup_entry(**changes):
+    entry = {
+        "season": 1997,
+        "game_type": "playoff",
+        "game_id": "0049600001",
+        "person_id": 891,
+        "game_date": "1997-04-24",
+        "nba_team_id": 1610612752,
+        "team_name_raw": "New York Knicks",
+        "team_abbreviation_raw": "NYK",
+        "matchup_raw": "NYK vs. NYK",
+        "expected_home_abbreviation": "NYK",
+        "expected_away_abbreviation": "CHH",
+        "note": MATCHUP_EXCEPTION_NOTE,
+    }
+    entry.update(changes)
+    return entry
+
+
+def _matchup_exception_payload(exceptions=None, **root_changes):
+    document = {
+        "schema_version": 1,
+        "exceptions": (
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()}
+            if exceptions is None else exceptions
+        ),
+    }
+    document.update(root_changes)
+    return json.dumps(document, sort_keys=True).encode("utf-8")
+
+
+def test_normalize_payload_applies_the_exact_packaged_matchup_approval():
+    """Would fail if the reviewed Oakley row still died at the XOR gate."""
+    frame = player_logs.normalize_payload(
+        _payload(_approved_matchup_rows()),
+        season=1997,
+        game_type="playoff",
+        matchup_exceptions={
+            MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()
+        },
+    )
+
+    oakley = frame.loc[frame.person_id.eq(891)].iloc[0]
+    assert oakley["matchup_raw"] == "NYK vs. NYK"
+    assert bool(oakley["is_home"]) is True
+    assert oakley["opponent_franchise_id"] == "NOP"
+
+
+def test_normalize_payload_returns_exact_approval_and_consensus_evidence():
+    """Would fail if applied semantics could not be audited bidirectionally."""
+    entry = _approved_matchup_entry()
+    frame, evidence = player_logs.normalize_payload_with_matchup_evidence(
+        _payload(_approved_matchup_rows()),
+        season=1997,
+        game_type="playoff",
+        matchup_exceptions={MATCHUP_EXCEPTION_KEY: entry},
+    )
+
+    assert frame.loc[frame.person_id.eq(891), "matchup_raw"].item() == "NYK vs. NYK"
+    assert evidence == {
+        MATCHUP_EXCEPTION_KEY: {
+            "approval": entry,
+            "consensus": {
+                "game_date": "1997-04-24",
+                "home_abbreviation": "NYK",
+                "away_abbreviation": "CHH",
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "malformed_rows": 1,
+                "valid_rows": 2,
+                "valid_team_identities": 2,
+                "valid_home_identities": 1,
+                "valid_away_identities": 1,
+            },
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("case", "rows", "exceptions"),
+    [
+        (
+            "unlisted malformed row",
+            _approved_matchup_rows(),
+            {},
+        ),
+        (
+            "stale approval",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "NYK vs. CHH" if row[HEADERS.index("TEAM_ABBREVIATION")] == "NYK" else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+        (
+            "changed raw field",
+            _approved_matchup_rows(),
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(matchup_raw="NYK @ NYK")},
+        ),
+        (
+            "changed expected pair",
+            _approved_matchup_rows(),
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    expected_away_abbreviation="MIA"
+                )
+            },
+        ),
+        (
+            "unsupported syntax",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "NYK - NYK" if row[HEADERS.index("PLAYER_ID")] == 891 else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    matchup_raw="NYK - NYK"
+                )
+            },
+        ),
+        (
+            "own team on neither side",
+            [
+                [
+                    *row[:HEADERS.index("MATCHUP")],
+                    "BOS vs. CHI" if row[HEADERS.index("PLAYER_ID")] == 891 else row[HEADERS.index("MATCHUP")],
+                    *row[HEADERS.index("MATCHUP") + 1:],
+                ]
+                for row in _approved_matchup_rows()
+            ],
+            {
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(
+                    matchup_raw="BOS vs. CHI"
+                )
+            },
+        ),
+        (
+            "missing valid-row consensus",
+            [_approved_matchup_rows()[0]],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+        (
+            "valid rows from only one team",
+            _approved_matchup_rows()[:2],
+            {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_matchup_approvals_fail_closed_without_every_proof_obligation(
+    case, rows, exceptions,
+):
+    """Would fail if an approval bypassed a required same-game proof."""
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions=exceptions,
+        )
+
+
+def test_matchup_approval_rejects_conflicting_valid_row_consensus():
+    """Would fail if a non-unanimous ordered pair could authorize a repair."""
+    rows = _approved_matchup_rows()
+    conflicting = list(rows[-1])
+    conflicting[HEADERS.index("PLAYER_ID")] = 894
+    conflicting[HEADERS.index("MATCHUP")] = "CHH @ BOS"
+    rows.append(conflicting)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()},
+        )
+
+
+def test_matchup_approval_rejects_multiple_malformed_rows_in_one_game():
+    """Would fail if one review generalized to another player's malformed row."""
+    rows = _approved_matchup_rows()
+    second = list(rows[0])
+    second[HEADERS.index("PLAYER_ID")] = 894
+    second[HEADERS.index("PLAYER_NAME")] = "Another Knick"
+    rows.append(second)
+    second_key = "1997|playoff|0049600001|894"
+    second_entry = _approved_matchup_entry(person_id=894)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(),
+                second_key: second_entry,
+            },
+        )
+
+
+def test_matchup_approval_rejects_malformed_rows_from_both_teams():
+    """Would fail if both sides could be repaired without independent coverage."""
+    rows = _approved_matchup_rows()
+    malformed_hornet = list(rows[-1])
+    malformed_hornet[HEADERS.index("MATCHUP")] = "CHH @ CHH"
+    valid_hornet = list(rows[-1])
+    valid_hornet[HEADERS.index("PLAYER_ID")] = 894
+    valid_hornet[HEADERS.index("PLAYER_NAME")] = "Another Hornet"
+    rows[-1] = malformed_hornet
+    rows.append(valid_hornet)
+    second_key = "1997|playoff|0049600001|893"
+    second_entry = {
+        **_approved_matchup_entry(),
+        "person_id": 893,
+        "nba_team_id": 1610612766,
+        "team_name_raw": "Charlotte Hornets",
+        "team_abbreviation_raw": "CHH",
+        "matchup_raw": "CHH @ CHH",
+    }
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_matchup_evidence(
+            _payload(rows),
+            season=1997,
+            game_type="playoff",
+            matchup_exceptions={
+                MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(),
+                second_key: second_entry,
+            },
+        )
+
+
+def test_parse_matchup_exceptions_accepts_only_the_canonical_schema():
+    """Would fail if canonical reviewed entries could not be loaded exactly."""
+    assert player_logs.parse_matchup_exceptions(_matchup_exception_payload()) == {
+        MATCHUP_EXCEPTION_KEY: _approved_matchup_entry()
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            b'{"schema_version":1,"schema_version":1,"exceptions":{}}',
+            "duplicate",
+        ),
+        (
+            json.dumps({"schema_version": 1, "exceptions": {}, "extra": {}}).encode(),
+            "top-level",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: {**_approved_matchup_entry(), "extra": 1}}
+            ),
+            "fields",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(season=True)}
+            ),
+            "type",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(person_id="891")}
+            ),
+            "type",
+        ),
+        (
+            _matchup_exception_payload(
+                {"1997|playoff|0049600001|892": _approved_matchup_entry()}
+            ),
+            "identity",
+        ),
+        (
+            _matchup_exception_payload(
+                {MATCHUP_EXCEPTION_KEY: _approved_matchup_entry(note="  ")}
+            ),
+            "note",
+        ),
+    ],
+)
+def test_parse_matchup_exceptions_rejects_schema_and_identity_drift(payload, match):
+    """Would fail if non-canonical approval bytes silently changed semantics."""
+    with pytest.raises(player_logs.PlayerLogValidationError, match=match):
+        player_logs.parse_matchup_exceptions(payload)
+
+
+DESIGNATION_KEY = "2025|regular|0022400147"
+DESIGNATION_NOTE = (
+    "Reviewed neutral-site designation anomaly; exact reciprocal player-log "
+    "shape and unique hoopR-backed committed reference agree on the "
+    "designated sides."
+)
+
+
+def _designation_entry(**changes):
+    entry = {
+        "season": 2025,
+        "game_type": "regular",
+        "game_id": "0022400147",
+        "game_date": "2024-11-02",
+        "teams": [
+            {
+                "nba_team_id": 1610612748,
+                "team_name_raw": "Miami Heat",
+                "team_abbreviation_raw": "MIA",
+                "matchup_raw": "MIA @ WAS",
+                "row_count": 13,
+            },
+            {
+                "nba_team_id": 1610612764,
+                "team_name_raw": "Washington Wizards",
+                "team_abbreviation_raw": "WAS",
+                "matchup_raw": "WAS @ MIA",
+                "row_count": 13,
+            },
+        ],
+        "expected_home_abbreviation": "WAS",
+        "expected_away_abbreviation": "MIA",
+        "expected_home_franchise_id": "WAS",
+        "expected_away_franchise_id": "MIA",
+        "reference_neutral_site": True,
+        "reference_neutral_site_source": "hoopr",
+        "note": DESIGNATION_NOTE,
+    }
+    entry.update(changes)
+    return entry
+
+
+def _designation_rows():
+    identities = (
+        (1610612748, "MIA", "Miami Heat", "MIA @ WAS", 13),
+        (1610612764, "WAS", "Washington Wizards", "WAS @ MIA", 13),
+    )
+    rows = []
+    person_id = 10_000
+    for team_id, abbreviation, team_name, matchup, count in identities:
+        for offset in range(count):
+            row = _row(
+                person_id + offset,
+                f"{abbreviation} Player {offset}",
+                team_id,
+                abbreviation,
+                team_name,
+                matchup,
+                12,
+                2,
+            )
+            row[HEADERS.index("SEASON_ID")] = "22024"
+            row[HEADERS.index("GAME_ID")] = "0022400147"
+            row[HEADERS.index("GAME_DATE")] = "2024-11-02"
+            rows.append(row)
+        person_id += 100
+    return rows
+
+
+def test_normalize_payload_applies_the_exact_packaged_designation():
+    """Would fail if an approved reciprocal game still had zero home teams."""
+    frame = player_logs.normalize_payload(
+        _payload(_designation_rows()), season=2025, game_type="regular"
+    )
+
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert set(frame.loc[~frame.is_home, "franchise_id"]) == {"MIA"}
+    assert set(frame.loc[frame.franchise_id.eq("MIA"), "matchup_raw"]) == {
+        "MIA @ WAS"
+    }
+    assert set(frame.loc[frame.franchise_id.eq("WAS"), "matchup_raw"]) == {
+        "WAS @ MIA"
+    }
+
+
+def _designation_payload(designations=None, **root_changes):
+    document = {
+        "schema_version": 1,
+        "designations": (
+            {DESIGNATION_KEY: _designation_entry()}
+            if designations is None else designations
+        ),
+    }
+    document.update(root_changes)
+    return json.dumps(document, sort_keys=True).encode("utf-8")
+
+
+def _designation_rows_with(
+    *, player_id=None, abbreviation=None, field=None, value=None
+):
+    rows = _designation_rows()
+    for row in rows:
+        if player_id is not None and row[HEADERS.index("PLAYER_ID")] != player_id:
+            continue
+        if (
+            abbreviation is not None
+            and row[HEADERS.index("TEAM_ABBREVIATION")] != abbreviation
+        ):
+            continue
+        row[HEADERS.index(field)] = value
+    return rows
+
+
+def test_normalize_payload_returns_exact_designation_raw_evidence():
+    """Would fail if the approved raw proof could not be bound downstream."""
+    entry = _designation_entry()
+    frame, matchup_evidence, designation_evidence = (
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(_designation_rows()),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: entry},
+        )
+    )
+
+    assert matchup_evidence == {}
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert designation_evidence == {
+        DESIGNATION_KEY: {
+            "approval": entry,
+            "raw": {
+                "game_date": "2024-11-02",
+                "rows": 26,
+                "raw_team_identities": 2,
+                "resolved_franchises": 2,
+                "valid_xor_rows": 26,
+                "malformed_rows": 0,
+                "unordered_matchup_pairs": 1,
+                "home_identities_before": 0,
+                "away_identities_before": 2,
+                "home_identities_after": 1,
+                "away_identities_after": 1,
+                "teams": entry["teams"],
+            },
+        }
+    }
+
+
+def test_matchup_evidence_api_keeps_its_two_value_return_with_designations():
+    """Would fail if designation evidence broke the reviewed public API."""
+    frame, matchup_evidence = player_logs.normalize_payload_with_matchup_evidence(
+        _payload(_designation_rows()),
+        season=2025,
+        game_type="regular",
+        matchup_exceptions={},
+        designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+    )
+
+    assert len(frame) == 26
+    assert set(frame.loc[frame.is_home, "franchise_id"]) == {"WAS"}
+    assert matchup_evidence == {}
+
+
+@pytest.mark.parametrize(
+    ("case", "rows", "designations"),
+    [
+        ("unlisted", _designation_rows(), {}),
+        (
+            "stale",
+            _designation_rows_with(
+                field="MATCHUP", value="MIA @ WAS"
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "wrong date",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    game_date="2024-11-03"
+                )
+            },
+        ),
+        (
+            "wrong identity",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "team_name_raw": "Miami"},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "wrong string",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "matchup_raw": "MIA @ BOS"},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "wrong row count",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        {**_designation_entry()["teams"][0], "row_count": 12},
+                        _designation_entry()["teams"][1],
+                    ]
+                )
+            },
+        ),
+        (
+            "non-reciprocal strings",
+            _designation_rows_with(
+                abbreviation="WAS", field="MATCHUP", value="WAS @ BOS"
+            ),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    teams=[
+                        _designation_entry()["teams"][0],
+                        {
+                            **_designation_entry()["teams"][1],
+                            "matchup_raw": "WAS @ BOS",
+                        },
+                    ]
+                )
+            },
+        ),
+        (
+            "mixed separators",
+            _designation_rows_with(
+                field="MATCHUP", value="MIA vs. WAS"
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "unsupported syntax",
+            _designation_rows_with(
+                player_id=10_000,
+                field="MATCHUP",
+                value="MIA - WAS",
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "malformed overlap",
+            _designation_rows_with(
+                player_id=10_000,
+                field="MATCHUP",
+                value="MIA @ MIA",
+            ),
+            {DESIGNATION_KEY: _designation_entry()},
+        ),
+        (
+            "expected side drift",
+            _designation_rows(),
+            {
+                DESIGNATION_KEY: _designation_entry(
+                    expected_home_abbreviation="BOS"
+                )
+            },
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_designation_approvals_fail_closed_on_raw_or_approval_drift(
+    case, rows, designations,
+):
+    """Would fail if a designation approval generalized beyond exact proof."""
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions=designations,
+        )
+
+
+def test_designation_approval_rejects_a_third_identity_and_pair():
+    """Would fail if an approval could hide a third raw team identity."""
+    rows = _designation_rows()
+    third = list(rows[0])
+    third[HEADERS.index("PLAYER_ID")] = 99_999
+    third[HEADERS.index("TEAM_ID")] = 1610612752
+    third[HEADERS.index("TEAM_NAME")] = "New York Knicks"
+    third[HEADERS.index("TEAM_ABBREVIATION")] = "NYK"
+    third[HEADERS.index("MATCHUP")] = "NYK @ MIA"
+    rows.append(third)
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+        )
+
+
+def test_designation_approval_rejects_two_home_raw_identities():
+    """Would fail if an approved game accepted a role shape other than (0, 2)."""
+    rows = _designation_rows()
+    for row in rows:
+        abbreviation = row[HEADERS.index("TEAM_ABBREVIATION")]
+        row[HEADERS.index("MATCHUP")] = (
+            "MIA vs. WAS" if abbreviation == "MIA" else "WAS vs. MIA"
+        )
+
+    with pytest.raises(player_logs.PlayerLogValidationError):
+        player_logs.normalize_payload_with_exception_evidence(
+            _payload(rows),
+            season=2025,
+            game_type="regular",
+            matchup_exceptions={},
+            designation_exceptions={DESIGNATION_KEY: _designation_entry()},
+        )
+
+
+def test_parse_designation_exceptions_accepts_only_the_canonical_schema():
+    """Would fail if an exact reviewed designation could not be loaded."""
+    assert player_logs.parse_designation_exceptions(
+        _designation_payload()
+    ) == {DESIGNATION_KEY: _designation_entry()}
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        (
+            b'{"schema_version":1,"schema_version":1,"designations":{}}',
+            "duplicate",
+        ),
+        (
+            json.dumps(
+                {"schema_version": 1, "designations": {}, "extra": {}}
+            ).encode(),
+            "top-level",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: {**_designation_entry(), "extra": 1}}
+            ),
+            "fields",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: {
+                        key: value
+                        for key, value in _designation_entry().items()
+                        if key != "note"
+                    }
+                }
+            ),
+            "fields",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(season=True)}
+            ),
+            "type",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=[
+                            {**_designation_entry()["teams"][0], "row_count": True},
+                            _designation_entry()["teams"][1],
+                        ]
+                    )
+                }
+            ),
+            "type",
+        ),
+        (
+            _designation_payload(
+                {"2025|regular|0022400148": _designation_entry()}
+            ),
+            "identity",
+        ),
+        (
+            _designation_payload(
+                {"2025|regular|22400147": _designation_entry()}
+            ),
+            "key",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_date="2024-1-2")}
+            ),
+            "date",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_id="22400147")}
+            ),
+            "game_id",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(game_type="playoff")}
+            ),
+            "regular",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=list(reversed(_designation_entry()["teams"]))
+                    )
+                }
+            ),
+            "sorted",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        teams=[
+                            _designation_entry()["teams"][0],
+                            _designation_entry()["teams"][0],
+                        ]
+                    )
+                }
+            ),
+            "duplicate",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        expected_away_abbreviation="WAS"
+                    )
+                }
+            ),
+            "sides",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        expected_away_franchise_id="WAS"
+                    )
+                }
+            ),
+            "franchises",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(reference_neutral_site=False)}
+            ),
+            "neutral",
+        ),
+        (
+            _designation_payload(
+                {
+                    DESIGNATION_KEY: _designation_entry(
+                        reference_neutral_site_source="manual"
+                    )
+                }
+            ),
+            "hoopr",
+        ),
+        (
+            _designation_payload(
+                {DESIGNATION_KEY: _designation_entry(note="  ")}
+            ),
+            "note",
+        ),
+    ],
+)
+def test_parse_designation_exceptions_rejects_schema_and_value_drift(
+    payload, match,
+):
+    """Would fail if non-canonical designation bytes changed semantics."""
+    with pytest.raises(player_logs.PlayerLogValidationError, match=match):
+        player_logs.parse_designation_exceptions(payload)

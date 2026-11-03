@@ -816,3 +816,263 @@ atomic two-destination publish with explicit rollback on partial failure.
 The [final audit](audits/2026-07-31-play-by-play-archive.md) was rendered
 only after an independently restored, absent-target copy of this exact
 snapshot passed every one of these checks.
+
+## Player-game logs
+
+`data/parquet-large/player_games/` is an independently published,
+player-appearance/workload archive built from the NBA Stats `LeagueGameLog`
+endpoint in player mode (`PlayerOrTeamAbbreviation=P`). It is not a modeling
+input and does not change `games.parquet`, `team_games.parquet`,
+`historical_games.parquet`, or `playoff_games.parquet`, and both its raw
+cache and its Parquet publication are gitignored and never committed; a
+repository clone does not contain raw player-log responses or the large
+player-game Parquet partitions.
+
+> A missing `player_games` row means only that LeagueGameLog did not credit
+> an appearance; it does not prove roster membership, eligibility, injury,
+> rest, or expected participation.
+
+### Two explicit scopes
+
+`SOURCE_SEASONS` (ending seasons `1984`–`2026`, 93 `(season, game_type)` cache
+identities: 43 regular, 43 playoff, seven play-in) governs fetch, the
+complete-inventory validator, archive/restore, and the full diagnostic
+source audit. `PUBLICATION_SEASONS` (ending seasons `2012`–`2026`, 37
+identities: 15 regular, 15 playoff, seven play-in) governs assembly,
+coverage validation, the manifest, and the trusted publication itself, which
+writes exactly 15 partitions. Only the 37 publication-scope cache bodies are
+bound into the publication manifest's `sources.player_logs`; the remaining
+56 source-scope identities (ending seasons 1984–2011) stay in the raw
+archive as quarantined evidence and never enter a coverage join, discrepancy
+count, or exception ledger for the trusted publication. `play_in` applies
+only to ending seasons `2020`–`2026` in both scopes. Each raw cache identity
+is one attested body/sidecar pair at
+`data/raw/stats_nba/player_logs/season=<ending season>/<game_type>.json`.
+
+### `player_games.parquet`
+
+One row per player per game. The primary key is `(game_id, person_id)`,
+unique within a season partition. Rows are sorted by `(season, game_date,
+game_id, franchise_id, person_id)`. Publication writes exactly one
+deterministic, ZSTD-compressed `player_games.parquet` file per ending season
+under `data/parquet-large/player_games/season=<ending season>/player_games.parquet`,
+for every season `2012` through `2026`, alongside one `_manifest.json` at
+`data/parquet-large/player_games/_manifest.json`. These are the exact
+`PLAYER_GAMES_ARROW_SCHEMA` columns and physical types, in publication order:
+
+| Column | Type | Nullable | Origin | Meaning |
+|---|---|---|---|---|
+| `game_id` | large_string | no | source | LeagueGameLog `GAME_ID` |
+| `person_id` | int64 | no | source | LeagueGameLog `PLAYER_ID` |
+| `season` | int64 | no | derived | Ending season, from the cache identity that was read, not parsed from `SEASON_ID` |
+| `game_type` | large_string | no | derived | `regular`, `playoff`, or `play_in`, from the cache identity that was read |
+| `game_date` | date32 | no | source | Parsed `GAME_DATE` |
+| `player_name` | large_string | no | source | LeagueGameLog `PLAYER_NAME` |
+| `nba_team_id` | int64 | no | source | LeagueGameLog `TEAM_ID` |
+| `team_name_raw` | large_string | no | source | LeagueGameLog `TEAM_NAME` |
+| `team_abbreviation_raw` | large_string | no | source | LeagueGameLog `TEAM_ABBREVIATION` |
+| `matchup_raw` | large_string | no | source | LeagueGameLog `MATCHUP` |
+| `franchise_id` | large_string | no | derived | Resolved via the franchise reference from `team_name_raw`/`nba_team_id`, applying any exact matchup/designation exceptions |
+| `opponent_franchise_id` | large_string | no | derived | The other franchise present in the same `game_id` |
+| `is_home` | bool | no | derived | Parsed from `matchup_raw` (`vs.` = home, `@` = away) |
+| `min` | int64 | yes | source | LeagueGameLog `MIN` |
+| `pts` | int64 | yes | source | LeagueGameLog `PTS` |
+| `fgm` | int64 | yes | source | LeagueGameLog `FGM` |
+| `fga` | int64 | yes | source | LeagueGameLog `FGA` |
+| `fg3m` | int64 | yes | source | LeagueGameLog `FG3M` |
+| `fg3a` | int64 | yes | source | LeagueGameLog `FG3A` |
+| `ftm` | int64 | yes | source | LeagueGameLog `FTM` |
+| `fta` | int64 | yes | source | LeagueGameLog `FTA` |
+| `oreb` | int64 | yes | source | LeagueGameLog `OREB` |
+| `dreb` | int64 | yes | source | LeagueGameLog `DREB` |
+| `reb` | int64 | yes | source | LeagueGameLog `REB` |
+| `ast` | int64 | yes | source | LeagueGameLog `AST` |
+| `stl` | int64 | yes | source | LeagueGameLog `STL` |
+| `blk` | int64 | yes | source | LeagueGameLog `BLK` |
+| `tov` | int64 | yes | source | LeagueGameLog `TOV` |
+| `pf` | int64 | yes | source | LeagueGameLog `PF` |
+| `plus_minus` | int64 | yes | source | LeagueGameLog `PLUS_MINUS` |
+
+#### Coverage joins and discrepancy classification
+
+Player rows are aggregated to one team-game side per `(game_id,
+franchise_id)` and cross-validated against the committed results
+publications with two distinct joins, restricted to `PUBLICATION_SEASONS`:
+
+- **Regular season**: an exact-`game_id` join against `games.parquet`/
+  `team_games.parquet` (`_TEAM_GAME_IDENTITY`:
+  `game_id, season, game_type, game_date, franchise_id,
+  opponent_franchise_id, is_home`), `validate="one_to_one"`.
+- **Postseason** (`playoff`, `play_in`): a composite join against
+  `playoff_games.parquet` on `_POSTSEASON_GAME_IDENTITY`
+  (`season, game_date, game_type, home_franchise_id, away_franchise_id`),
+  since postseason `game_id`s are not shared with the player-log source.
+
+Every aggregated side must match its reference exactly; an unmatched or
+identity-drifted side fails the build. `collect_discrepancies` then compares
+each side's summed player `pts`/`min` against the matched publication total
+under the unchanged strict rules: a point candidate is any side whose
+summed `pts` disagrees with the published total; a minute candidate is any
+side whose summed `min` falls outside `MINUTE_TOLERANCE = 5` of
+`240 + 25 * inferred_overtime_periods` (`MAX_OVERTIME_PERIODS = 6`), whose
+opposing side infers a different overtime count, or whose inferred
+postseason overtime disagrees with the published `overtime_periods`. The
+trusted 2012–2026 publication observes **zero** point and **zero** minute
+candidates under these gates.
+
+#### Historical quarantine and full-audit evidence
+
+Ending seasons **1984–2011 are quarantined raw source evidence, not a
+released workload, and not an accepted exception population.** The complete
+1984–2026 diagnostic audit (`scripts/audit_player_logs.py` in its default,
+non-final review mode) deterministically reproduces:
+
+- 1,082,012 raw player rows audited, 52,529 source games audited, 105,058
+  team-game sides audited;
+- 662 point candidates and 1,211 minute candidates (1,300 unique affected
+  team-game keys, 1,164 unique affected games, 573 keys present in both
+  sections);
+- point causes, losslessly: 627 incomplete payloads, 27 bad references, 7
+  phantom rows, 1 isolated discrepancy; and
+- minute causes, losslessly: 573 point-deficit overlaps, 264 active `MIN=0`
+  sides, 228 residual-six-to-eight sides, 146 other anomalies.
+
+These are source incompleteness, reference errors, and corrupt fields, not
+one approvable exception class, and all of them fall in ending seasons
+1984–2011: the trusted 2012–2026 publication scope observes zero point and
+zero minute candidates under the identical strict gates (see the governing
+amendment). They are never imputed,
+corrected, widened past `MINUTE_TOLERANCE`, or copied into the committed
+exception ledger; the trusted publication instead excludes ending seasons
+1984–2011 entirely. The generated source-audit report has SHA-256
+`3e62e215555898ddade63322688760c24ba6c3a5d2c7f4b0face1169fd47dbd0`; the
+generated 805,637-byte candidate JSON has SHA-256
+`ade10d5af96f47ba633b8526488eb9cb94607ce024aa0ce7e0b63ed9b05d3388`. Both
+values are reproduced verbatim in the
+[final audit](audits/2026-08-02-player-games-source-audit.md) as immutable
+reviewed facts, not recomputed at render time from the git-ignored SDD
+diagnostic workspace. Publishing any ending season before 2012 requires a
+new, separately reviewed design (see the amendment's historical remediation
+boundary); this release performs no historical remediation, alternate-source
+acquisition, quality-flag schema, or corrected player-row synthesis.
+
+#### Exception ledgers and repairs
+
+`src/nba_data/reference/player_game_validation_exceptions.json` is the
+committed point/minute exception ledger and remains exactly `{"minutes":
+{}, "points": {}}`: the trusted publication requires zero observed point and
+zero observed minute discrepancies, and a non-empty or stale entry fails the
+build. `src/nba_data/reference/player_game_matchup_exceptions.json` (36
+reviewed rows, malformed `MATCHUP` strings in ending seasons 1997–2000) and
+`src/nba_data/reference/player_game_designation_exceptions.json` (10
+reviewed rows, neutral-site games in ending seasons 2025–2026) are both
+full, canonical ledgers bound into the manifest regardless of scope; the
+publication applies only the entries that fall inside `PUBLICATION_SEASONS`.
+The trusted 2012–2026 release therefore applies **zero** of the 36 matchup
+repairs (all fall in 1997–2000) and **all ten** designation repairs. Applied
+repairs are recorded with their own deterministic SHA-256 digests in the
+manifest's `validation.matchup_repairs`/`validation.designation_repairs`.
+
+#### Manifest and provenance guarantees
+
+`data/parquet-large/player_games/_manifest.json` is deterministic JSON with
+exactly nine top-level keys: `schema_version`, `scope`
+(`ending_seasons`, `game_types`, exactly `[2012..2026]`), the ordered
+`schema` (name, Arrow type, nullability for every column above), `versions`
+(`nba_api`, `pandas`, `pyarrow`, `python`), `sources`
+(`player_logs` — the 37 consumed cache body/sidecar bindings, sorted; and
+`franchise_reference`), `references` (the committed `games.parquet`,
+`team_games.parquet`, `playoff_games.parquet`, and their manifests),
+`exception_ledger` (bindings for all three exception ledger files),
+`partitions` (exactly 15 entries, one per ending season, with byte and
+logical-row SHA-256), and `validation` (row/game/player counts,
+`cache_entries`, `coverage`, `exceptions` — `{"minutes": 0, "points": 0}` —
+and `matchup_repairs`/`designation_repairs` counts with digests).
+`validate_publication` independently recomputes this entire manifest from
+the published tree — never trusting the stored copy — and requires an exact
+match; two consecutive offline `build-player-games` runs must reproduce
+every `player_games.parquet` partition and `_manifest.json` byte for byte.
+
+### Commands
+
+```bash
+# Networked and rate-limited; resumable full acquisition or one season,
+# covering all 93 SOURCE_SEASONS identities.
+python -m nba_data fetch-player-logs --season 2026
+python -m nba_data fetch-player-logs
+
+# Strictly offline deterministic full-corpus (1984-2026) source review;
+# reproduces the historical candidate counts but never approves them.
+python scripts/audit_player_logs.py \
+  --data-dir data --output-dir /tmp/player-game-source-review
+
+# Strictly offline deterministic publication of the trusted 2012-2026
+# scope: 15 season partitions plus _manifest.json.
+python -m nba_data build-player-games
+
+# Independent immutable combined raw-plus-Parquet NAS recovery, covering
+# the full 93-pair raw archive and the narrower 15-partition publication.
+scripts/archive_player_games_snapshot.sh
+scripts/restore_player_games_snapshot.sh player-games-archive-2026-<manifest-sha12>
+```
+
+`fetch-player-logs` is the only player-log network path; `build-player-games`,
+unit tests, the offline source audit, archive validation, and restore
+validation are all offline. The only source request host is
+`stats.nba.com`. Complete valid raw cache body/sidecar pairs are never
+silently overwritten or re-fetched.
+
+### Immutable snapshot and recovery contract
+
+The immutable combined snapshot root is
+`/mnt/nas/llm/documents/nba-predictions-archive/player-games-archive-2026-<first-12-hex-of-manifest-sha256>/`,
+overridable with `NBA_PLAYER_GAMES_ARCHIVE_ROOT`/`NBA_PLAYER_GAMES_DATA_DIR`/
+`NBA_PLAYER_GAMES_REFERENCE_DIR`. A snapshot combines both the raw cache
+(`raw/stats_nba/player_logs/`, all 93 identities) and the active Parquet
+publication (`parquet-large/player_games/`, the 15-partition trusted scope)
+under one name, plus a `SHA256SUMS` covering every regular file.
+`scripts/archive_player_games_snapshot.sh` validates the live source (two
+independent gates: the complete 93-pair raw archive, and the narrower
+37-source/15-partition publication), stages a checksummed copy, and
+publishes it atomically; an existing same-name snapshot is accepted only if
+it already matches the freshly staged copy exactly, and is never modified
+otherwise.
+
+`scripts/restore_player_games_snapshot.sh` takes one positional snapshot
+name (`player-games-archive-2026-<12 hex>`), pins the manifest digest from
+both that name and the snapshot's own manifest bytes, and restores into
+`NBA_PLAYER_GAMES_DATA_DIR`-relative `raw/stats_nba/player_logs` and
+`parquet-large/player_games` (both of which must be absent). It verifies the
+snapshot's `SHA256SUMS` inventory, revalidates both semantic gates, stages a
+checksummed copy, revalidates the source snapshot again for mutation, and
+delegates every JSON/Parquet semantic question to
+`python -m nba_data.player_games_snapshot`:
+
+- `validate-layout` fully revalidates one raw-archive-plus-publication pair
+  offline, proving the complete 93-pair raw tree and the exact 2012–2026,
+  37-source, 15-partition publication as two independent checks;
+- `verify-rebuild` deterministically rebuilds the publication from the
+  restored raw cache into a temporary stage and requires an exact,
+  byte-for-byte match against the already-restored publication.
+
+Either check can also be invoked standalone, to independently validate any
+restored or otherwise materialized raw-plus-publication pair offline:
+
+```bash
+python -m nba_data.player_games_snapshot validate-layout \
+  --raw-root data/raw/stats_nba/player_logs \
+  --publication-root data/parquet-large/player_games \
+  --reference-dir data/parquet
+```
+
+Restore then performs an atomic two-destination publish (raw first, then
+publication) with explicit rollback on partial failure, and prints
+`independent rebuild: ok` once `verify-rebuild` passes. Unlike its
+`scripts/restore_pbp_snapshot.sh` sibling, the player-games restore script
+intentionally omits a restore-side capacity gate and a post-rename
+`validate-layout` call, since Task 5 verified those checks externally as
+part of the disposable-restore acceptance procedure rather than duplicating
+them inside the script. The
+[final audit](audits/2026-08-02-player-games-source-audit.md) was rendered
+only after an independently restored, absent-target copy of this exact
+snapshot passed every one of these checks.

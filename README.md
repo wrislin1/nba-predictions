@@ -35,8 +35,9 @@ audit.
 - `data/reference/` — reviewed mappings, expected counts, and correction
   ledgers used by validation.
 - `data/raw/` and `data/parquet-large/` — gitignored raw provider caches and
-  the large play-by-play Parquet publication; absent from a fresh clone and
-  recovered only from the independent NAS snapshots described below.
+  the large play-by-play and player-game-logs Parquet publications; absent
+  from a fresh clone and recovered only from the independent NAS snapshots
+  described below.
 - `analysis/covid_hca/` — the delivered 1947–2026 descriptive home-court
   trend and the planned COVID-era causal analysis.
 - `tests/` — repository and pipeline contracts.
@@ -172,6 +173,68 @@ python -m nba_data build-pbp
 scripts/archive_pbp_snapshot.sh
 scripts/restore_pbp_snapshot.sh
 ```
+
+## Player-game logs
+
+`data/parquet-large/player_games/` is a separate, independently published
+player-appearance/workload archive (one `player_games.parquet` per ending
+season, primary key `(game_id, person_id)`), sourced from the NBA Stats
+`LeagueGameLog` endpoint in player mode. It is not a modeling input and does
+not change any of the game-results publications. Its raw cache
+(`data/raw/stats_nba/player_logs/`) and its Parquet publication
+(`data/parquet-large/`) are both gitignored; a repository clone contains no
+raw player-log responses and no large player-game Parquet data, only the code
+and this documentation.
+
+The raw source archive covers the complete ending-season range 1984–2026 (93
+cache identities: 43 regular, 43 playoff, seven play-in). The first
+**trusted publication**, however, is deliberately narrower: ending seasons
+2012–2026 only, consuming exactly 37 of those 93 cache identities (15
+regular, 15 playoff, seven play-in) and writing exactly 15 partitions. Ending
+seasons 1984–2011 remain **quarantined raw source evidence**, not a released
+workload: the full 1984–2026 diagnostic audit reproduces 1,082,012 raw player
+rows, 52,529 games, and 105,058 team-game sides, and finds 662 point and
+1,211 minute discrepancy candidates (1,300 unique affected team-game keys,
+1,164 unique affected games, 573 keys present in both sections) concentrated
+before ending season 2012. None of those historical candidates are approved,
+corrected, or published; see the
+[player-game-logs data dictionary section](docs/data-dictionary.md#player-game-logs)
+for the exact lossless cause breakdown and the
+[final audit](docs/audits/2026-08-02-player-games-source-audit.md) for the
+full rendered two-scope evidence. The trusted 2012–2026 publication itself
+observes zero point and zero minute discrepancies under the unchanged strict
+minute rule, applies zero of the 36 historical matchup repairs, and applies
+all ten 2025–2026 designation repairs.
+
+> A missing `player_games` row means only that LeagueGameLog did not credit
+> an appearance; it does not prove roster membership, eligibility, injury,
+> rest, or expected participation.
+
+```bash
+# Networked and rate-limited; resumable full acquisition or one season.
+python -m nba_data fetch-player-logs --season 2026
+python -m nba_data fetch-player-logs
+
+# Strictly offline deterministic full-corpus (1984-2026) source audit;
+# reproduces the historical candidate counts but never approves them.
+python scripts/audit_player_logs.py --data-dir data --output-dir /tmp/player-game-source-review
+
+# Strictly offline deterministic publication of the trusted 2012-2026
+# scope: 15 season partitions plus _manifest.json.
+python -m nba_data build-player-games
+
+# Independent immutable combined raw-plus-Parquet NAS recovery, covering
+# the full 93-pair raw archive and the narrower 15-partition publication.
+scripts/archive_player_games_snapshot.sh
+scripts/restore_player_games_snapshot.sh player-games-archive-2026-<manifest-sha12>
+```
+
+`fetch-player-logs` is the only player-log network path; `build-player-games`,
+unit tests, the offline source audit, archive validation, and restore
+validation are all offline. See the
+[player-game-logs data dictionary section](docs/data-dictionary.md#player-game-logs)
+for the full schema, coverage-join contracts, exception-ledger semantics, and
+recovery contract.
 
 ## Revival roadmap
 
