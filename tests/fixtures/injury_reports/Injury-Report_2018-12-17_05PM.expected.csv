@@ -1,0 +1,93 @@
+page,row_number,game_date,game_time_raw,matchup_raw,away_tricode,home_tricode,team_raw,is_placeholder,placeholder_raw,player_name_raw,current_status_raw,reason_raw,category_raw,previous_status_raw
+1,1,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Detroit Pistons,false,,"Ellenson, Henry",Out,Left Ankle Sprain,Injury/Illness,-
+1,2,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Detroit Pistons,false,,"Pachulia, Zaza",Questionable,Illness,Injury/Illness,-
+1,3,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Detroit Pistons,false,,"Robinson III, Glenn",Out,Left Ankle Sprain,Injury/Illness,-
+1,4,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Detroit Pistons,false,,"Smith, Ish",Out,Right Adductor Tear,Injury/Illness,-
+1,5,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Milwaukee Bucks,false,,"Brogdon, Malcolm",Probable,Left hamstring soreness,Injury/Illness,Available
+1,6,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Milwaukee Bucks,false,,"Duval, Trevon",Out,-,G League Team,-
+1,7,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Milwaukee Bucks,false,,"Ilyasova, Ersan",Out,Nose contusion,Injury/Illness,Available
+1,8,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Milwaukee Bucks,false,,"Middleton, Khris",Available,Right finger sprain,Injury/Illness,Probable
+1,9,2018-12-17,07:00 (ET),MIL@DET,MIL,DET,Milwaukee Bucks,false,,"Wood, Christian",Out,-,G League Team,-
+1,10,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,New York Knicks,false,,"Dotson, Damyean",Out,Sore right shoulder,Injury/Illness,Questionable
+1,11,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,New York Knicks,false,,"Hicks, Isaiah",Out,-,G League Team,-
+1,12,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,New York Knicks,false,,"Porzingis, Kristaps",Out,Left knee,Injury/Illness,-
+1,13,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,New York Knicks,false,,"Robinson, Mitchell",Out,Sprained left ankle,Injury/Illness,-
+1,14,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,New York Knicks,false,,"Trier, Allonzo",Out,Strained left hamstring,Injury/Illness,-
+1,15,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,Phoenix Suns,false,,"Ariza, Trevor",Out,-,Not With Team,-
+1,16,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,Phoenix Suns,false,,"King, George",Out,-,G League Team,Available
+1,17,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,Phoenix Suns,false,,"Okobo, Elie",Out,-,G League Team,-
+1,18,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,Phoenix Suns,false,,"Oubre Jr., Kelly",Out,-,Trade Pending,-
+1,19,2018-12-17,07:30 (ET),PHX@NYK,PHX,NYK,Phoenix Suns,false,,"Rivers, Austin",Out,-,Trade Pending,-
+1,20,2018-12-17,08:00 (ET),CHI@OKC,CHI,OKC,Chicago Bulls,false,,"LaVine, Zach",Out,Ankle injury - left,Injury/Illness,-
+1,21,2018-12-17,08:00 (ET),CHI@OKC,CHI,OKC,Chicago Bulls,false,,"Parker, Jabari",Questionable,Stomach illness,Injury/Illness,Available
+1,22,2018-12-17,08:00 (ET),CHI@OKC,CHI,OKC,Chicago Bulls,false,,"Valentine, Denzel",Out,Ankle surgery - left,Injury/Illness,-
+1,23,2018-12-17,08:00 (ET),CHI@OKC,CHI,OKC,Oklahoma City Thunder,false,,"Roberson, Andre",Out,Left Patellar Tendon,Injury/Illness,-
+1,24,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Minnesota Timberwolves,false,,"Bates-Diop, Keita",Out,-,G League Team,-
+1,25,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Minnesota Timberwolves,false,,"Bayless, Jerryd",Out,Left Knee Sprain,Injury/Illness,Out
+1,26,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Minnesota Timberwolves,false,,"Teague, Jeff",Questionable,Left Ankle Inflammation,Injury/Illness,Available
+1,27,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Minnesota Timberwolves,false,,"Terrell, Jared",Out,-,G League Team,-
+2,28,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Minnesota Timberwolves,false,,"Williams, C.J.",Out,-,G League Team,-
+2,29,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Sacramento Kings,false,,"Bagley III, Marvin",Out,Left Knee Bone Bruise,Injury/Illness,-
+2,30,2018-12-17,08:00 (ET),SAC@MIN,SAC,MIN,Sacramento Kings,false,,"Shumpert, Iman",Out,-,Personal Reasons,-
+2,31,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Houston Rockets,false,,"Anthony, Carmelo",Out,-,Not With Team,-
+2,32,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Houston Rockets,false,,"Edwards, Vincent",Out,-,G League Team,-
+2,33,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Houston Rockets,false,,"Ennis III, James",Out,Right Hamstring Strain,Injury/Illness,-
+2,34,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Houston Rockets,false,,"Qi, Zhou",Probable,Left Ankle Sprain,Injury/Illness,-
+2,35,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Utah Jazz,false,,"Bradley, Tony",Out,-,G League Team,-
+2,36,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Utah Jazz,false,,"Cavanaugh, Tyler",Out,-,G League Team,-
+2,37,2018-12-17,08:00 (ET),UTA@HOU,UTA,HOU,Utah Jazz,false,,"Mitrou-Long, Naz",Out,-,G League Team,-
+2,38,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,Philadelphia 76ers,false,,"Fultz, Markelle",Out,Thoracic outlet syndrome,Injury/Illness,-
+2,39,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,Philadelphia 76ers,false,,"Jackson, Demetrius",Out,-,G League Team,-
+2,40,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,Philadelphia 76ers,false,,"Patton, Justin",Out,Right foot surgery,Injury/Illness,-
+2,41,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,Philadelphia 76ers,false,,"Smith, Zhaire",Out,Left foot surgery,Injury/Illness,-
+2,42,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,San Antonio Spurs,false,,"Gasol, Pau",Out,Left foot soreness,Injury/Illness,-
+2,43,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,San Antonio Spurs,false,,"Metu, Chimezie",Out,-,G League Team,-
+2,44,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,San Antonio Spurs,false,,"Moore, Ben",Out,-,G League Team,-
+2,45,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,San Antonio Spurs,false,,"Murray, Dejounte",Out,Torn right anterior cruciate ligament,Injury/Illness,-
+2,46,2018-12-17,08:30 (ET),PHI@SAS,PHI,SAS,San Antonio Spurs,false,,"Walker IV, Lonnie",Out,-,G League Team,-
+2,47,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Golden State Warriors,false,,"Cousins, DeMarcus",Out,Left Achilles Rehab,Injury/Illness,-
+2,48,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Golden State Warriors,false,,"Jones, Damian",Out,Left Pectoral Surgery,Injury/Illness,-
+2,49,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Memphis Grizzlies,false,,"Anderson, Kyle",Questionable,Left ankle sprain,Injury/Illness,-
+2,50,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Memphis Grizzlies,false,,"Brooks, Dillon",Out,Left knee sprain,Injury/Illness,-
+2,51,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Memphis Grizzlies,false,,"Parsons, Chandler",Out,Right knee soreness,Injury/Illness,-
+2,52,2018-12-17,10:30 (ET),MEM@GSW,MEM,GSW,Memphis Grizzlies,false,,"Stephens, DJ",Out,-,G League Team,-
+2,53,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,LA Clippers,false,,"Delgado, Angel",Out,-,G League Team,-
+3,54,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,LA Clippers,false,,"Mbah a Moute, Luc",Out,Sore knee - left,Injury/Illness,-
+3,55,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,LA Clippers,false,,"Motley, Johnathan",Out,-,G League Team,-
+3,56,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,LA Clippers,false,,"Robinson, Jerome",Out,Strained foot - right,Injury/Illness,-
+3,57,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,LA Clippers,false,,"Williams, Lou",Out,Sore hamstring - left,Injury/Illness,-
+3,58,2018-12-17,10:30 (ET),POR@LAC,POR,LAC,Portland Trail Blazers,true,ALL PLAYERS AVAILABLE,,,,,
+3,59,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Cleveland Cavaliers,true,NOT YET SUBMITTED,,,,,
+3,60,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Indiana Pacers,false,,"Anigbogu, Ike",Out,-,G League Team,-
+3,61,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Indiana Pacers,false,,"Evans, Tyreke",Questionable,Bruised right knee,Injury/Illness,-
+3,62,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Indiana Pacers,false,,"Johnson, Alize",Out,-,G League Team,-
+3,63,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Indiana Pacers,false,,"Reed, Davon",Out,-,G League Team,-
+3,64,2018-12-18,07:00 (ET),CLE@IND,CLE,IND,Indiana Pacers,false,,"Sumner, Edmond",Out,-,G League Team,-
+3,65,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"Crabbe, Allen",Questionable,Sore right knee,Injury/Illness,-
+3,66,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"Graham, Treveon",Out,Left hamstring strain,Injury/Illness,-
+3,67,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"LeVert, Caris",Out,"Subtalar dislocation, right foot",Injury/Illness,-
+3,68,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"Musa, Dzanan",Out,Left shoulder subluxation,Injury/Illness,-
+3,69,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"Pinson, Theo",Out,-,G League Team,-
+3,70,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Brooklyn Nets,false,,"Williams, Alan",Out,-,G League Team,-
+3,71,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"Beasley, Michael",Out,-,Personal Reasons,-
+3,72,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"Caruso, Alex",Out,-,G League Team,-
+3,73,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"Ingram, Brandon",Out,Sprained left ankle,Injury/Illness,-
+3,74,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"McGee, JaVale",Questionable,Flu-like symptoms,Injury/Illness,-
+3,75,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"Rondo, Rajon",Out,Right hand surgery,Injury/Illness,-
+3,76,2018-12-18,07:30 (ET),LAL@BKN,LAL,BKN,Los Angeles Lakers,false,,"Williams, Johnathan",Out,-,G League Team,-
+3,77,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Atlanta Hawks,false,,"Plumlee, Miles",Out,Left knee pain,Injury/Illness,-
+3,78,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Atlanta Hawks,false,,"Poythress, Alex",Out,-,G League Team,-
+3,79,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Atlanta Hawks,false,,"Prince, Taurean",Out,Left ankle sprain,Injury/Illness,-
+3,80,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Atlanta Hawks,false,,"Spellman, Omari",Out,Right hip soreness,Injury/Illness,-
+4,81,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Washington Wizards,false,,"Howard, Dwight",Out,Back surgery,Injury/Illness,-
+4,82,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Washington Wizards,false,,"Porter Jr., Otto",Questionable,Right knee contusion,Injury/Illness,-
+4,83,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Washington Wizards,false,,"Robinson, Devin",Out,-,G League Team,-
+4,84,2018-12-18,07:30 (ET),WAS@ATL,WAS,ATL,Washington Wizards,false,,"White, Okaro",Out,-,G League Team,-
+4,85,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Antetokounmpo, Kostas",Out,-,G League Team,-
+4,86,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Barea, J.J.",Questionable,Left ankle sprain,Injury/Illness,-
+4,87,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Kleber, Maxi",Questionable,Left great toe sprain,Injury/Illness,-
+4,88,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Macon, Daryl",Out,-,G League Team,-
+4,89,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Nowitzki, Dirk",Probable,Left ankle surgery,Injury/Illness,-
+4,90,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Smith Jr., Dennis",Doubtful,Right wrist sprain,Injury/Illness,-
+4,91,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Dallas Mavericks,false,,"Spalding, Ray",Out,-,G League Team,-
+4,92,2018-12-18,09:00 (ET),DAL@DEN,DAL,DEN,Denver Nuggets,true,NOT YET SUBMITTED,,,,,

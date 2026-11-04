@@ -1,0 +1,7 @@
+page,row_number,game_date,game_time_raw,matchup_raw,away_tricode,home_tricode,team_raw,is_placeholder,placeholder_raw,player_name_raw,current_status_raw,reason_raw,category_raw,previous_status_raw
+1,1,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Houston Rockets,false,,"Bennett, Anthony",Out,Left Knee Soreness,Injury/Illness,Available
+1,2,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Houston Rockets,false,,"Frazier, Michael",Out,Right Ankle Sprain,Injury/Illness,Available
+1,3,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Houston Rockets,false,,"Hilario, Nene",Out,Adductor,Injury/Illness,-
+1,4,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Houston Rockets,false,,"Ponds, Shamorie",Questionable,Left Quad Contusion,Injury/Illness,Available
+1,5,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Houston Rockets,false,,"Westbrook, Russell",Out,Scheduled Rehabilitation,Injury/Illness,Available
+1,6,2019-09-30,08:00 (ET),UNK@HOU,UNK,HOU,Non-NBA Team,true,Non-NBA Team,,,,,

@@ -1,0 +1,5 @@
+page,row_number,game_date,game_time_raw,matchup_raw,away_tricode,home_tricode,team_raw,is_placeholder,placeholder_raw,player_name_raw,current_status_raw,reason_raw,category_raw,previous_status_raw
+1,1,2019-02-15,07:00 (ET),UNK@UNK,UNK,UNK,Non-NBA Team,true,Non-NBA Team,,,,,
+1,2,2019-02-15,07:00 (ET),UNK@UNK,UNK,UNK,Non-NBA Team,true,Non-NBA Team,,,,,
+1,3,2019-02-15,09:00 (ET),UNK@UNK,UNK,UNK,Non-NBA Team,true,Non-NBA Team,,,,,
+1,4,2019-02-15,09:00 (ET),UNK@UNK,UNK,UNK,Non-NBA Team,true,Non-NBA Team,,,,,
