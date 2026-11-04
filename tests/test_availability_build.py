@@ -35,6 +35,9 @@ import hashlib
 import io
 import json
 import re
+import subprocess
+import sys
+import textwrap
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -50,6 +53,7 @@ from nba_data import (
     availability_resolve,
     box_rosters,
     cache,
+    gamebooks,
     injury_derivative,
     injury_report_parse,
     injury_reports,
@@ -833,6 +837,40 @@ def seed_full_tree(
     )
     ledger_path = write_ledger(tmp_path, full_ledger() if ledger is None else ledger)
     return raw_root, player_games_root, ledger_path
+
+
+GAMEBOOK_PDF = b"%PDF-1.7\n% browser-downloaded gamebook\n"
+GAMEBOOK_NAMES = {
+    "CHI": {"active": ["Coby White", "Lonzo Ball"], "inactive": ["Zach LaVine"]},
+    "CHA": {"active": ["Miles Bridges", "LaMelo Ball"], "inactive": ["Mark Williams"]},
+}
+
+
+def seed_gamebooks(data_dir: Path, game=BULLS_HORNETS, *, names=GAMEBOOK_NAMES) -> tuple[Path, Path]:
+    """Import one gamebook pair for ``game`` and write its comparison record.
+
+    Returns ``(pdf_path, comparison_path)``; the comparison is made against
+    the ``CHI@CHA`` rosters the seeded bodies produce (``full_roster`` seeds
+    three more inactives per team, which the record then reports).
+    """
+    source = data_dir / "gamebook-downloads"
+    source.mkdir(exist_ok=True)
+    (source / f"{game.game_date:%Y%m%d}_CHICHA_book.pdf").write_bytes(GAMEBOOK_PDF)
+    index = box_rosters.load_player_games_index(data_dir / box_rosters.PLAYER_GAMES_SUBDIR)
+    (pdf,) = gamebooks.import_gamebooks(
+        data_dir, source, game_keys=box_rosters.game_keys(index), retrieved_on=date(2026, 11, 20),
+    )
+    bodies = {
+        endpoint: box_rosters.read_cached(data_dir, game, endpoint)[0]
+        for endpoint in box_rosters.ENDPOINTS
+    }
+    normalized = box_rosters.normalize_game(
+        bodies["traditional"], bodies["summary"], game=game, index=index,
+    )
+    record = gamebooks.compare_rosters(game.game_id, names, normalized.rosters)
+    if record["differences"]:
+        record["reviewer_note"] = "Seeded inactives the test gamebook does not print."
+    return pdf, gamebooks.write_comparison(data_dir, record)
 
 
 def _empty_ledger() -> dict:
@@ -1806,6 +1844,7 @@ def test_derivative_agreement_joins_on_printed_time_and_lists_unmatched_versions
         _their_row(player=None, status=None, reason="NOT YET SUBMITTED", team="Charlotte Hornets"),
         _their_row(player=None, status=None, reason=",", team="Charlotte Hornets"),
         _their_row(when=datetime(2024, 1, 31, 21, 55)),                     # no version of ours prints 21:55
+        _their_row(when=None, player="Null, Minute"),                        # a null report_datetime joins nothing
     ])
     derivative_root = tmp_path / "raw/sportsdataverse/nba_stats_injury_report"
 
@@ -1831,8 +1870,11 @@ def test_derivative_agreement_joins_on_printed_time_and_lists_unmatched_versions
     assert season["patterns"] == {
         f"reason: ours {LEFT_ANKLE!r} / theirs {LEFT_ANKLE_CUT!r}": {"count": 1, "report_ids": [JANUARY_REPORT]},
     }
+    # a derivative row the minute join cannot place is counted, never lost
+    assert season["asset_present"] is True and season["null_report_datetime"] == 1
     # a season without a pinned asset compares nothing and lists its versions as unmatched
-    assert agreement[2026]["asset"] is None
+    assert agreement[2026]["asset"] is None and agreement[2026]["asset_present"] is False
+    assert agreement[2026]["null_report_datetime"] == 0
     assert agreement[2026]["versions_ours"] == 1 and agreement[2026]["versions_theirs"] == 0
     assert agreement[2026]["versions_compared"] == 0 and agreement[2026]["unmatched_ours"] == [quarter_2026]
     assert agreement[2026]["unmatched_theirs"] == [] and agreement[2026]["patterns"] == {}
@@ -2016,6 +2058,8 @@ def test_build_from_roots_writes_46_partitions_and_a_deterministic_manifest(tmp_
     assert agreement["2024"]["unmatched_theirs"] == ["2024-01-10T17:30:00"]
     assert agreement["2020"]["unmatched_ours"] == ["Injury-Report_2019-11-15_01PM"]
     assert agreement["2020"]["versions_theirs"] == 0
+    assert agreement["2024"]["asset_present"] is True and agreement["2024"]["null_report_datetime"] == 0
+    assert agreement["2020"]["asset_present"] is False and agreement["2020"]["null_report_datetime"] == 0
 
     # the stage must be an existing empty directory
     with pytest.raises(availability_build.AvailabilityBuildError, match="stage"):
@@ -2076,7 +2120,7 @@ def test_manifest_binds_every_raw_pair_the_player_games_manifest_controls_and_le
         path = injury_derivative.asset_path(tmp_path, entry["identity"]["season"])
         assert entry["body_path"] == path.relative_to(tmp_path).as_posix()
         assert entry["body_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
-    # TODO(task-16)/TODO(task-21): gamebooks are imported later; nothing exists yet
+    # no gamebook was imported into this tree yet: both lists bind empty
     assert sources["gamebooks"] == {"pdfs": [], "comparisons": []}
 
     references = manifest["references"]
@@ -2100,18 +2144,38 @@ def test_manifest_binds_every_raw_pair_the_player_games_manifest_controls_and_le
     assert manifest["exception_ledger"]["sha256"] == ledger_sha
     assert set(manifest["exception_ledger"]) == {"path", "sha256", "bytes", "applied", "counts"}
 
-    # gamebook pairs that do exist are bound
-    pdf = tmp_path / "raw/nba_gamebooks" / f"{BULLS_HORNETS.game_id}.book.pdf"
-    cache.publish_bytes(pdf, b"%PDF-1.4 gamebook", {"provider": "nba_official"}, lambda path: None)
-    record = tmp_path / "raw/nba_gamebooks/comparisons" / f"{BULLS_HORNETS.game_id}.json"
-    cache.publish_bytes(record, b"{}\n", {"provider": "review"}, lambda path: None)
+    # gamebook pairs that do exist are re-attested and bound
+    pdf, record = seed_gamebooks(tmp_path)
+    assert pdf == tmp_path / "raw/nba_gamebooks" / f"{BULLS_HORNETS.game_id}.book.pdf"
+    assert record == tmp_path / "raw/nba_gamebooks/comparisons" / f"{BULLS_HORNETS.game_id}.json"
     bound = _build(raw_root, player_games_root, _stage(tmp_path, "with-gamebooks"), ledger)["sources"]["gamebooks"]
     assert [entry["body_path"] for entry in bound["pdfs"]] == [f"raw/nba_gamebooks/{BULLS_HORNETS.game_id}.book.pdf"]
     assert [entry["body_path"] for entry in bound["comparisons"]] == [
         f"raw/nba_gamebooks/comparisons/{BULLS_HORNETS.game_id}.json",
     ]
     assert bound["pdfs"][0]["identity"] == {"game_id": BULLS_HORNETS.game_id}
-    assert bound["pdfs"][0]["body_sha256"] == hashlib.sha256(b"%PDF-1.4 gamebook").hexdigest()
+    assert bound["pdfs"][0]["body_sha256"] == hashlib.sha256(GAMEBOOK_PDF).hexdigest()
+    assert bound["comparisons"][0]["identity"] == {"game_id": BULLS_HORNETS.game_id}
+    assert bound["comparisons"][0]["body_sha256"] == hashlib.sha256(record.read_bytes()).hexdigest()
+    assert json.loads(record.read_text(encoding="utf-8"))["differences"] == 6
+    # a pair that no longer verifies against its validator or its sidecar fails the build
+    for path, damaged, match in (
+        (pdf, b"<html>Access Denied</html>", "gamebook"),
+        (record, b"[]\n", "comparison"),
+        (record, record.read_bytes() + b"\n", "comparison"),
+    ):
+        original = path.read_bytes()
+        path.write_bytes(damaged)
+        with pytest.raises(availability_build.AvailabilityBuildError, match=match):
+            _build(raw_root, player_games_root, _stage(tmp_path, f"damaged-{path.name}-{len(damaged)}"), ledger)
+        path.write_bytes(original)
+    sidecar = pdf.with_name(pdf.name + ".meta.json")
+    original = sidecar.read_bytes()
+    sidecar.write_bytes(original.replace(BULLS_HORNETS.game_id.encode(), b"0022300701"))
+    with pytest.raises(availability_build.AvailabilityBuildError, match="gamebook"):
+        _build(raw_root, player_games_root, _stage(tmp_path, "damaged-sidecar"), ledger)
+    sidecar.write_bytes(original)
+    assert _build(raw_root, player_games_root, _stage(tmp_path, "restored"), ledger)["sources"]["gamebooks"] == bound
 
 
 def test_manifest_records_the_player_games_snapshot_name_derived_from_the_bound_digest(tmp_path, monkeypatch):
@@ -2195,6 +2259,29 @@ def test_validate_publication_recomputes_and_rejects_tampering(tmp_path, monkeyp
     body = box_rosters.cache_path(tmp_path, FINALS.season, FINALS.game_id, "summary")
     tampered(body, lambda payload: payload.replace(b"20250605/INDOKC", b"20250605/INDOKX"), r"raw pair|sources|validation")
     tampered(player_games_root / "_manifest.json", lambda payload: payload + b"\n", "references")
+    # a gamebook pair bound after the build is a sources mismatch; once built in,
+    # a tampered comparison record fails its re-attestation
+    pdf, comparison = seed_gamebooks(tmp_path)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="sources"):
+        validate()
+    stage_gb = _stage(tmp_path, "with-gamebooks")
+    manifest_gb = _build(raw_root, player_games_root, stage_gb, ledger)
+
+    def validate_gb():
+        return availability_build.validate_publication(
+            raw_root, player_games_root, stage_gb, exceptions_path=ledger,
+        )
+
+    assert validate_gb() == manifest_gb
+    original = comparison.read_bytes()
+    comparison.write_bytes(original.replace(b'"differences": 6', b'"differences": 0'))
+    with pytest.raises(availability_build.AvailabilityBuildError, match="comparison"):
+        validate_gb()
+    comparison.write_bytes(original)
+    assert validate_gb() == manifest_gb
+    for path in (pdf, comparison):
+        path.unlink()
+        path.with_name(path.name + ".meta.json").unlink()
     # the ledger: a byte change breaks the binding; a new entry is a stale approval
     tampered(ledger, lambda payload: payload.replace(b"reused", b"REUSED"), "references")
     key = f"2026|{OPENER.game_id}|{DORT}"
@@ -2292,3 +2379,222 @@ def test_run_stages_rereads_publishes_and_rolls_back_on_failure(tmp_path, monkey
     monkeypatch.setattr(publication, "publish_tree", lambda *args, **kwargs: retained)
     with pytest.raises(availability_build.AvailabilityBuildError, match=r"rollback.*rollback-retained"):
         availability_build.run(tmp_path)
+
+
+# --------------------------------------------------------------------------
+# render_audit and the offline audit script (Task 16)
+# --------------------------------------------------------------------------
+
+
+AUDIT_SCRIPT = REPO_ROOT / "scripts/audit_availability_sources.py"
+REVIEW_FILES = [
+    "disagreement_patterns.json", "gamebook_sample.json", "ledger_candidates.json",
+    "resolution.json", "review.md",
+]
+
+
+def test_render_audit_states_manifest_digest_snapshot_and_restore_line(tmp_path, monkeypatch):
+    """Would fail if the audit text omitted the digest, the snapshot name, the restore line or the D1 dependency."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    pdf, comparison = seed_gamebooks(tmp_path)
+    manifest = _build(raw_root, player_games_root, _stage(tmp_path), ledger)
+    digest = hashlib.sha256(availability_build.manifest_bytes(manifest)).hexdigest()
+    snapshot = f"availability-archive-2026-{digest[:12]}"
+    player_games = manifest["references"]["player_games_manifest"]
+
+    text = availability_build.render_audit(manifest, snapshot_name=snapshot, restore_verified=True)
+
+    lines = text.splitlines()
+    assert lines[0] == "# Availability source audit"
+    assert f"Manifest SHA-256: `{digest}`" in lines
+    assert f"Snapshot: `{snapshot}`" in lines
+    assert "Restore verified: yes" in lines
+    depends = [line for line in lines if line.startswith("Depends on: ")]
+    assert depends == [
+        f"Depends on: `{player_games['snapshot_name']}` "
+        f"(player_games manifest SHA-256 `{player_games['sha256']}`)"
+    ]
+    assert re.fullmatch(r"player-games-archive-2026-[0-9a-f]{12}", player_games["snapshot_name"])
+    assert text.endswith("\n") and str(tmp_path) not in text and date.today().isoformat() not in text
+    assert text == availability_build.render_audit(manifest, snapshot_name=snapshot, restore_verified=True)
+    # composite ledger keys carry "|" and must not split the applied-entries table
+    with_entry = copy.deepcopy(manifest)
+    with_entry["exception_ledger"]["applied"]["appearance_consistency"]["2026|0022500001|1628983"] = {
+        "appearance": "credited", "comment_raw": "DNP - Coach's Decision", "minutes_raw": None,
+    }
+    rendered = availability_build.render_audit(with_entry, snapshot_name=None, restore_verified=False)
+    assert "2026\\|0022500001\\|1628983" in rendered
+    assert "| 2026|0022500001|1628983 |" not in rendered
+    # the counts the committed audit must state come from the manifest
+    for expected in (
+        "Games: 15", "Box-roster pairs: 30", "Publication partitions: 46",
+        "| hour | 7 | 2 | 2 |", "| quarter | 1 | 2 | 2 |",
+        "Reports: 8 present, 8 parsed, 0 excluded",
+        "| 2026 | NOT YET SUBMITTED | 22 |",
+        f"| {OPENER.game_id} | {HOU} | 2 | 0 |",
+        "Gamebook PDFs bound: 1", "Comparison records bound: 1",
+        # the sample table binds each gamebook to its comparison record by digest;
+        # Task 22 extends it by hand with the differences and reviewer notes
+        f"| {BULLS_HORNETS.game_id} | {hashlib.sha256(pdf.read_bytes()).hexdigest()} | "
+        f"{hashlib.sha256(comparison.read_bytes()).hexdigest()} |",
+        "## Derivative agreement", "## Applied ledger entries", "## Resolution",
+        "| 2024 | CLE@MEM | 2 |",
+        "| 2020 | no |",   # derivative asset absent for 2020
+    ):
+        assert expected in text, expected
+    for report_id in REUSED_REPORTS:
+        assert report_id in text
+    assert "pdfplumber: 0.11.10" in text
+
+    # not yet archived: the expected name is still stated, the restore line says no
+    unverified = availability_build.render_audit(manifest, snapshot_name=None, restore_verified=False)
+    assert f"Snapshot: `{snapshot}` (not yet archived)" in unverified.splitlines()
+    assert "Restore verified: no" in unverified.splitlines()
+    # the name must derive from the digest; a restore cannot be verified without a snapshot
+    with pytest.raises(availability_build.AvailabilityBuildError, match="snapshot"):
+        availability_build.render_audit(
+            manifest, snapshot_name="availability-archive-2026-000000000000", restore_verified=True,
+        )
+    with pytest.raises(availability_build.AvailabilityBuildError, match="restore"):
+        availability_build.render_audit(manifest, snapshot_name=None, restore_verified=True)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="manifest"):
+        availability_build.render_audit({"scope": {}}, snapshot_name=None, restore_verified=False)
+
+
+def _run_audit(data_dir: Path, output_dir: Path, *flags: str) -> subprocess.CompletedProcess:
+    """Run the audit script in a subprocess whose slot grids hold only the seeded reports.
+
+    The seed trims ``injury_reports.enumerate_slots`` with ``monkeypatch`` in
+    this process; the child applies the same trim before ``runpy`` executes
+    the script as ``__main__``, so the script's own imports, argument parsing
+    and exit codes are exercised for real.
+    """
+    bootstrap = textwrap.dedent(f"""
+        import runpy
+        import sys
+        from nba_data import injury_reports
+
+        report_ids = {json.dumps([
+            report_id for month in sorted(FULL_MONTHS)
+            for report_id in (*FULL_MONTHS[month]["present"], *FULL_MONTHS[month]["unavailable"])
+        ])}
+        slots = tuple(sorted(
+            (injury_reports.slot_from_report_id(report_id) for report_id in report_ids),
+            key=lambda slot: (slot.slot_date, slot.slot_start_et, slot.grid),
+        ))
+
+        def trimmed(months=None):
+            if months is None:
+                return slots
+            selected = set(months)
+            return tuple(slot for slot in slots if slot.month in selected)
+
+        injury_reports.enumerate_slots = trimmed
+        sys.argv = [
+            {str(AUDIT_SCRIPT)!r}, "--data-dir", {str(data_dir)!r}, "--output-dir", {str(output_dir)!r},
+            *{list(flags)!r},
+        ]
+        runpy.run_path({str(AUDIT_SCRIPT)!r}, run_name="__main__")
+    """)
+    return subprocess.run(
+        [sys.executable, "-c", bootstrap], check=False, capture_output=True, text=True, cwd=REPO_ROOT,
+    )
+
+
+def test_audit_script_writes_review_artifacts_to_an_empty_directory(tmp_path, monkeypatch):
+    """Would fail if the audit gated on the ledger, wrote into a non-empty directory or drifted between runs."""
+    seed_full_tree(tmp_path, monkeypatch)
+    output = tmp_path / "review"
+
+    result = _run_audit(tmp_path, output, "--gamebook-sample")
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in output.iterdir()) == REVIEW_FILES
+    text = {name: (output / name).read_text(encoding="utf-8") for name in REVIEW_FILES}
+    for name, body in text.items():
+        assert str(tmp_path) not in body and date.today().isoformat() not in body, name
+
+    # the committed ledger has no entries, so the four reused reports are observed as
+    # exclude candidates and reported, never raised
+    candidates = json.loads(text["ledger_candidates.json"])
+    assert set(candidates) == set(SECTIONS) | {"schema_version"} and candidates["schema_version"] == 1
+    assert sorted(candidates["report_versions"]) == sorted(REUSED_REPORTS)
+    for report_id, entry in candidates["report_versions"].items():
+        assert entry["note"] == "" and entry["action"] == "exclude" and entry["failed_check"] == "title_window"
+        assert entry["title_printed_et"] == TINY_PRINTED_ET
+        assert entry["slot_label"] == injury_reports.slot_from_report_id(report_id).slot_label
+    assert candidates["appearance_consistency"] == {} and candidates["schedule_dates"] == {}
+    assert candidates["team_resolution"] == {}
+
+    # with the empty committed ledger the four reused reports are excluded, so only
+    # the fixture seasons carry listings to resolve
+    resolution = json.loads(text["resolution.json"])
+    assert sorted(resolution) == ["2019", "2021", "2024", "2026"]
+    assert resolution["2024"]["identity_rate"] == 1.0
+    assert resolution["2024"]["unresolved_matchups"]["CLE@MEM"] == 2
+    assert set(resolution["2024"]) >= {
+        "identity_rate_by_team", "identity_rate_by_month", "identity_rate_by_status",
+        "unresolved_names", "listed_not_rostered",
+    }
+
+    patterns = json.loads(text["disagreement_patterns.json"])
+    assert sorted(patterns) == [str(season) for season in range(2019, 2027)]
+    assert patterns["2024"]["unmatched_theirs"] == ["2024-01-10T17:30:00"]
+    assert patterns["2024"]["asset_present"] is True and patterns["2020"]["asset_present"] is False
+    assert patterns["2024"]["asset"]["body_path"].startswith("raw/sportsdataverse/")
+
+    sample = json.loads(text["gamebook_sample.json"])
+    assert len(sample) == 2 * 15 + 2 + 3
+    assert all(set(entry) == {
+        "case", "season", "game_id", "game_date", "game_code_raw", "nba_team_id", "gamebook_url",
+    } for entry in sample)
+    by_case = {}
+    for entry in sample:
+        by_case.setdefault(entry["case"], []).append(entry)
+    assert [entry["game_id"] for entry in by_case["earliest_regular"]] == [
+        *(game.game_id for game in SEASON_GAMES), BULLS_HORNETS.game_id, None, OPENER.game_id,
+    ]
+    assert [entry["game_id"] for entry in by_case["latest_playoff"]] == [None] * 13 + [FINALS.game_id, None]
+    finals = by_case["latest_playoff"][13]
+    assert finals["gamebook_url"] == "https://statsdmz.nba.com/pdfs/20250605/20250605_INDOKC_book.pdf"
+    assert by_case["empty_inactive_list"] == [{
+        "case": "empty_inactive_list", "season": 2026, "game_id": OPENER.game_id, "game_date": "2025-10-21",
+        "game_code_raw": "20251021/HOUOKC", "nba_team_id": HOU,
+        "gamebook_url": "https://statsdmz.nba.com/pdfs/20251021/20251021_HOUOKC_book.pdf",
+    }]
+    assert by_case["bubble_2020"][0]["game_id"] is None and by_case["bubble_2020"][0]["gamebook_url"] is None
+    assert [entry["case"] for entry in sample[-3:]] == ["two_way", "trade_within_two_days", "season_long_absence"]
+    assert all(entry["game_id"] is None and entry["gamebook_url"] is None for entry in sample[-3:])
+
+    review = text["review.md"]
+    for heading in (
+        "# Availability source review", "## Roster consistency", "## Roster sizes",
+        "## Parse status and title checks", "## Placeholder counts", "## Resolution",
+        "## Unresolved names", "## Unresolved matchups", "## Listed but not rostered",
+        "## Derivative agreement", "## Unmatched versions", "## Ledger candidates", "## Gamebook sample",
+    ):
+        assert heading in review, heading
+    assert f"| {OPENER.game_id} | {HOU} | 2 | 0 |" in review
+    assert "| 2024 | CLE@MEM | 2 |" in review
+    for report_id in REUSED_REPORTS:
+        assert report_id in review
+
+    # deterministic: a second run to another empty directory is byte-identical
+    second = tmp_path / "review-2"
+    assert _run_audit(tmp_path, second, "--gamebook-sample").returncode == 0
+    assert _tree_bytes(second) == _tree_bytes(output)
+    # without the flag no sample is written
+    third = tmp_path / "review-3"
+    assert _run_audit(tmp_path, third).returncode == 0
+    assert sorted(path.name for path in third.iterdir()) == [
+        name for name in REVIEW_FILES if name != "gamebook_sample.json"
+    ]
+    # a non-empty directory or a file is refused before anything is read
+    before = _tree_bytes(output)
+    refused = _run_audit(tmp_path, output, "--gamebook-sample")
+    assert refused.returncode != 0 and "empty" in refused.stderr
+    assert _tree_bytes(output) == before
+    as_file = tmp_path / "review.txt"
+    as_file.write_text("x", encoding="utf-8")
+    refused = _run_audit(tmp_path, as_file)
+    assert refused.returncode != 0 and "directory" in refused.stderr

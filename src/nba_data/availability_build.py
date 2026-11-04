@@ -54,6 +54,12 @@ the independent :func:`validate_publication`, which recomputes the whole
 manifest from the raw trees and compares it with the stored one key by key,
 and :func:`run`, which stages beside the publication, rereads the stage,
 publishes through ``publication.publish_tree`` and rereads the result.
+
+:func:`render_audit` (Task 16) renders the skeleton of the committed audit
+from a manifest, the snapshot name and the restore flag, in the style of
+``docs/audits/2026-08-02-player-games-source-audit.md``; the offline review
+script ``scripts/audit_availability_sources.py`` reuses the assemblers,
+``derivative_agreement`` and :func:`roster_sizes` without gating.
 """
 
 from __future__ import annotations
@@ -78,6 +84,7 @@ from nba_data import (
     availability_resolve,
     box_rosters,
     cache,
+    gamebooks,
     injury_derivative,
     injury_report_parse,
     injury_reports,
@@ -1552,9 +1559,12 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
     Versions matched on neither side are listed (``unmatched_ours`` by
     ``report_id``, ``unmatched_theirs`` by ISO minute), not treated as
     errors; several of our versions printing the same minute each compare
-    with that group. Counts are summed per season and patterns merged with
-    every affected ``report_id``. ``asset`` carries the pair binding for the
-    manifest.
+    with that group. Derivative rows with a null ``report_datetime`` can join
+    no minute and are counted as ``null_report_datetime`` so the cross-check
+    never loses rows unnoticed. Counts are summed per season and patterns
+    merged with every affected ``report_id``. ``asset`` carries the pair
+    binding for the manifest and ``asset_present`` says whether the season
+    had a pinned asset at all.
     """
     data_dir = _derivative_data_dir(derivative_root)
     versions = part_b.versions
@@ -1574,6 +1584,7 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
         parsed = season_versions[season_versions["parse_status"] != "excluded"]
         asset_binding = None
         by_minute: dict[datetime, pd.DataFrame] = {}
+        null_minutes = 0
         try:
             cached = injury_derivative.read_cached(data_dir, season)
         except (cache.CacheIntegrityError, injury_derivative.InjuryDerivativeError) as exc:
@@ -1592,6 +1603,8 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
                 injury_derivative.asset_path(data_dir, season), data_dir, {"season": season},
             )
             minutes = pd.to_datetime(theirs["report_datetime"]).dt.floor("min")
+            # a groupby drops NaT keys silently: count those rows instead
+            null_minutes = int(minutes.isna().sum())
             for minute, frame in theirs.groupby(minutes, sort=True):
                 by_minute[pd.Timestamp(minute).to_pydatetime()] = frame
 
@@ -1625,6 +1638,8 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
                 merged["report_ids"].update(entry["report_ids"])
         result[season] = {
             "asset": asset_binding,
+            "asset_present": asset_binding is not None,
+            "null_report_datetime": null_minutes,
             "versions_ours": int(len(parsed)),
             "versions_excluded": int(len(season_versions) - len(parsed)),
             "versions_theirs": len(by_minute),
@@ -1825,8 +1840,14 @@ def _resolution_summary(metrics: Mapping[int, Mapping]) -> dict:
     }
 
 
-def _roster_sizes(part_a: PartA) -> dict:
-    """Active / inactive counts per season and the team-games outside 8..15 active or with no inactives."""
+def roster_sizes(part_a: PartA) -> dict:
+    """Active / inactive counts per season and the team-games outside 8..15 active or with no inactives.
+
+    ``by_season`` carries ``team_games``, ``active_min``, ``active_max`` and
+    ``inactive_empty`` per season; ``outliers`` enumerates every team-game
+    with fewer than 8 or more than 15 active players or an empty inactive
+    list. Never a gate: every listed case is reviewed.
+    """
     counts = part_a.roster_counts.merge(part_a.schedule[["game_id", "season"]], on="game_id", how="left")
     if counts["season"].isna().any():
         raise AvailabilityBuildError("roster counts name a game the schedule lacks")
@@ -1855,24 +1876,43 @@ def _roster_sizes(part_a: PartA) -> dict:
 
 
 def _gamebook_bindings(raw_root: Path, data_dir: Path) -> dict:
-    """Bind whatever gamebook pairs exist under ``raw/nba_gamebooks``.
+    """Re-attest and bind every gamebook pair under ``raw/nba_gamebooks``.
 
-    TODO(task-16): ``import-gamebooks`` writes ``<game_id>.book.pdf`` pairs
-    here; TODO(task-21): the review writes ``comparisons/<game_id>.json``
-    pairs. Until then both lists are empty.
+    ``import-gamebooks`` writes ``<game_id>.book.pdf`` pairs; the Task 21
+    review writes ``comparisons/<game_id>.json`` pairs. Each is read through
+    ``cache.read_attested`` with its validator (``gamebooks.validate_pdf``,
+    ``gamebooks.validate_comparison``) and its sidecar identity, so a damaged
+    pair fails the build like any other bound raw pair. A tree without
+    gamebooks binds two empty lists.
     """
     root = raw_root / "nba_gamebooks"
     pdfs: list[dict] = []
     comparisons: list[dict] = []
-    if root.is_dir():
-        for path in sorted(root.glob("*.book.pdf")):
-            pdfs.append(_pair_binding(path, data_dir, {"game_id": path.name[: -len(".book.pdf")]}))
-        records = root / "comparisons"
-        if records.is_dir():
-            for path in sorted(records.glob("*.json")):
-                if path.name.endswith(".meta.json"):
-                    continue
-                comparisons.append(_pair_binding(path, data_dir, {"game_id": path.stem}))
+    if not root.is_dir():
+        return {"pdfs": pdfs, "comparisons": comparisons}
+    for path in sorted(root.glob("*.book.pdf")):
+        game_id = path.name[: -len(".book.pdf")]
+        try:
+            attested = gamebooks.read_cached_gamebook(data_dir, game_id)
+        except (cache.CacheIntegrityError, gamebooks.GamebookError) as exc:
+            raise AvailabilityBuildError(f"gamebook pair {path} does not verify: {exc}") from exc
+        if attested is None:   # pragma: no cover - the glob saw the body
+            raise AvailabilityBuildError(f"gamebook pair {path} vanished during the build")
+        pdfs.append(_pair_binding(path, data_dir, {"game_id": game_id}))
+    records = root / gamebooks.COMPARISONS_SUBDIR
+    if records.is_dir():
+        for path in sorted(records.glob("*.json")):
+            if path.name.endswith(".meta.json"):
+                continue
+            try:
+                attested = gamebooks.read_cached_comparison(data_dir, path.stem)
+            except (cache.CacheIntegrityError, gamebooks.GamebookError) as exc:
+                raise AvailabilityBuildError(
+                    f"gamebook comparison pair {path} does not verify: {exc}"
+                ) from exc
+            if attested is None:   # pragma: no cover - the glob saw the body
+                raise AvailabilityBuildError(f"gamebook comparison pair {path} vanished during the build")
+            comparisons.append(_pair_binding(path, data_dir, {"game_id": path.stem}))
     return {"pdfs": pdfs, "comparisons": comparisons}
 
 
@@ -2110,7 +2150,7 @@ def _recompute_manifest(
                 str(season): dict(counts) for season, counts in part_b.placeholder_counts.items()
             },
             "resolution": _resolution_summary(metrics),
-            "roster_sizes": _roster_sizes(part_a),
+            "roster_sizes": roster_sizes(part_a),
             "derivative_agreement": {
                 str(season): {key: value for key, value in entry.items() if key != "asset"}
                 for season, entry in agreement.items()
@@ -2322,3 +2362,288 @@ def run(data_dir: Path) -> None:
         raise AvailabilityBuildError(
             "active availability publication failed independent reread"
         )
+
+
+# --------------------------------------------------------------------------
+# committed audit text
+# --------------------------------------------------------------------------
+
+
+SNAPSHOT_PREFIX = "availability-archive-2026-"
+
+
+def _season_range(seasons: list) -> str:
+    return f"{seasons[0]}\u2013{seasons[-1]}" if seasons else "none"
+
+
+def _table(header: list[str], rows: list[list[object]]) -> list[str]:
+    def cell(value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, float):
+            return f"{value:.4f}"
+        return str(value).replace("|", "\\|").replace("\n", " ")
+
+    lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines.extend("| " + " | ".join(cell(value) for value in row) + " |" for row in rows)
+    return lines
+
+
+def _yes_no(flag: object) -> str:
+    return "yes" if flag else "no"
+
+
+def render_audit(manifest: dict, *, snapshot_name: str | None, restore_verified: bool) -> str:
+    """Render the committed audit skeleton from a built manifest.
+
+    The text states the manifest SHA-256 (of its canonical bytes), the
+    snapshot name ``availability-archive-2026-<sha12>`` (derived from the
+    digest; a different ``snapshot_name`` is refused, ``None`` marks the
+    publication as not yet archived), the restore line (``yes`` only with a
+    snapshot name), the D1 snapshot the manifest depends on, and every count
+    the manifest carries: scope, rows per table and season, slots per grid,
+    parse, title and placeholder counts, resolution rates with the
+    listed-but-not-rostered and unresolved-matchup counts, roster sizes and
+    outliers, the gamebook pairs and comparison records bound, derivative
+    agreement with every pattern and unmatched version, the applied ledger
+    entries and the version pins. Task 22 extends it by hand with the
+    inspection findings, the restore-test command sequence and the
+    file-naming correction.
+    """
+    if not isinstance(manifest, dict) or set(manifest) != set(MANIFEST_KEYS):
+        raise AvailabilityBuildError(
+            f"manifest top-level keys must be exactly {sorted(MANIFEST_KEYS)}"
+        )
+    digest = hashlib.sha256(manifest_bytes(manifest)).hexdigest()
+    expected_snapshot = SNAPSHOT_PREFIX + digest[:12]
+    if snapshot_name is not None and snapshot_name != expected_snapshot:
+        raise AvailabilityBuildError(
+            f"snapshot name mismatch: expected {expected_snapshot}, observed {snapshot_name}"
+        )
+    if restore_verified and snapshot_name is None:
+        raise AvailabilityBuildError("a restore cannot be verified without a snapshot name")
+
+    scope = manifest["scope"]
+    sources = manifest["sources"]
+    references = manifest["references"]
+    ledger = manifest["exception_ledger"]
+    validation = manifest["validation"]
+    partitions = manifest["partitions"]
+    coverage = validation["coverage"]
+    player_games = references["player_games_manifest"]
+    snapshot_line = (
+        f"Snapshot: `{expected_snapshot}`"
+        + ("" if snapshot_name is not None else " (not yet archived)")
+    )
+
+    lines = [
+        "# Availability source audit",
+        "",
+        f"Manifest SHA-256: `{digest}`",
+        snapshot_line,
+        f"Restore verified: {_yes_no(restore_verified)}",
+        f"Depends on: `{player_games['snapshot_name']}` "
+        f"(player_games manifest SHA-256 `{player_games['sha256']}`)",
+        "",
+        f"Roster seasons: {_season_range(scope['roster_seasons'])}",
+        f"Report seasons: {_season_range(scope['report_seasons'])}",
+        f"Game types: {', '.join(scope['game_types'])}",
+        f"Games: {scope['games']}",
+        f"Box-roster pairs: {coverage['box_roster_pairs']}",
+        f"Slot window: {scope['slot_window'][0]} \u2013 {scope['slot_window'][1]}",
+        f"Enumerated slots: {scope['slots']}",
+        f"Publication partitions: {sum(len(tables) for tables in partitions.values())}",
+        f"Controls: `{references['controls']['path']}` SHA-256 `{references['controls']['sha256']}`",
+        f"Exception ledger: `{ledger['path']}` SHA-256 `{ledger['sha256']}` "
+        + "(" + ", ".join(f"{section} {ledger['counts'][section]}" for section in LEDGER_SECTIONS) + ")",
+        "",
+        "## Rows per table",
+        "",
+        *_table(["table", "rows"], [[name, validation["rows"][name]] for name in PARTITION_SCHEMAS]),
+        "",
+        "## Games and rows per season",
+        "",
+        *_table(
+            ["season", "games", *PARTITION_SCHEMAS],
+            [
+                [
+                    season,
+                    coverage["games_by_season"].get(season, 0),
+                    *(
+                        partitions[season][name]["rows"] if name in partitions[season] else None
+                        for name in PARTITION_SCHEMAS
+                    ),
+                ]
+                for season in sorted(partitions)
+            ],
+        ),
+        "",
+        "## Slots per grid",
+        "",
+        *_table(
+            ["grid", "present", "unavailable", "rechecked"],
+            [
+                [grid, totals["present"], totals["unavailable"], totals["rechecked"]]
+                for grid, totals in sorted(coverage["slots"].items())
+            ],
+        ),
+        "",
+        f"Reports: {coverage['reports']['present']} present, {coverage['reports']['parsed']} parsed, "
+        f"{coverage['reports']['excluded']} excluded",
+        "",
+        "## Parse status and title checks per season",
+        "",
+        *_table(
+            ["season", *PARSE_STATUSES, *(f"title {check}" for check in TITLE_CHECKS)],
+            [
+                [
+                    season,
+                    *(validation["parse_counts"][season].get(status, 0) for status in PARSE_STATUSES),
+                    *(validation["title_counts"].get(season, {}).get(check, 0) for check in TITLE_CHECKS),
+                ]
+                for season in sorted(validation["parse_counts"])
+            ],
+        ),
+        "",
+        "## Placeholder rows per season",
+        "",
+        *_table(
+            ["season", "phrase", "rows"],
+            [
+                [season, phrase, rows]
+                for season in sorted(validation["placeholder_counts"])
+                for phrase, rows in sorted(validation["placeholder_counts"][season].items())
+            ],
+        ),
+        "",
+        "## Resolution",
+        "",
+        *_table(
+            [
+                "season", "rows", "rows resolved", "row rate", "identities", "identities resolved",
+                "identity rate", "listed-not-rostered rows", "listed-not-rostered identities",
+            ],
+            [
+                [
+                    season, entry["rows"], entry["rows_resolved"], entry["row_rate"], entry["identities"],
+                    entry["identities_resolved"], entry["identity_rate"],
+                    entry["listed_not_rostered"]["rows"], entry["listed_not_rostered"]["identities"],
+                ]
+                for season, entry in sorted(validation["resolution"].items())
+            ],
+        ),
+        "",
+        "## Unresolved matchups",
+        "",
+        *_table(
+            ["season", "matchup", "rows"],
+            [
+                [season, matchup, rows]
+                for season, entry in sorted(validation["resolution"].items())
+                for matchup, rows in sorted(entry["unresolved_matchups"].items())
+            ],
+        ),
+        "",
+        "## Roster sizes",
+        "",
+        *_table(
+            ["season", "team-games", "active min", "active max", "empty inactive lists"],
+            [
+                [season, entry["team_games"], entry["active_min"], entry["active_max"], entry["inactive_empty"]]
+                for season, entry in sorted(validation["roster_sizes"]["by_season"].items())
+            ],
+        ),
+        "",
+        f"Roster-size outliers: {len(validation['roster_sizes']['outliers'])}",
+        "",
+        *_table(
+            ["game_id", "nba_team_id", "active", "inactive"],
+            [
+                [entry["game_id"], entry["nba_team_id"], entry["active"], entry["inactive"]]
+                for entry in validation["roster_sizes"]["outliers"]
+            ],
+        ),
+        "",
+        "## Gamebook sample",
+        "",
+        f"Gamebook PDFs bound: {len(sources['gamebooks']['pdfs'])}",
+        f"Comparison records bound: {len(sources['gamebooks']['comparisons'])}",
+        "",
+        *_table(
+            ["game_id", "gamebook SHA-256", "comparison SHA-256"],
+            [
+                [
+                    entry["identity"]["game_id"],
+                    entry["body_sha256"],
+                    next(
+                        (
+                            record["body_sha256"] for record in sources["gamebooks"]["comparisons"]
+                            if record["identity"]["game_id"] == entry["identity"]["game_id"]
+                        ),
+                        None,
+                    ),
+                ]
+                for entry in sources["gamebooks"]["pdfs"]
+            ],
+        ),
+        "",
+        "## Derivative agreement",
+        "",
+        *_table(
+            [
+                "season", "asset", "versions ours", "excluded", "versions theirs", "compared",
+                "disagreeing", "agree all", "agree except reason", "only ours", "only theirs",
+                "artifacts", "null report_datetime", "unmatched ours", "unmatched theirs",
+            ],
+            [
+                [
+                    season, _yes_no(entry["asset_present"]), entry["versions_ours"], entry["versions_excluded"],
+                    entry["versions_theirs"], entry["versions_compared"], entry["versions_disagreeing"],
+                    entry["agree_all"], entry["agree_except_reason"], entry["only_ours"], entry["only_theirs"],
+                    entry["derivative_artifacts"], entry["null_report_datetime"],
+                    len(entry["unmatched_ours"]), len(entry["unmatched_theirs"]),
+                ]
+                for season, entry in sorted(validation["derivative_agreement"].items())
+            ],
+        ),
+        "",
+        "### Disagreement patterns",
+        "",
+        *_table(
+            ["season", "pattern", "count", "versions"],
+            [
+                [season, pattern, detail["count"], len(detail["report_ids"])]
+                for season, entry in sorted(validation["derivative_agreement"].items())
+                for pattern, detail in sorted(entry["patterns"].items())
+            ],
+        ),
+        "",
+        "### Unmatched versions",
+        "",
+        *_table(
+            ["season", "side", "version"],
+            [
+                [season, side, version]
+                for season, entry in sorted(validation["derivative_agreement"].items())
+                for side, key in (("ours", "unmatched_ours"), ("theirs", "unmatched_theirs"))
+                for version in entry[key]
+            ],
+        ),
+        "",
+        "## Applied ledger entries",
+        "",
+        *_table(
+            ["section", "key", "entry"],
+            [
+                [section, key, json.dumps(entry, sort_keys=True, ensure_ascii=False)]
+                for section in LEDGER_SECTIONS
+                for key, entry in sorted(ledger["applied"][section].items())
+            ],
+        ),
+        "",
+        "## Versions",
+        "",
+        *(f"{name}: {version}" for name, version in sorted(manifest["versions"].items())),
+        "",
+    ]
+    return "\n".join(lines)

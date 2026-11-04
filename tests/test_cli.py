@@ -878,3 +878,59 @@ def test_build_availability_is_offline_dispatch(monkeypatch, tmp_path):
             cli.main()
         assert exc_info.value.code == 2
     assert calls == [tmp_path]
+
+
+def test_import_gamebooks_dispatch(monkeypatch, tmp_path):
+    """Would fail if import-gamebooks fetched anything, lost its source directory or skipped the worklist keys."""
+    import datetime
+
+    cli = load_cli()
+    calls = []
+    index = object()
+    keys = {(datetime.date(2025, 10, 21), "HOU", "OKC"): "0022500001"}
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("network access is forbidden during import-gamebooks")
+
+    for provider_name in (
+        "stats_nba", "hoopr", "bref", "historical_bref", "playoff_bref", "pbp",
+        "player_logs", "box_rosters", "injury_reports", "injury_derivative",
+    ):
+        monkeypatch.setattr(getattr(cli, provider_name), "fetch", network_forbidden)
+    monkeypatch.setattr(requests.Session, "get", network_forbidden)
+    monkeypatch.setattr(
+        cli.box_rosters, "load_player_games_index",
+        lambda root: calls.append(("index", root)) or index,
+    )
+    monkeypatch.setattr(
+        cli.box_rosters, "game_keys", lambda loaded: calls.append(("keys", loaded)) or keys,
+    )
+
+    def fake_import(data, source_dir, *, game_keys, retrieved_on):
+        calls.append(("import", data, source_dir, game_keys, retrieved_on))
+        return (data / "raw/nba_gamebooks/0022500001.book.pdf",)
+
+    monkeypatch.setattr(cli.gamebooks, "import_gamebooks", fake_import)
+    source = tmp_path / "downloads"
+    source.mkdir()
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "import-gamebooks", str(source)],
+    )
+
+    cli.main()
+
+    assert calls == [
+        ("index", tmp_path / "parquet-large/player_games"),
+        ("keys", index),
+        ("import", tmp_path, source, keys, datetime.date.today()),
+    ]
+    # the source directory is a required positional; no scope flags exist
+    for argv in (
+        ["nba_data", "--data-dir", str(tmp_path), "import-gamebooks"],
+        ["nba_data", "--data-dir", str(tmp_path), "import-gamebooks", str(source), "--season", "2026"],
+    ):
+        monkeypatch.setattr(sys, "argv", argv)
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 2
+    assert len(calls) == 3

@@ -1,5 +1,6 @@
 import argparse
 import json
+from datetime import date
 from pathlib import Path
 
 from nba_data import (
@@ -7,6 +8,7 @@ from nba_data import (
     box_rosters,
     bref,
     build,
+    gamebooks,
     historical_bref,
     historical_build,
     hoopr,
@@ -103,6 +105,8 @@ def main() -> None:
         action="store_true",
     )
     commands.add_parser("fetch-injury-derivative")
+    import_gamebooks = commands.add_parser("import-gamebooks")
+    import_gamebooks.add_argument("source_dir", type=Path)
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
     commands.add_parser("build-availability")
@@ -170,6 +174,16 @@ def main() -> None:
         print(json.dumps(summary, sort_keys=True))
     elif args.command == "fetch-injury-derivative":
         injury_derivative.fetch(data, injury_derivative.SEASONS)
+    elif args.command == "import-gamebooks":
+        index = box_rosters.load_player_games_index(data / box_rosters.PLAYER_GAMES_SUBDIR)
+        written = gamebooks.import_gamebooks(
+            data,
+            args.source_dir.expanduser().resolve(),
+            game_keys=box_rosters.game_keys(index),
+            retrieved_on=date.today(),
+        )
+        for path in written:
+            print(path)
     elif args.command == "build-pbp":
         pbp_build.run(data)
     elif args.command == "build-player-games":
