@@ -846,3 +846,35 @@ def test_fetch_injury_derivative_dispatches_all_eight_seasons(monkeypatch, tmp_p
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def test_build_availability_is_offline_dispatch(monkeypatch, tmp_path):
+    """Would fail if build-availability reached any fetch entry point or took a scope flag."""
+    cli = load_cli()
+    calls = []
+
+    def network_forbidden(*args, **kwargs):
+        raise AssertionError("network access is forbidden during build-availability")
+
+    for provider_name in (
+        "stats_nba", "hoopr", "bref", "historical_bref", "playoff_bref", "pbp",
+        "player_logs", "box_rosters", "injury_reports", "injury_derivative",
+    ):
+        monkeypatch.setattr(getattr(cli, provider_name), "fetch", network_forbidden)
+    monkeypatch.setattr(requests.Session, "get", network_forbidden)
+    monkeypatch.setattr(cli.availability_build, "run", calls.append)
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "build-availability"],
+    )
+
+    cli.main()
+
+    assert calls == [tmp_path]
+    for flag in (("--season", "2026"), ("--month", "2024-01")):
+        monkeypatch.setattr(
+            sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "build-availability", *flag],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+        assert exc_info.value.code == 2
+    assert calls == [tmp_path]

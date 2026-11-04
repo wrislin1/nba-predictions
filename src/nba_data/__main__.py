@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from nba_data import (
+    availability_build,
     box_rosters,
     bref,
     build,
@@ -104,6 +105,7 @@ def main() -> None:
     commands.add_parser("fetch-injury-derivative")
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
+    commands.add_parser("build-availability")
     args = parser.parse_args()
     if args.data_dir is None:
         data = _source_checkout_data_dir()
@@ -172,6 +174,8 @@ def main() -> None:
         pbp_build.run(data)
     elif args.command == "build-player-games":
         player_games_build.run(data)
+    elif args.command == "build-availability":
+        availability_build.run(data)
 
 
 if __name__ == "__main__":

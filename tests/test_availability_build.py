@@ -1,16 +1,30 @@
-"""Tests for the availability build: the exception ledger (Task 13) and
-table assembly, Arrow schemas and partitions (Task 14).
+"""Tests for the availability build: the exception ledger (Task 13), table
+assembly, Arrow schemas and partitions (Task 14), and the gates, derivative
+agreement, manifest, independent validation and publication (Task 15).
 
 The ledger is validated like the D1 ledgers in ``player_games_build``:
 duplicate members, extra or missing sections and fields, type drift,
 malformed composite keys and stale or unlisted entries all fail closed.
 
 The assembly tests seed a tiny raw tree under ``tmp_path`` with the
-module-level seed builders below (reused and extended by Task 15): three
-box-roster games (the two committed fixture games plus a hand-authored
-``CHI@CHA`` game the 2024-01-31 fixture report lists), a ``player_games``
-publication for them, the two fixture PDFs under their own months with one
-inventory generation each, and the derivative assets for 2024 and 2026.
+module-level seed builders below: three box-roster games (the two committed
+fixture games plus a hand-authored ``CHI@CHA`` game the 2024-01-31 fixture
+report lists), a ``player_games`` publication for them, the two fixture PDFs
+under their own months with one inventory generation each, and the
+derivative assets for 2024 and 2026.
+
+The Task 15 tests extend that seed to the whole publication scope
+(``seed_full_tree``): one synthetic ``CHI@CHA`` game per season 2012-2023
+beside the three seeded games, and one present report per version season
+2019-2026. Seasons 2019, 2021, 2024 and 2026 use a fixture PDF at its own
+slot; seasons 2020, 2022, 2023 and 2025 have no fixture, so the one-page
+2019-02-15 fixture is published under a slot of each of those seasons. Its
+printed title then lies outside the slot window, exactly as the real
+fetcher's sidecar (``pdf_metadata``) and the build's title gate record it,
+and the test ledger approves each with an ``accept_title`` entry. That keeps
+``validate_publication`` honest: every body is the real fixture, every gate
+runs for real, and the approvals are bound in the manifest like any other
+ledger entry, instead of a monkeypatched parser inventing printed times.
 """
 
 from __future__ import annotations
@@ -20,7 +34,8 @@ import functools
 import hashlib
 import io
 import json
-from datetime import date, datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +53,7 @@ from nba_data import (
     injury_derivative,
     injury_report_parse,
     injury_reports,
+    publication,
 )
 
 
@@ -422,6 +438,34 @@ DORT, SMITH, DIENG = 1629652, 1630224, 1631096
 SHAI, JALEN, HALIBURTON, TURNER = 1628983, 1631114, 1630169, 1626167
 LONZO, COBY_WHITE, LAVINE = 1627832, 1629632, 203897
 LAMELO, BRIDGES, MARK_WILLIAMS = 1630163, 1628970, 1631109
+# The six other players the 2024-01-31 fixture lists for CHI@CHA; seeded as
+# inactives only when ``full_roster=True`` (Task 15) so every listed row of
+# the game resolves and the person-resolution floors hold.
+TORREY_CRAIG, DALEN_TERRY, PATRICK_WILLIAMS = 1628470, 1631207, 1630172
+AMARI_BAILEY, HAYWARD, LOWRY = 1641735, 202330, 200768
+FULL_ROSTER_INACTIVES = {
+    CHI: (
+        (TORREY_CRAIG, "Torrey", "Craig", "13"),
+        (DALEN_TERRY, "Dalen", "Terry", "25"),
+        (PATRICK_WILLIAMS, "Patrick", "Williams", "44"),
+    ),
+    CHA: (
+        (AMARI_BAILEY, "Amari", "Bailey", "9"),
+        (HAYWARD, "Gordon", "Hayward", "20"),
+        (LOWRY, "Kyle", "Lowry", "7"),
+    ),
+}
+
+
+def synthetic_game(season: int) -> box_rosters.WorklistGame:
+    """A regular-season ``CHI@CHA`` game on 15 January of ``season``."""
+    return box_rosters.WorklistGame(
+        game_id=f"002{season - 2001:02d}00900", season=season, game_type="regular",
+        game_date=date(season, 1, 15),
+    )
+
+
+SEASON_GAMES = tuple(synthetic_game(season) for season in range(2012, 2024))
 
 JANUARY_REPORT = "Injury-Report_2024-01-31_05PM"
 QUARTER_REPORT_2026 = "Injury-Report_2026-01-10_12_00AM"
@@ -438,26 +482,58 @@ SEEDED_MONTHS = {
 }
 UNOPENABLE_PDF = b"%PDF-1.4 garbage"
 
+# Task 15: one present report per version season. The 2019, 2021, 2024 and
+# 2026 fixtures sit at their own slots; the one-page 2019-02-15 fixture is
+# reused under one slot of each season without a fixture (2020, 2022, 2023,
+# 2025) and approved by an ``accept_title`` ledger entry (see module doc).
+TINY_REPORT = "Injury-Report_2019-02-15_01PM"
+TINY_PRINTED_ET = "2019-02-15T13:30:00"
+REUSED_REPORTS = (
+    "Injury-Report_2019-11-15_01PM",   # season 2020
+    "Injury-Report_2021-11-15_01PM",   # season 2022
+    "Injury-Report_2022-11-15_01PM",   # season 2023
+    "Injury-Report_2024-11-15_01PM",   # season 2025
+)
+FULL_MONTHS = {
+    **SEEDED_MONTHS,
+    "2019-02": {"present": {TINY_REPORT: TINY_REPORT + ".pdf"}, "unavailable": ()},
+    "2021-04": {
+        "present": {"Injury-Report_2021-04-01_05PM": "Injury-Report_2021-04-01_05PM.pdf"},
+        "unavailable": (),
+    },
+    **{
+        f"{report_id[14:21]}": {"present": {report_id: TINY_REPORT + ".pdf"}, "unavailable": ()}
+        for report_id in REUSED_REPORTS
+    },
+}
+FULL_REPORTS = tuple(
+    report_id for month in sorted(FULL_MONTHS) for report_id in FULL_MONTHS[month]["present"]
+)
 
-def seeded_player_games_rows(*, credited_extra=()) -> list[dict]:
-    """The ``player_games`` rows behind the three seeded games (both teams each)."""
-    def row(game, person_id, team, franchise, is_home):
+
+def _rows_for_game(game: box_rosters.WorklistGame) -> list[dict]:
+    def row(person_id, team, franchise, is_home):
         return box_tests.player_games_row(
             game.game_id, person_id, season=game.season, game_type=game.game_type,
             game_date=game.game_date, nba_team_id=team, franchise_id=franchise,
             team_abbreviation_raw=franchise, is_home=is_home,
         )
-    return [
-        row(BULLS_HORNETS, COBY_WHITE, CHI, "CHI", False),
-        row(BULLS_HORNETS, BRIDGES, CHA, "CHA", True),
-        row(FINALS, SHAI, OKC, "OKC", True),
-        row(FINALS, JALEN, OKC, "OKC", True),
-        row(FINALS, HALIBURTON, IND, "IND", False),
-        row(FINALS, TURNER, IND, "IND", False),
-        row(OPENER, DORT, OKC, "OKC", True),
-        row(OPENER, SMITH, HOU, "HOU", False),
-        *credited_extra,
-    ]
+    if game.game_id == FINALS.game_id:
+        return [
+            row(SHAI, OKC, "OKC", True), row(JALEN, OKC, "OKC", True),
+            row(HALIBURTON, IND, "IND", False), row(TURNER, IND, "IND", False),
+        ]
+    if game.game_id == OPENER.game_id:
+        return [row(DORT, OKC, "OKC", True), row(SMITH, HOU, "HOU", False)]
+    # BULLS_HORNETS and every synthetic CHI@CHA game
+    return [row(COBY_WHITE, CHI, "CHI", False), row(BRIDGES, CHA, "CHA", True)]
+
+
+def seeded_player_games_rows(*, credited_extra=(), games=SEEDED_GAMES) -> list[dict]:
+    """The ``player_games`` rows behind the seeded games (both teams each)."""
+    rows = [row for game in games for row in _rows_for_game(game)]
+    rows.extend(credited_extra)
+    return rows
 
 
 def credited_dieng_row() -> dict:
@@ -480,8 +556,16 @@ def _player(template: dict, person_id: int, first: str, family: str, *, comment=
     return player
 
 
-def bulls_hornets_bodies() -> dict[str, bytes]:
-    """Synthetic ``CHI@CHA`` bodies built from the opener fixture's shape."""
+def _inactive(person_id: int, first: str, family: str, jersey: str) -> dict:
+    return {"personId": person_id, "firstName": first, "familyName": family, "jerseyNum": jersey}
+
+
+def bulls_hornets_bodies(*, full_roster: bool = False) -> dict[str, bytes]:
+    """Synthetic ``CHI@CHA`` bodies built from the opener fixture's shape.
+
+    ``full_roster`` adds the six other players the 2024-01-31 fixture lists
+    for the game as inactives, so every listed row resolves.
+    """
     traditional = box_tests.fixture_document(OPENER.game_id, "traditional")
     root = traditional["boxScoreTraditional"]
     template = root["homeTeam"]["players"][0]
@@ -509,26 +593,49 @@ def bulls_hornets_bodies() -> dict[str, bytes]:
         "gameEt": "2024-01-31T19:00:00Z", "gameTimeUTC": "2024-02-01T00:00:00Z",
         "homeTeamId": CHA, "awayTeamId": CHI,
     })
+    extra = FULL_ROSTER_INACTIVES if full_roster else {CHI: (), CHA: ()}
     sroot["homeTeam"].update({
         "teamId": CHA, "teamTricode": "CHA", "teamCity": "Charlotte", "teamName": "Hornets",
         "teamSlug": "hornets",
-        "inactives": [{"personId": MARK_WILLIAMS, "firstName": "Mark", "familyName": "Williams", "jerseyNum": "5"}],
+        "inactives": [
+            _inactive(MARK_WILLIAMS, "Mark", "Williams", "5"),
+            *(_inactive(*player) for player in extra[CHA]),
+        ],
     })
     sroot["awayTeam"].update({
         "teamId": CHI, "teamTricode": "CHI", "teamCity": "Chicago", "teamName": "Bulls",
         "teamSlug": "bulls",
-        "inactives": [{"personId": LAVINE, "firstName": "Zach", "familyName": "LaVine", "jerseyNum": "8"}],
+        "inactives": [
+            _inactive(LAVINE, "Zach", "LaVine", "8"),
+            *(_inactive(*player) for player in extra[CHI]),
+        ],
     })
     return {"traditional": box_tests.encode(traditional), "summary": box_tests.encode(summary)}
 
 
-def box_bodies(game: box_rosters.WorklistGame) -> dict[str, bytes]:
-    if game == BULLS_HORNETS:
-        return bulls_hornets_bodies()
-    return {
-        endpoint: box_tests.fixture_bytes(game.game_id, endpoint)
-        for endpoint in box_rosters.ENDPOINTS
-    }
+def synthetic_bodies(game: box_rosters.WorklistGame) -> dict[str, bytes]:
+    """The ``CHI@CHA`` bodies re-dated to one synthetic season game."""
+    bodies = {name: json.loads(payload) for name, payload in bulls_hornets_bodies().items()}
+    bodies["traditional"]["boxScoreTraditional"]["gameId"] = game.game_id
+    played = game.game_date
+    bodies["summary"]["boxScoreSummary"].update({
+        "gameId": game.game_id,
+        "gameCode": f"{played:%Y%m%d}/CHICHA",
+        "gameEt": f"{played.isoformat()}T19:00:00Z",
+        "gameTimeUTC": f"{(played + timedelta(days=1)).isoformat()}T00:00:00Z",
+    })
+    return {name: box_tests.encode(document) for name, document in bodies.items()}
+
+
+def box_bodies(game: box_rosters.WorklistGame, *, full_roster: bool = False) -> dict[str, bytes]:
+    if game.game_id == BULLS_HORNETS.game_id:
+        return bulls_hornets_bodies(full_roster=full_roster)
+    if game.game_id in (FINALS.game_id, OPENER.game_id):
+        return {
+            endpoint: box_tests.fixture_bytes(game.game_id, endpoint)
+            for endpoint in box_rosters.ENDPOINTS
+        }
+    return synthetic_bodies(game)
 
 
 def publish_box_pair(data_dir: Path, game: box_rosters.WorklistGame, endpoint: str, payload: bytes) -> Path:
@@ -541,15 +648,18 @@ def publish_box_pair(data_dir: Path, game: box_rosters.WorklistGame, endpoint: s
     )
 
 
-def seed_part_a(data_dir: Path, *, credited_extra=(), body_overrides=None, games=SEEDED_GAMES) -> tuple[Path, Path]:
+def seed_part_a(
+    data_dir: Path, *, credited_extra=(), body_overrides=None, games=SEEDED_GAMES,
+    full_roster: bool = False,
+) -> tuple[Path, Path]:
     """Seed ``player_games`` and both box-roster pairs per game; return ``(raw_root, player_games_root)``."""
     player_games_root = data_dir / "parquet-large/player_games"
     box_tests.write_player_games_fixture(
-        player_games_root, seeded_player_games_rows(credited_extra=credited_extra),
+        player_games_root, seeded_player_games_rows(credited_extra=credited_extra, games=games),
     )
     overrides = body_overrides or {}
     for game in games:
-        for endpoint, payload in box_bodies(game).items():
+        for endpoint, payload in box_bodies(game, full_roster=full_roster).items():
             publish_box_pair(data_dir, game, endpoint, overrides.get((game.game_id, endpoint), payload))
     return data_dir / "raw", player_games_root
 
@@ -681,6 +791,48 @@ def seed_raw_tree(tmp_path: Path, monkeypatch, *, months=SEEDED_MONTHS, **part_a
     seed_part_b(tmp_path, monkeypatch, months)
     seed_derivative(tmp_path)
     return raw_root, player_games_root
+
+
+def accept_title_entry(report_id: str, source=TINY_REPORT + ".pdf", printed=TINY_PRINTED_ET) -> dict:
+    """The ``accept_title`` approval for a fixture reused under ``report_id``."""
+    return {
+        "action": "accept_title",
+        "sha256": hashlib.sha256(report_payload(source)).hexdigest(),
+        "failed_check": None,
+        "title_printed_et": printed,
+        "slot_label": injury_reports.slot_from_report_id(report_id).slot_label,
+        "note": "Test fixture reused under a slot of a season without a fixture.",
+    }
+
+
+def full_ledger(**sections) -> dict:
+    """The test ledger approving the four reused reports, plus ``sections``."""
+    document = _ledger(report_versions={rid: accept_title_entry(rid) for rid in REUSED_REPORTS})
+    for section, entries in sections.items():
+        document[section] = {**document[section], **entries}
+    return document
+
+
+def write_ledger(tmp_path: Path, document: dict) -> Path:
+    path = tmp_path / "ledger.json"
+    path.write_bytes((json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return path
+
+
+def seed_full_tree(
+    tmp_path: Path, monkeypatch, *, months=FULL_MONTHS, ledger=None,
+    games=SEASON_GAMES + SEEDED_GAMES, full_roster=True, **part_a,
+) -> tuple[Path, Path, Path]:
+    """Seed every season 2012-2026 with one game and 2019-2026 with one report.
+
+    Returns ``(raw_root, player_games_root, ledger_path)``; the ledger is
+    :func:`full_ledger` unless ``ledger`` is given.
+    """
+    raw_root, player_games_root = seed_raw_tree(
+        tmp_path, monkeypatch, months=months, games=games, full_roster=full_roster, **part_a,
+    )
+    ledger_path = write_ledger(tmp_path, full_ledger() if ledger is None else ledger)
+    return raw_root, player_games_root, ledger_path
 
 
 def _empty_ledger() -> dict:
@@ -1445,3 +1597,698 @@ def test_assemble_part_b_flags_ambiguous_november_titles_and_fails_gap_titles(tm
         "title_printed_et": "2024-03-10T02:30:00", "slot_label": "02AM", "note": "try",
     }})
     assert availability_build.assemble_part_b(raw_root, part_a, approved).report_versions_observed[gap]["action"] == "exclude"
+
+
+# ==========================================================================
+# Task 15: gates, derivative agreement, manifest, validation and publication
+# ==========================================================================
+
+
+MANIFEST_KEYS = {
+    "schema_version", "scope", "schema", "versions", "sources", "references",
+    "exception_ledger", "partitions", "validation",
+}
+EXPECTED_PARTITIONS = {
+    f"season={season}/{name}.parquet"
+    for season in range(2012, 2027) for name in ("game_rosters", "game_schedule")
+} | {
+    f"season={season}/{name}.parquet"
+    for season in range(2019, 2027) for name in ("injury_report_versions", "injury_report_listings")
+}
+SIXPM_REPORT = "Injury-Report_2024-01-31_06PM"
+SEVENPM_REPORT = "Injury-Report_2024-01-31_07PM"
+LEFT_ANKLE = "Injury/Illness - Left Ankle; Sprain"
+LEFT_ANKLE_CUT = "Injury/Illness - Left Ankle;"
+RIGHT_ANKLE = "Injury/Illness - Right Ankle; Sprain"
+
+
+def _our_listing(
+    report_id, row_number, *, season=2024, player="Ball, Lonzo", status="Out", reason=LEFT_ANKLE,
+    placeholder=None, team="Chicago Bulls", matchup="CHI@CHA", game_date=date(2024, 1, 31),
+    category=None, previous=None, slot_et=datetime(2024, 1, 31, 17),
+):
+    away, home = matchup.split("@")
+    return {
+        "report_id": report_id, "season": season, "row_number": row_number, "page": 1,
+        "game_date": game_date, "game_time_raw": "07:00 (ET)", "matchup_raw": matchup,
+        "away_tricode": away, "home_tricode": home, "team_raw": team,
+        "is_placeholder": placeholder is not None, "placeholder_raw": placeholder,
+        "player_name_raw": None if placeholder else player,
+        "current_status_raw": None if placeholder else status,
+        "reason_raw": None if placeholder else reason,
+        "category_raw": category, "previous_status_raw": previous,
+        "game_id": None, "game_resolution": "no_box_score_game", "nba_team_id": None,
+        "franchise_id": None, "person_id": None,
+        "person_resolution": "placeholder" if placeholder else "unresolved_game",
+        "report_slot_et": slot_et,
+    }
+
+
+def _their_row(
+    *, when=datetime(2024, 1, 31, 17, 30, 15), player="Ball, Lonzo", status="Out", reason=LEFT_ANKLE,
+    team="Chicago Bulls", matchup="CHI@CHA", game_date=date(2024, 1, 31), category=None, previous=None,
+    season=2024,
+):
+    away, home = matchup.split("@")
+    return derivative_tests._player_row(
+        season=season, report_datetime=when, game_date=game_date, game_time="07:00 (ET)",
+        report_matchup=matchup, away_team_abbr=away, home_team_abbr=home, team=team,
+        report_player_name=player, current_status=status, reason=reason, category=category,
+        previous_status=previous, game_id=None, team_id=None, person_id=None, match_method=None,
+    )
+
+
+def _their_frame(rows):
+    return injury_derivative.comparison_rows(derivative_tests.derivative_parquet_bytes(rows))
+
+
+def _publish_derivative(data_dir, season, rows):
+    cache.publish_bytes(
+        injury_derivative.asset_path(data_dir, season),
+        derivative_tests.derivative_parquet_bytes(rows),
+        {**injury_derivative.expected_metadata(season), "release_asset_updated_at": "2026-11-03T06:10:00Z"},
+        injury_derivative.validate_asset,
+    )
+
+
+def _stage(root: Path, name: str = "stage") -> Path:
+    stage = root / name
+    stage.mkdir(parents=True)
+    return stage
+
+
+def _build(raw_root, player_games_root, stage, ledger):
+    return availability_build.build_from_roots(raw_root, player_games_root, stage, exceptions_path=ledger)
+
+
+def _tree_bytes(root: Path) -> dict:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+def _paths_in(value, key_names=("path", "body_path", "sidecar_path")):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in key_names and isinstance(item, str):
+                yield item
+            yield from _paths_in(item, key_names)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _paths_in(item, key_names)
+
+
+# --------------------------------------------------------------------------
+# compare_version / derivative_agreement
+# --------------------------------------------------------------------------
+
+
+def test_compare_version_classifies_rows_and_normalises_placeholders():
+    """Would fail if a stored placeholder phrase, whitespace or an artifact row read as a disagreement."""
+    ours = pd.DataFrame.from_records([
+        _our_listing(JANUARY_REPORT, 1),
+        _our_listing(JANUARY_REPORT, 2, player="LaVine, Zach", reason=RIGHT_ANKLE, team="Chicago  Bulls"),
+        _our_listing(JANUARY_REPORT, 3, placeholder="NOT YET SUBMITTED", team="Charlotte Hornets"),
+    ])
+    theirs = _their_frame([
+        _their_row(reason=LEFT_ANKLE_CUT),
+        _their_row(player="LaVine, Zach", reason=RIGHT_ANKLE + " "),
+        # the derivative stores the placeholder phrase in ``reason``
+        _their_row(player=None, status=None, reason="NOT YET SUBMITTED", team="Charlotte Hornets"),
+        # a derivative artifact: null name and status, reason none of the phrases
+        _their_row(player=None, status=None, reason=",", team="Charlotte Hornets"),
+    ])
+
+    result = availability_build.compare_version(ours, theirs)
+
+    assert result["report_id"] == JANUARY_REPORT and result["season"] == 2024
+    assert (result["agree_all"], result["agree_except_reason"], result["only_ours"], result["only_theirs"]) == (2, 1, 0, 0)
+    assert result["derivative_artifacts"] == 1
+    assert result["patterns"] == {
+        f"reason: ours {LEFT_ANKLE!r} / theirs {LEFT_ANKLE_CUT!r}": {"count": 1, "report_ids": [JANUARY_REPORT]},
+    }
+    # a status difference is a row only in ours plus a row only in theirs, keyed by pattern
+    changed = _their_frame([_their_row(status="Questionable"), _their_row(player="LaVine, Zach", reason=RIGHT_ANKLE)])
+    result = availability_build.compare_version(ours.iloc[:2], changed)
+    assert (result["agree_all"], result["agree_except_reason"], result["only_ours"], result["only_theirs"]) == (1, 0, 1, 1)
+    assert sorted(result["patterns"]) == sorted([
+        f"only_ours: game_date='2024-01-31' matchup='CHI@CHA' team='Chicago Bulls' kind='player' "
+        f"player_name='Ball, Lonzo' status='Out' reason={LEFT_ANKLE!r}",
+        f"only_theirs: game_date='2024-01-31' matchup='CHI@CHA' team='Chicago Bulls' kind='player' "
+        f"player_name='Ball, Lonzo' status='Questionable' reason={LEFT_ANKLE!r}",
+    ])
+    assert all(entry == {"count": 1, "report_ids": [JANUARY_REPORT]} for entry in result["patterns"].values())
+    # multisets: a repeated row on one side is a row only on that side
+    doubled = pd.concat([ours.iloc[:2], ours.iloc[[1]]], ignore_index=True)
+    result = availability_build.compare_version(doubled, theirs)
+    assert (result["agree_all"], result["agree_except_reason"], result["only_ours"]) == (1, 1, 1)
+    # one version per call
+    with pytest.raises(availability_build.AvailabilityBuildError, match="one report_id"):
+        availability_build.compare_version(
+            pd.concat([ours, pd.DataFrame.from_records([_our_listing(SIXPM_REPORT, 1)])], ignore_index=True), theirs,
+        )
+
+
+def test_compare_version_drops_layout_columns_by_season():
+    """Would fail if category / previous_status were compared for a layout that lacks them."""
+    def ours(season, **overrides):
+        return pd.DataFrame.from_records([_our_listing(JANUARY_REPORT, 1, season=season, **overrides)])
+
+    theirs = _their_frame([_their_row(category="Injury/Illness", previous="Questionable")])
+    # 2019 carries both columns: a differing category is a disagreement that is not reason-only
+    result = availability_build.compare_version(ours(2019, category="Injury/Illness", previous="Doubtful"), theirs)
+    assert (result["agree_all"], result["agree_except_reason"], result["only_ours"], result["only_theirs"]) == (0, 0, 1, 1)
+    assert result["fields"] == [
+        "game_date", "matchup", "team", "kind", "player_name", "status", "reason", "category", "previous_status",
+    ]
+    assert availability_build.compare_version(
+        ours(2019, category="Injury/Illness", previous="Questionable"), theirs,
+    )["agree_all"] == 1
+    # 2020 drops category and keeps previous_status
+    result = availability_build.compare_version(ours(2020, previous="Questionable"), theirs)
+    assert result["agree_all"] == 1 and result["fields"][-1] == "previous_status" and "category" not in result["fields"]
+    assert availability_build.compare_version(ours(2020, previous="Doubtful"), theirs)["only_ours"] == 1
+    # 2021 onwards drops both
+    for season in (2021, 2024, 2026):
+        result = availability_build.compare_version(ours(season), theirs)
+        assert result["agree_all"] == 1
+        assert result["fields"] == ["game_date", "matchup", "team", "kind", "player_name", "status", "reason"]
+
+
+def test_derivative_agreement_joins_on_printed_time_and_lists_unmatched_versions(tmp_path):
+    """Would fail if the join used slots, seconds mattered, or an unmatched version were an error."""
+    quarter_2026 = QUARTER_REPORT_2026
+    versions = pd.DataFrame.from_records([
+        {"report_id": JANUARY_REPORT, "season": 2024, "parse_status": "ok",
+         "report_time_printed_et": pd.Timestamp("2024-01-31T17:30:00")},
+        {"report_id": SIXPM_REPORT, "season": 2024, "parse_status": "ok_title_accepted",
+         "report_time_printed_et": pd.Timestamp("2024-01-31T18:30:00")},
+        {"report_id": SEVENPM_REPORT, "season": 2024, "parse_status": "excluded",
+         "report_time_printed_et": pd.NaT},
+        {"report_id": quarter_2026, "season": 2026, "parse_status": "ok",
+         "report_time_printed_et": pd.Timestamp("2026-01-10T00:00:00")},
+    ])
+    listings = pd.DataFrame.from_records([
+        _our_listing(JANUARY_REPORT, 1),
+        _our_listing(JANUARY_REPORT, 2, player="LaVine, Zach", reason=RIGHT_ANKLE),
+        _our_listing(JANUARY_REPORT, 3, placeholder="NOT YET SUBMITTED", team="Charlotte Hornets"),
+        _our_listing(SIXPM_REPORT, 1, slot_et=datetime(2024, 1, 31, 18)),
+        _our_listing(quarter_2026, 1, season=2026, game_date=date(2026, 1, 10), slot_et=datetime(2026, 1, 10)),
+    ])
+    part_b = availability_build.PartB(
+        versions=versions, listings=listings, report_versions_observed={}, team_resolution_observed={},
+        inventories=[], slot_totals={}, parse_counts={}, title_counts={}, placeholder_counts={},
+    )
+    _publish_derivative(tmp_path, 2024, [
+        _their_row(reason=LEFT_ANKLE_CUT),                                   # 17:30:15 -> minute 17:30
+        _their_row(player="LaVine, Zach", reason=RIGHT_ANKLE),
+        _their_row(player=None, status=None, reason="NOT YET SUBMITTED", team="Charlotte Hornets"),
+        _their_row(player=None, status=None, reason=",", team="Charlotte Hornets"),
+        _their_row(when=datetime(2024, 1, 31, 21, 55)),                     # no version of ours prints 21:55
+    ])
+    derivative_root = tmp_path / "raw/sportsdataverse/nba_stats_injury_report"
+
+    agreement = availability_build.derivative_agreement(part_b, derivative_root)
+
+    assert set(agreement) == {2024, 2026}
+    season = agreement[2024]
+    asset = injury_derivative.asset_path(tmp_path, 2024)
+    assert season["asset"]["body_path"] == "raw/sportsdataverse/nba_stats_injury_report/injury_report_2024.parquet"
+    assert season["asset"]["body_sha256"] == hashlib.sha256(asset.read_bytes()).hexdigest()
+    assert season["asset"]["sidecar_path"] == season["asset"]["body_path"] + ".meta.json"
+    assert season["asset"]["identity"] == {"season": 2024}
+    assert {key: season[key] for key in (
+        "versions_ours", "versions_excluded", "versions_theirs", "versions_compared", "versions_disagreeing",
+        "agree_all", "agree_except_reason", "only_ours", "only_theirs", "derivative_artifacts",
+    )} == {
+        "versions_ours": 2, "versions_excluded": 1, "versions_theirs": 2, "versions_compared": 1,
+        "versions_disagreeing": 1, "agree_all": 2, "agree_except_reason": 1, "only_ours": 0,
+        "only_theirs": 0, "derivative_artifacts": 1,
+    }
+    assert season["unmatched_ours"] == [SIXPM_REPORT]
+    assert season["unmatched_theirs"] == ["2024-01-31T21:55:00"]
+    assert season["patterns"] == {
+        f"reason: ours {LEFT_ANKLE!r} / theirs {LEFT_ANKLE_CUT!r}": {"count": 1, "report_ids": [JANUARY_REPORT]},
+    }
+    # a season without a pinned asset compares nothing and lists its versions as unmatched
+    assert agreement[2026]["asset"] is None
+    assert agreement[2026]["versions_ours"] == 1 and agreement[2026]["versions_theirs"] == 0
+    assert agreement[2026]["versions_compared"] == 0 and agreement[2026]["unmatched_ours"] == [quarter_2026]
+    assert agreement[2026]["unmatched_theirs"] == [] and agreement[2026]["patterns"] == {}
+    # JSON-ready: every value survives the manifest encoder
+    availability_build.manifest_bytes({str(key): {k: v for k, v in value.items()} for key, value in agreement.items()})
+    # the root must be the derivative raw directory; a damaged asset fails closed
+    with pytest.raises(availability_build.AvailabilityBuildError, match="nba_stats_injury_report"):
+        availability_build.derivative_agreement(part_b, tmp_path / "raw")
+    asset.write_bytes(asset.read_bytes() + b"x")
+    with pytest.raises(availability_build.AvailabilityBuildError, match="injury_report_2024"):
+        availability_build.derivative_agreement(part_b, derivative_root)
+
+
+# --------------------------------------------------------------------------
+# gates and build
+# --------------------------------------------------------------------------
+
+
+def test_gates_fail_closed_and_pass_with_exact_ledger_entries(tmp_path, monkeypatch):
+    """Would fail if a disagreement, a low rate or a season mismatch slipped past a gate."""
+    # appearance disagreement without approval -> fail; with the exact entry -> applied
+    root = tmp_path / "appearance"
+    raw_root, player_games_root, ledger = seed_full_tree(root, monkeypatch, credited_extra=[credited_dieng_row()])
+    with pytest.raises(
+        availability_build.AvailabilityBuildError,
+        match=rf"appearance_consistency missing approvals.*{DIENG}",
+    ):
+        _build(raw_root, player_games_root, _stage(root, "one"), ledger)
+    assert not any((root / "one").iterdir())
+    key = f"2026|{OPENER.game_id}|{DIENG}"
+    entry = {"comment_raw": "DNP - Coach's Decision", "minutes_raw": None, "appearance": "credited"}
+    ledger = write_ledger(root, full_ledger(appearance_consistency={key: {**entry, "note": "league credit"}}))
+    manifest = _build(raw_root, player_games_root, _stage(root, "two"), ledger)
+    applied = manifest["exception_ledger"]["applied"]
+    assert applied["appearance_consistency"] == {key: entry}
+    assert set(applied["report_versions"]) == set(REUSED_REPORTS)
+    assert all("note" not in value for section in applied.values() for value in section.values())
+    assert manifest["exception_ledger"]["counts"] == {
+        "appearance_consistency": 1, "report_versions": 4, "schedule_dates": 0, "team_resolution": 0,
+    }
+    assert manifest["validation"]["parse_counts"]["2020"] == {"ok": 0, "ok_title_accepted": 1, "excluded": 0}
+    # a stale approval fails too
+    stale = write_ledger(root, full_ledger(appearance_consistency={
+        key: {**entry, "note": "league credit"},
+        f"2026|{OPENER.game_id}|{DORT}": {**entry, "note": "never observed"},
+    }))
+    with pytest.raises(availability_build.AvailabilityBuildError, match="stale approvals"):
+        _build(raw_root, player_games_root, _stage(root, "three"), stale)
+
+    # identity rate below the floor in one season -> error naming the season
+    root = tmp_path / "rates"
+    raw_root, player_games_root, ledger = seed_full_tree(root, monkeypatch, full_roster=False)
+    with pytest.raises(availability_build.AvailabilityBuildError, match=r"season 2024.*identit") as excinfo:
+        _build(raw_root, player_games_root, _stage(root, "one"), ledger)
+    assert "0.98" in str(excinfo.value)
+    # row rate fine but identity rate low -> still an error
+    root = tmp_path / "identity"
+    raw_root, player_games_root, ledger = seed_full_tree(root, monkeypatch)
+    real_metrics = availability_resolve.resolution_metrics
+
+    def lowered(listings):
+        metrics = real_metrics(listings)
+        metrics[2024]["row_rate"] = 0.99
+        metrics[2024]["identity_rate"] = 0.5
+        return metrics
+
+    monkeypatch.setattr(availability_resolve, "resolution_metrics", lowered)
+    with pytest.raises(availability_build.AvailabilityBuildError, match=r"season 2024.*identity rate 0\.5"):
+        _build(raw_root, player_games_root, _stage(root, "one"), ledger)
+    monkeypatch.setattr(availability_resolve, "resolution_metrics", real_metrics)
+    assert _build(raw_root, player_games_root, _stage(root, "two"), ledger)["validation"]["resolution"]["2024"] == {
+        "rows": 11, "rows_resolved": 11, "row_rate": 1.0, "identities": 11, "identities_resolved": 11,
+        "identity_rate": 1.0, "listed_not_rostered": {"rows": 0, "identities": 0},
+        "unresolved_matchups": manifest["validation"]["resolution"]["2024"]["unresolved_matchups"],
+    }
+
+    # version-season mismatch: the 2024-01-31 report (whose CHI@CHA game resolves
+    # to season 2024) accepted under a season-2025 slot
+    root = tmp_path / "season"
+    shifted = "Injury-Report_2024-11-15_05PM"
+    months = {**FULL_MONTHS, "2024-11": {"present": {shifted: JANUARY_REPORT + ".pdf"}, "unavailable": ()}}
+    document = full_ledger()
+    del document["report_versions"]["Injury-Report_2024-11-15_01PM"]
+    document["report_versions"][shifted] = accept_title_entry(
+        shifted, JANUARY_REPORT + ".pdf", "2024-01-31T17:30:00",
+    )
+    raw_root, player_games_root, ledger = seed_full_tree(root, monkeypatch, months=months, ledger=document)
+    with pytest.raises(
+        availability_build.AvailabilityBuildError,
+        match=rf"version.season.*{shifted}.*{BULLS_HORNETS.game_id}",
+    ):
+        _build(raw_root, player_games_root, _stage(root, "one"), ledger)
+
+
+def test_build_from_roots_writes_46_partitions_and_a_deterministic_manifest(tmp_path, monkeypatch):
+    """Would fail if the layout, determinism or manifest shape drifted."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    stage_a = _stage(tmp_path, "stage-a")
+
+    manifest = _build(raw_root, player_games_root, stage_a, ledger)
+
+    tree = _tree_bytes(stage_a)
+    partitions = {name for name in tree if name.endswith(".parquet")}
+    assert partitions == EXPECTED_PARTITIONS and len(partitions) == 46
+    assert set(tree) == partitions | {"_manifest.json"}
+    for name in sorted(partitions):
+        assert pq.read_metadata(stage_a / name).num_rows > 0, name
+    assert tree["_manifest.json"] == availability_build.manifest_bytes(manifest)
+    assert json.loads(tree["_manifest.json"]) == manifest
+    assert set(manifest) == MANIFEST_KEYS
+    text = tree["_manifest.json"].decode("utf-8")
+    assert str(tmp_path) not in text
+    assert "fetched_at" not in text and "checked_at" not in text
+    assert date.today().isoformat() not in text
+    assert all(not path.startswith("/") and "\\" not in path for path in _paths_in(manifest))
+    assert tree["_manifest.json"] == (
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+    with pytest.raises(ValueError):
+        availability_build.manifest_bytes({"rate": float("nan")})
+
+    # a second build from the same trees and ledger is byte-identical
+    stage_b = _stage(tmp_path, "stage-b")
+    assert _build(raw_root, player_games_root, stage_b, ledger) == manifest
+    assert _tree_bytes(stage_b) == tree
+
+    # content checks
+    assert manifest["schema_version"] == 1
+    assert manifest["scope"]["roster_seasons"] == list(range(2012, 2027))
+    assert manifest["scope"]["report_seasons"] == list(range(2019, 2027))
+    assert manifest["scope"]["game_types"] == ["playoff", "regular"]
+    assert manifest["scope"]["slot_window"] == ["2018-12-17", "2026-09-30"]
+    assert set(manifest["scope"]["grids"]) == {"hour", "quarter"}
+    assert set(manifest["schema"]) == set(availability_build.PARTITION_SCHEMAS)
+    assert manifest["schema"]["game_schedule"][4] == {
+        "name": "scheduled_start_utc", "arrow_type": "timestamp[us, tz=UTC]", "nullable": False,
+    }
+    assert manifest["versions"]["pdfplumber"] == "0.11.10"
+    assert manifest["versions"]["pdfminer-six"] == "20260107"
+    assert manifest["versions"]["pypdfium2"] == "5.14.0"
+    assert {"nba_api", "pandas", "pyarrow", "python"} <= set(manifest["versions"])
+    assert set(manifest["partitions"]) == {str(season) for season in range(2012, 2027)}
+    rosters_2024 = manifest["partitions"]["2024"]["game_rosters"]
+    assert set(rosters_2024) == {"path", "rows", "bytes", "sha256", "row_sha256"}
+    assert rosters_2024["path"] == "season=2024/game_rosters.parquet" and rosters_2024["rows"] == 12
+    assert rosters_2024["sha256"] == hashlib.sha256(tree[rosters_2024["path"]]).hexdigest()
+    assert rosters_2024["row_sha256"] == availability_build.logical_row_sha256(
+        pq.read_table(stage_a / rosters_2024["path"]), availability_build.GAME_ROSTERS_SCHEMA,
+    )
+    assert set(manifest["partitions"]["2012"]) == {"game_rosters", "game_schedule"}
+    assert set(manifest["partitions"]["2019"]) == {
+        "game_rosters", "game_schedule", "injury_report_versions", "injury_report_listings",
+    }
+    assert manifest["partitions"]["2020"]["injury_report_versions"]["rows"] == 1
+    validation = manifest["validation"]
+    assert validation["coverage"]["games"] == 15 and validation["coverage"]["box_roster_pairs"] == 30
+    assert validation["coverage"]["slots"]["hour"] == {"present": 7, "unavailable": 2, "rechecked": 2}
+    assert validation["coverage"]["slots"]["quarter"] == {"present": 1, "unavailable": 2, "rechecked": 2}
+    assert validation["coverage"]["reports"] == {"present": 8, "parsed": 8, "excluded": 0}
+    assert validation["rows"] == {
+        name: sum(manifest["partitions"][season][name]["rows"]
+                  for season in manifest["partitions"] if name in manifest["partitions"][season])
+        for name in availability_build.PARTITION_SCHEMAS
+    }
+    assert validation["parse_counts"]["2024"] == {"ok": 1, "ok_title_accepted": 0, "excluded": 0}
+    assert validation["title_counts"]["2025"] == {"ok": 0, "failed": 1, "unparsed": 0}
+    assert validation["placeholder_counts"]["2026"] == {"NOT YET SUBMITTED": 22}
+    assert validation["resolution"]["2024"]["identity_rate"] == 1.0
+    assert validation["resolution"]["2024"]["unresolved_matchups"]["CLE@MEM"] == 2
+    assert validation["gates"] == [
+        "coverage", "exception_ledger", "version_season", "team_resolution", "person_resolution", "layout",
+    ]
+    sizes = validation["roster_sizes"]
+    assert sizes["by_season"]["2024"] == {"team_games": 2, "active_min": 2, "active_max": 2, "inactive_empty": 0}
+    assert sizes["by_season"]["2026"]["inactive_empty"] == 1
+    assert {"game_id": OPENER.game_id, "nba_team_id": HOU, "active": 2, "inactive": 0} in sizes["outliers"]
+    agreement = validation["derivative_agreement"]
+    assert set(agreement) == {str(season) for season in range(2019, 2027)}
+    assert "asset" not in agreement["2024"]
+    assert agreement["2024"]["unmatched_ours"] == [JANUARY_REPORT]
+    assert agreement["2024"]["unmatched_theirs"] == ["2024-01-10T17:30:00"]
+    assert agreement["2020"]["unmatched_ours"] == ["Injury-Report_2019-11-15_01PM"]
+    assert agreement["2020"]["versions_theirs"] == 0
+
+    # the stage must be an existing empty directory
+    with pytest.raises(availability_build.AvailabilityBuildError, match="stage"):
+        _build(raw_root, player_games_root, stage_a, ledger)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="stage"):
+        _build(raw_root, player_games_root, tmp_path / "missing", ledger)
+
+
+def test_manifest_binds_every_raw_pair_the_player_games_manifest_controls_and_ledger(tmp_path, monkeypatch):
+    """Would fail if a consumed body, the worklist reference, the controls or the ledger were unbound."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    index = box_rosters.load_player_games_index(player_games_root)
+
+    manifest = _build(raw_root, player_games_root, _stage(tmp_path), ledger)
+
+    sources = manifest["sources"]
+    assert set(sources) == {"box_rosters", "injury_reports", "derivative", "gamebooks"}
+    bodies = sources["box_rosters"]
+    assert len(bodies) == 2 * len(index.games) == 30
+    assert [entry["body_path"] for entry in bodies] == sorted(entry["body_path"] for entry in bodies)
+    for entry in bodies:
+        assert set(entry) == {
+            "body_path", "body_sha256", "body_content_length",
+            "sidecar_path", "sidecar_sha256", "sidecar_content_length", "identity",
+        }
+        body = tmp_path / entry["body_path"]
+        sidecar = tmp_path / entry["sidecar_path"]
+        assert entry["body_path"].startswith("raw/stats_nba/box_rosters/season=")
+        assert entry["sidecar_path"] == entry["body_path"] + ".meta.json"
+        assert entry["body_sha256"] == hashlib.sha256(body.read_bytes()).hexdigest()
+        assert entry["body_content_length"] == body.stat().st_size
+        assert entry["sidecar_sha256"] == hashlib.sha256(sidecar.read_bytes()).hexdigest()
+        assert entry["sidecar_content_length"] == sidecar.stat().st_size
+        assert set(entry["identity"]) == {"game_id", "endpoint", "season"}
+    assert {(e["identity"]["game_id"], e["identity"]["endpoint"]) for e in bodies} == {
+        (game.game_id, endpoint) for game in index.games for endpoint in ("traditional", "summary")
+    }
+
+    reports = sources["injury_reports"]
+    assert set(reports) == {"pdfs", "inventories"}
+    assert len(reports["pdfs"]) == 8 == len(FULL_REPORTS)
+    assert sorted(entry["identity"]["report_id"] for entry in reports["pdfs"]) == sorted(FULL_REPORTS)
+    for entry in reports["pdfs"]:
+        slot = injury_reports.slot_from_report_id(entry["identity"]["report_id"])
+        assert entry["body_path"] == f"raw/nba_injury_reports/pdfs/{slot.month}/{slot.file_name}"
+        assert entry["body_sha256"] == hashlib.sha256((tmp_path / entry["body_path"]).read_bytes()).hexdigest()
+        assert entry["identity"] == {"report_id": slot.report_id, "grid": slot.grid, "month": slot.month}
+    assert [entry["month"] for entry in reports["inventories"]] == sorted(FULL_MONTHS)
+    for entry in reports["inventories"]:
+        assert set(entry) == {"month", "generation", "path", "sha256", "bytes"}
+        assert entry["generation"] == 1
+        assert entry["path"] == f"raw/nba_injury_reports/inventory/{entry['month']}/gen-0001.json"
+        payload = (tmp_path / entry["path"]).read_bytes()
+        assert (entry["sha256"], entry["bytes"]) == (hashlib.sha256(payload).hexdigest(), len(payload))
+
+    assert [entry["identity"] for entry in sources["derivative"]] == [{"season": 2024}, {"season": 2026}]
+    for entry in sources["derivative"]:
+        path = injury_derivative.asset_path(tmp_path, entry["identity"]["season"])
+        assert entry["body_path"] == path.relative_to(tmp_path).as_posix()
+        assert entry["body_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    # TODO(task-16)/TODO(task-21): gamebooks are imported later; nothing exists yet
+    assert sources["gamebooks"] == {"pdfs": [], "comparisons": []}
+
+    references = manifest["references"]
+    assert set(references) == {"player_games_manifest", "controls", "exception_ledger"}
+    manifest_path = player_games_root / "_manifest.json"
+    assert references["player_games_manifest"] == {
+        "path": "parquet-large/player_games/_manifest.json",
+        "sha256": index.manifest_binding["sha256"],
+        "bytes": index.manifest_binding["bytes"],
+        "snapshot_name": "player-games-archive-2026-" + index.manifest_binding["sha256"][:12],
+    }
+    assert index.manifest_binding["sha256"] == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    controls = injury_reports.CONTROLS_PATH.read_bytes()
+    assert references["controls"] == {
+        "path": "src/nba_data/reference/injury_report_controls.json",
+        "sha256": hashlib.sha256(controls).hexdigest(),
+    }
+    ledger_sha = hashlib.sha256(ledger.read_bytes()).hexdigest()
+    assert references["exception_ledger"] == {"path": "ledger.json", "sha256": ledger_sha}
+    assert manifest["exception_ledger"]["path"] == "ledger.json"
+    assert manifest["exception_ledger"]["sha256"] == ledger_sha
+    assert set(manifest["exception_ledger"]) == {"path", "sha256", "bytes", "applied", "counts"}
+
+    # gamebook pairs that do exist are bound
+    pdf = tmp_path / "raw/nba_gamebooks" / f"{BULLS_HORNETS.game_id}.book.pdf"
+    cache.publish_bytes(pdf, b"%PDF-1.4 gamebook", {"provider": "nba_official"}, lambda path: None)
+    record = tmp_path / "raw/nba_gamebooks/comparisons" / f"{BULLS_HORNETS.game_id}.json"
+    cache.publish_bytes(record, b"{}\n", {"provider": "review"}, lambda path: None)
+    bound = _build(raw_root, player_games_root, _stage(tmp_path, "with-gamebooks"), ledger)["sources"]["gamebooks"]
+    assert [entry["body_path"] for entry in bound["pdfs"]] == [f"raw/nba_gamebooks/{BULLS_HORNETS.game_id}.book.pdf"]
+    assert [entry["body_path"] for entry in bound["comparisons"]] == [
+        f"raw/nba_gamebooks/comparisons/{BULLS_HORNETS.game_id}.json",
+    ]
+    assert bound["pdfs"][0]["identity"] == {"game_id": BULLS_HORNETS.game_id}
+    assert bound["pdfs"][0]["body_sha256"] == hashlib.sha256(b"%PDF-1.4 gamebook").hexdigest()
+
+
+def test_manifest_records_the_player_games_snapshot_name_derived_from_the_bound_digest(tmp_path, monkeypatch):
+    """Would fail if the D1 snapshot name were supplied instead of derived from the bound manifest."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    manifest_bytes_ = (player_games_root / "_manifest.json").read_bytes()
+    digest = hashlib.sha256(manifest_bytes_).hexdigest()
+
+    manifest = _build(raw_root, player_games_root, _stage(tmp_path), ledger)
+
+    reference = manifest["references"]["player_games_manifest"]
+    assert reference["sha256"] == digest and reference["bytes"] == len(manifest_bytes_)
+    assert reference["snapshot_name"] == "player-games-archive-2026-" + digest[:12]
+    # the name the restore script accepts (scripts/restore_player_games_snapshot.sh)
+    assert re.fullmatch(r"player-games-archive-2026-[0-9a-f]{12}", reference["snapshot_name"])
+    # TODO(task-3): the snapshot itself is produced on the owner's machine; a
+    # different player_games manifest must yield a different name
+    rewritten = player_games_root / "_manifest.json"
+    document = json.loads(manifest_bytes_)
+    document["partitions"] = dict(document["partitions"])
+    rewritten.write_bytes((json.dumps(document, sort_keys=True, indent=4) + "\n").encode("utf-8"))
+    other = _build(raw_root, player_games_root, _stage(tmp_path, "other"), ledger)
+    assert other["references"]["player_games_manifest"]["snapshot_name"] != reference["snapshot_name"]
+    assert other["references"]["player_games_manifest"]["snapshot_name"] == (
+        "player-games-archive-2026-" + hashlib.sha256(rewritten.read_bytes()).hexdigest()[:12]
+    )
+
+
+# --------------------------------------------------------------------------
+# validate_publication and run
+# --------------------------------------------------------------------------
+
+
+def test_validate_publication_recomputes_and_rejects_tampering(tmp_path, monkeypatch):
+    """Would fail if any byte of the publication or its bound inputs could change unnoticed."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    stage = _stage(tmp_path)
+    manifest = _build(raw_root, player_games_root, stage, ledger)
+
+    def validate():
+        return availability_build.validate_publication(
+            raw_root, player_games_root, stage, exceptions_path=ledger,
+        )
+
+    assert validate() == manifest
+
+    def tampered(path: Path, mutate, match: str):
+        original = path.read_bytes()
+        path.write_bytes(mutate(original))
+        with pytest.raises(availability_build.AvailabilityBuildError, match=match):
+            validate()
+        path.write_bytes(original)
+
+    # a partition byte
+    partition = stage / "season=2024/game_rosters.parquet"
+    tampered(partition, lambda body: body[:-1] + bytes([body[-1] ^ 0xFF]), "partition")
+    tampered(partition, lambda body: body[:-8] + b"\x00" + body[-7:], "partition")
+    # a manifest value
+    stored = json.loads((stage / "_manifest.json").read_text(encoding="utf-8"))
+    for key, mutate in (
+        ("validation", lambda doc: doc["validation"]["resolution"]["2024"].__setitem__("rows", 12)),
+        ("partitions", lambda doc: doc["partitions"]["2024"]["game_rosters"].__setitem__("rows", 13)),
+        ("sources", lambda doc: doc["sources"]["box_rosters"][0].__setitem__("body_sha256", "0" * 64)),
+        ("references", lambda doc: doc["references"]["player_games_manifest"].__setitem__("snapshot_name", "x")),
+        ("versions", lambda doc: doc["versions"].__setitem__("pdfplumber", "0.0.0")),
+    ):
+        document = json.loads(json.dumps(stored))
+        mutate(document)
+        tampered(
+            stage / "_manifest.json", lambda _body, document=document: availability_build.manifest_bytes(document),
+            key,
+        )
+    # non-canonical manifest bytes
+    tampered(stage / "_manifest.json", lambda body: body + b"\n", "canonical")
+    tampered(stage / "_manifest.json", lambda body: body[:-2] + b"}", "manifest")
+    # a raw PDF, an inventory generation, a box-roster body, the player_games manifest
+    pdf = injury_reports.pdf_path(tmp_path, injury_reports.slot_from_report_id(JANUARY_REPORT))
+    tampered(pdf, lambda body: body + b"\n", JANUARY_REPORT)
+    generation = tmp_path / "raw/nba_injury_reports/inventory/2024-01/gen-0001.json"
+    tampered(generation, lambda body: body[:-2] + b" }", "2024-01")
+    body = box_rosters.cache_path(tmp_path, FINALS.season, FINALS.game_id, "summary")
+    tampered(body, lambda payload: payload.replace(b"20250605/INDOKC", b"20250605/INDOKX"), r"raw pair|sources|validation")
+    tampered(player_games_root / "_manifest.json", lambda payload: payload + b"\n", "references")
+    # the ledger: a byte change breaks the binding; a new entry is a stale approval
+    tampered(ledger, lambda payload: payload.replace(b"reused", b"REUSED"), "references")
+    key = f"2026|{OPENER.game_id}|{DORT}"
+    document = full_ledger(appearance_consistency={key: _appearance()})
+    tampered(ledger, lambda _payload: (json.dumps(document, indent=2, sort_keys=True) + "\n").encode(), "stale")
+    # an approval that contradicts the body it names fails in the resolver, as a build error
+    document = full_ledger(schedule_dates={BULLS_HORNETS.game_id: _schedule()})
+    tampered(
+        ledger, lambda _payload: (json.dumps(document, indent=2, sort_keys=True) + "\n").encode(),
+        "schedule_dates",
+    )
+
+    # every input restored: the publication validates again
+    assert validate() == manifest
+
+    # layout: a missing partition, an extra file, a symlinked partition
+    extra = stage / "season=2024/notes.txt"
+    extra.write_text("x", encoding="utf-8")
+    with pytest.raises(availability_build.AvailabilityBuildError, match="layout"):
+        validate()
+    extra.unlink()
+    moved = partition.with_name("moved.parquet")
+    partition.rename(moved)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="layout"):
+        validate()
+    partition.symlink_to(moved)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="layout|regular"):
+        validate()
+    partition.unlink()
+    moved.rename(partition)
+    assert validate() == manifest
+    with pytest.raises(availability_build.AvailabilityBuildError, match="publication"):
+        availability_build.validate_publication(raw_root, player_games_root, tmp_path / "nowhere", exceptions_path=ledger)
+
+
+def test_run_stages_rereads_publishes_and_rolls_back_on_failure(tmp_path, monkeypatch):
+    """Would fail if run published before rereading, or left a stage or partial output behind."""
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch)
+    monkeypatch.setattr(availability_build, "EXCEPTIONS_PATH", ledger)
+    staging_root = tmp_path / "parquet-large"
+    output = staging_root / "availability"
+    real_validate = availability_build.validate_publication
+    validated = []
+
+    # a forced reread mismatch: no partial output, no stage left behind
+    def mismatch(*args, **kwargs):
+        validated.append(Path(args[2]))
+        return {**real_validate(*args, **kwargs), "schema_version": 2}
+
+    monkeypatch.setattr(availability_build, "validate_publication", mismatch)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="reread"):
+        availability_build.run(tmp_path)
+    assert not output.exists()
+    assert sorted(path.name for path in staging_root.iterdir()) == ["player_games"]
+    assert len(validated) == 1 and validated[0].parent == staging_root
+    assert validated[0].name.startswith(".availability-build-") and not validated[0].exists()
+
+    # the success path: stage under parquet-large, validate the stage, publish, validate the output
+    validated.clear()
+    labels = []
+    real_publish = publication.publish_tree
+
+    def record_validate(raw, games, publication_dir, *, exceptions_path):
+        validated.append(Path(publication_dir))
+        assert Path(raw) == raw_root and Path(games) == player_games_root and Path(exceptions_path) == ledger
+        return real_validate(raw, games, publication_dir, exceptions_path=exceptions_path)
+
+    def record_publish(stage_dir, output_dir, *, label):
+        labels.append(label)
+        assert Path(stage_dir).parent == staging_root and Path(output_dir) == output
+        return real_publish(stage_dir, output_dir, label=label)
+
+    monkeypatch.setattr(availability_build, "validate_publication", record_validate)
+    monkeypatch.setattr(publication, "publish_tree", record_publish)
+    availability_build.run(tmp_path)
+    assert labels == ["availability publication"]
+    assert len(validated) == 2 and validated[0] != output and validated[1] == output
+    assert validated[0].name.startswith(".availability-build-") and not validated[0].exists()
+    tree = _tree_bytes(output)
+    assert {name for name in tree if name.endswith(".parquet")} == EXPECTED_PARTITIONS
+    assert sorted(path.name for path in staging_root.iterdir()) == ["availability", "player_games"]
+    # a second run replaces the publication with identical bytes
+    availability_build.run(tmp_path)
+    assert _tree_bytes(output) == tree
+    assert sorted(path.name for path in staging_root.iterdir()) == ["availability", "player_games"]
+    # a failing rebuild leaves the previous publication in place
+    monkeypatch.setattr(availability_build, "validate_publication", mismatch)
+    with pytest.raises(availability_build.AvailabilityBuildError, match="reread"):
+        availability_build.run(tmp_path)
+    assert _tree_bytes(output) == tree
+    assert sorted(path.name for path in staging_root.iterdir()) == ["availability", "player_games"]
+    # a retained rollback directory is reported
+    monkeypatch.setattr(availability_build, "validate_publication", real_validate)
+    retained = staging_root / ".availability.rollback-retained"
+    monkeypatch.setattr(publication, "publish_tree", lambda *args, **kwargs: retained)
+    with pytest.raises(availability_build.AvailabilityBuildError, match=r"rollback.*rollback-retained"):
+        availability_build.run(tmp_path)
