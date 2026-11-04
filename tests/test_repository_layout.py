@@ -1241,6 +1241,32 @@ def test_player_games_archive_scripts_are_executable_and_tracked() -> None:
     assert all(mode == "100755" for mode in tracked_modes.values())
 
 
+def test_availability_archive_scripts_are_executable_and_tracked() -> None:
+    """Would fail if the availability archive/restore scripts were missing,
+    untracked, or not marked executable in Git."""
+    recovery_scripts = {
+        "scripts/archive_availability_snapshot.sh",
+        "scripts/restore_availability_snapshot.sh",
+    }
+    tracked = subprocess.run(
+        ["git", "ls-files", "-s", *sorted(recovery_scripts)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    tracked_modes = {
+        fields[3]: fields[0]
+        for line in tracked
+        if len(fields := line.split(maxsplit=3)) == 4
+    }
+    assert set(tracked_modes) == recovery_scripts
+    assert all(mode == "100755" for mode in tracked_modes.values())
+    for script in sorted(recovery_scripts):
+        assert os.access(ROOT / script, os.X_OK), script
+        subprocess.run(["bash", "-n", script], cwd=ROOT, check=True)
+
+
 def test_player_games_final_audit_is_present() -> None:
     """Would fail if the committed final player-games audit were missing or
     did not carry the rendered two-scope/restore evidence."""
