@@ -22,7 +22,7 @@
     "basketball_reference": {
       "historical_manifest": {
         "path": "parquet/historical_games_manifest.json",
-        "sha256": "2be1f3ccb999bab64a344b28b6b25a45c318e994b74b1b99e9e4c9035b0dc010"
+        "sha256": "60670f2f3bf2015aabd58235abbb07a1399c47cf1b34951cd1fac371f69584fd"
       },
       "historical_pages": [
         {
@@ -4034,6 +4034,7 @@
       "numpy": "2.5.1",
       "openpyxl": "3.1.5",
       "pandas": "3.0.5",
+      "pdfplumber": "0.11.10",
       "pyarrow": "25.0.0",
       "pytest": "9.1.1",
       "requests": "2.34.2",

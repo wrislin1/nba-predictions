@@ -36,9 +36,12 @@ certifi==2026.7.22
 cffi==2.1.0
     # via
     #   argon2-cffi-bindings
+    #   cryptography
     #   pyzmq
 charset-normalizer==3.4.9
-    # via requests
+    # via
+    #   pdfminer-six
+    #   requests
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   ipython
@@ -49,6 +52,8 @@ comm==0.2.3
     #   ipywidgets
 contourpy==1.3.3
     # via matplotlib
+cryptography==50.0.2
+    # via pdfminer-six
 cycler==0.12.1
     # via matplotlib
 debugpy==1.8.21
@@ -260,10 +265,16 @@ parso==0.8.7
     # via jedi
 patsy==1.0.2
     # via statsmodels
+pdfminer-six==20260107
+    # via pdfplumber
+pdfplumber==0.11.10
+    # via -r requirements.in
 pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32'
     # via ipython
 pillow==12.3.0
-    # via matplotlib
+    # via
+    #   matplotlib
+    #   pdfplumber
 platformdirs==4.11.0
     # via jupyter-core
 pluggy==1.6.0
@@ -299,6 +310,8 @@ pyhdfe==0.2.0
     # via linearmodels
 pyparsing==3.3.2
     # via matplotlib
+pypdfium2==5.14.0
+    # via pdfplumber
 pytest==9.1.1
     # via -r requirements.in
 python-dateutil==2.9.0.post0

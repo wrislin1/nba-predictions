@@ -8,6 +8,7 @@ nba_api
 numpy
 openpyxl
 pandas
+pdfplumber
 pyarrow
 pytest
 requests
