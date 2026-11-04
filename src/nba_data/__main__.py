@@ -1,4 +1,5 @@
 import argparse
+import json
 from pathlib import Path
 
 from nba_data import (
@@ -8,6 +9,7 @@ from nba_data import (
     historical_bref,
     historical_build,
     hoopr,
+    injury_reports,
     pbp,
     pbp_build,
     player_games_build,
@@ -27,6 +29,15 @@ def _source_checkout_data_dir() -> Path | None:
     ):
         return data_dir
     return None
+
+
+def _injury_report_month(value: str) -> str:
+    """argparse type: a ``YYYY-MM`` month inside the injury-report window."""
+    try:
+        injury_reports.validate_month(value)
+    except injury_reports.InjuryReportError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return value
 
 
 def main() -> None:
@@ -77,6 +88,17 @@ def main() -> None:
         type=int,
         action="append",
         choices=box_rosters.PUBLICATION_SEASONS,
+    )
+    fetch_injury_reports = commands.add_parser("fetch-injury-reports")
+    fetch_injury_reports.add_argument(
+        "--month",
+        type=_injury_report_month,
+        action="append",
+        metavar="YYYY-MM",
+    )
+    fetch_injury_reports.add_argument(
+        "--recheck-unavailable",
+        action="store_true",
     )
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
@@ -136,6 +158,12 @@ def main() -> None:
             else box_rosters.PUBLICATION_SEASONS
         )
         box_rosters.fetch(data, selected)
+    elif args.command == "fetch-injury-reports":
+        selected = tuple(sorted(set(args.month))) if args.month else None
+        summary = injury_reports.fetch(
+            data, selected, recheck_unavailable=args.recheck_unavailable,
+        )
+        print(json.dumps(summary, sort_keys=True))
     elif args.command == "build-pbp":
         pbp_build.run(data)
     elif args.command == "build-player-games":

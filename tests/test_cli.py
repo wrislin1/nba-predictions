@@ -723,3 +723,82 @@ def test_fetch_box_rosters_rejects_season_outside_2012_2026(
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def _record_injury_reports_fetch(monkeypatch, cli):
+    calls = []
+
+    def fake_fetch(data, months=None, *, recheck_unavailable=False):
+        calls.append((data, months, recheck_unavailable))
+        return {"probed": 0}
+
+    monkeypatch.setattr(cli.injury_reports, "fetch", fake_fetch)
+    return calls
+
+
+def test_fetch_injury_reports_defaults_to_the_whole_window(monkeypatch, tmp_path, capsys):
+    """Would fail if the command narrowed the window, rechecked by default or hid the counts."""
+    cli = load_cli()
+    calls = _record_injury_reports_fetch(monkeypatch, cli)
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "fetch-injury-reports"]
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path.resolve(), None, False)]
+    assert capsys.readouterr().out == '{"probed": 0}\n'
+
+
+def test_fetch_injury_reports_forwards_months_and_recheck_flag(monkeypatch, tmp_path):
+    """Would fail if repeated --month flags were repeated or the recheck flag dropped."""
+    cli = load_cli()
+    calls = _record_injury_reports_fetch(monkeypatch, cli)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-injury-reports",
+            "--month", "2025-12", "--month", "2018-12", "--month", "2025-12",
+            "--recheck-unavailable",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path.resolve(), ("2018-12", "2025-12"), True)]
+
+    calls.clear()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-injury-reports",
+            "--month", "2026-09",
+        ],
+    )
+    cli.main()
+    assert calls == [(tmp_path.resolve(), ("2026-09",), False)]
+
+
+@pytest.mark.parametrize("month", ["2018-11", "2026-10", "2024-13", "2024-1", "January"])
+def test_fetch_injury_reports_rejects_a_month_outside_the_window(
+    monkeypatch, tmp_path, month
+):
+    """Would fail if a month outside 2018-12..2026-09 reached the fetcher."""
+    cli = load_cli()
+    calls = _record_injury_reports_fetch(monkeypatch, cli)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-injury-reports",
+            "--month", month,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
