@@ -1,0 +1,91 @@
+{
+ "meta": {
+  "version": 1,
+  "code": 200
+ },
+ "boxScoreTraditional": {
+  "gameId": "0022500001",
+  "awayTeamId": 1610612745,
+  "homeTeamId": 1610612760,
+  "homeTeam": {
+   "teamId": 1610612760,
+   "teamCity": "Oklahoma City",
+   "teamName": "Thunder",
+   "teamTricode": "OKC",
+   "teamSlug": "thunder",
+   "players": [
+    {
+     "personId": 1629652,
+     "firstName": "Luguentz",
+     "familyName": "Dort",
+     "nameI": "L. Dort",
+     "playerSlug": "luguentz-dort",
+     "position": "F",
+     "comment": "",
+     "jerseyNum": "5",
+     "statistics": {
+      "minutes": "32:10",
+      "points": 12
+     }
+    },
+    {
+     "personId": 1631096,
+     "firstName": "Ousmane",
+     "familyName": "Dieng",
+     "nameI": "O. Dieng",
+     "playerSlug": "ousmane-dieng",
+     "position": "",
+     "comment": "DNP - Coach's Decision",
+     "jerseyNum": "13",
+     "statistics": {
+      "minutes": "",
+      "points": 0
+     }
+    }
+   ],
+   "statistics": {},
+   "starters": {},
+   "bench": {}
+  },
+  "awayTeam": {
+   "teamId": 1610612745,
+   "teamCity": "Houston",
+   "teamName": "Rockets",
+   "teamTricode": "HOU",
+   "teamSlug": "rockets",
+   "players": [
+    {
+     "personId": 1630224,
+     "firstName": "Jabari",
+     "familyName": "Smith Jr.",
+     "nameI": "J. Smith Jr.",
+     "playerSlug": "jabari-smith-jr",
+     "position": "F",
+     "comment": "",
+     "jerseyNum": "10",
+     "statistics": {
+      "minutes": "35:02",
+      "points": 20
+     }
+    },
+    {
+     "personId": 1627783,
+     "firstName": "Dorian",
+     "familyName": "Finney-Smith",
+     "nameI": "D. Finney-Smith",
+     "playerSlug": "dorian-finney-smith",
+     "position": "",
+     "comment": "DND - Injury/Illness",
+     "jerseyNum": "7",
+     "statistics": {
+      "minutes": "",
+      "points": 0
+     }
+    }
+   ],
+   "statistics": {},
+   "starters": {},
+   "bench": {}
+  }
+ }
+}

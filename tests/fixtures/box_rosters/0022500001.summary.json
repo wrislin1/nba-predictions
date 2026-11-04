@@ -1,0 +1,46 @@
+{
+ "meta": {
+  "version": 1,
+  "code": 200
+ },
+ "boxScoreSummary": {
+  "gameId": "0022500001",
+  "gameCode": "20251021/HOUOKC",
+  "gameTimeUTC": "2025-10-21T23:30:00Z",
+  "gameEt": "2025-10-21T19:30:00Z",
+  "awayTeamId": 1610612745,
+  "homeTeamId": 1610612760,
+  "isNeutral": false,
+  "arena": {
+   "arenaId": 94,
+   "arenaName": "Paycom Center",
+   "arenaCity": "Oklahoma City",
+   "arenaState": "OK",
+   "arenaCountry": "US",
+   "arenaTimezone": "America/Chicago"
+  },
+  "homeTeam": {
+   "teamId": 1610612760,
+   "teamCity": "Oklahoma City",
+   "teamName": "Thunder",
+   "teamTricode": "OKC",
+   "teamSlug": "thunder",
+   "inactives": [
+    {
+     "personId": 1642850,
+     "firstName": "Thomas",
+     "familyName": "Sorber",
+     "jerseyNum": "12  "
+    }
+   ]
+  },
+  "awayTeam": {
+   "teamId": 1610612745,
+   "teamCity": "Houston",
+   "teamName": "Rockets",
+   "teamTricode": "HOU",
+   "teamSlug": "rockets",
+   "inactives": []
+  }
+ }
+}

@@ -1,0 +1,53 @@
+{
+ "meta": {
+  "version": 1,
+  "code": 200
+ },
+ "boxScoreSummary": {
+  "gameId": "0042400401",
+  "gameCode": "20250605/INDOKC",
+  "gameTimeUTC": "2025-06-06T00:30:00Z",
+  "gameEt": "2025-06-05T20:30:00Z",
+  "awayTeamId": 1610612754,
+  "homeTeamId": 1610612760,
+  "isNeutral": false,
+  "arena": {
+   "arenaId": 94,
+   "arenaName": "Paycom Center",
+   "arenaCity": "Oklahoma City",
+   "arenaState": "OK",
+   "arenaCountry": "US",
+   "arenaTimezone": "America/Chicago"
+  },
+  "homeTeam": {
+   "teamId": 1610612760,
+   "teamCity": "Oklahoma City",
+   "teamName": "Thunder",
+   "teamTricode": "OKC",
+   "teamSlug": "thunder",
+   "inactives": [
+    {
+     "personId": 1642261,
+     "firstName": "Nikola",
+     "familyName": "Topić",
+     "jerseyNum": "44"
+    }
+   ]
+  },
+  "awayTeam": {
+   "teamId": 1610612754,
+   "teamCity": "Indiana",
+   "teamName": "Pacers",
+   "teamTricode": "IND",
+   "teamSlug": "pacers",
+   "inactives": [
+    {
+     "personId": 1642500,
+     "firstName": "Jalen",
+     "familyName": "Williams",
+     "jerseyNum": "15"
+    }
+   ]
+  }
+ }
+}
