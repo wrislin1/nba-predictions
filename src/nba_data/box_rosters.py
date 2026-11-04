@@ -8,11 +8,13 @@ immutable body/sidecar pairs under ``data/raw/stats_nba/box_rosters/``.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import json
 import re
 import stat
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -22,8 +24,9 @@ from typing import Iterable
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import requests
 
-from nba_data import cache
+from nba_data import cache, pbp, player_logs, stats_nba
 
 
 PUBLICATION_SEASONS = tuple(range(2012, 2027))
@@ -670,3 +673,101 @@ def validate_cache_inventory(
             )
     return expected_bodies
 
+
+# --------------------------------------------------------------------------
+# acquisition
+# --------------------------------------------------------------------------
+
+
+def _nearest_existing_ancestor(path: Path) -> Path:
+    current = Path(path)
+    while not current.exists():
+        parent = current.parent
+        if parent == current:
+            raise BoxRosterValidationError(
+                f"no existing ancestor for box-roster cache root {path}"
+            )
+        current = parent
+    return current
+
+
+def _selected_seasons(seasons: Iterable[int] | None) -> tuple[int, ...]:
+    if seasons is None:
+        return PUBLICATION_SEASONS
+    selected = tuple(dict.fromkeys(seasons))
+    for season in selected:
+        if isinstance(season, bool) or not isinstance(season, int) or (
+            season not in PUBLICATION_SEASONS
+        ):
+            raise BoxRosterValidationError(
+                f"ending season must be in 2012..2026: {season!r}"
+            )
+    return selected
+
+
+def fetch(
+    data_dir: Path,
+    seasons: Iterable[int] | None = None,
+    *,
+    session: requests.Session | None = None,
+    pacer: pbp.RequestPacer | None = None,
+    sleeper=time.sleep,
+) -> None:
+    """Acquire every uncached box-score identity of the ``player_games`` worklist.
+
+    The worklist is the distinct game set of ``data_dir / PLAYER_GAMES_SUBDIR``
+    restricted to ``seasons`` (default: every publication season). Each game
+    has two identities, ``traditional`` then ``summary``, visited in worklist
+    order. A complete valid pair is skipped; a damaged pair raises
+    ``CacheIntegrityError`` before any request is sent. Once at least one
+    identity is pending, the free-space gate (``FETCH_HEADROOM_BYTES`` at the
+    nearest existing ancestor of the raw root) and ``stats_nba.preflight_dns``
+    each run exactly once, then each identity is requested through
+    ``pbp.request_bytes`` (serial, paced, retried on transient failures) and
+    published atomically with its sidecar.
+
+    TODO(task-18): the real acquisition of all 38,366 identities (about 16
+    hours of paced requests) runs on the owner's machine in plan Task 18;
+    nothing under ``data/raw/stats_nba/box_rosters/`` exists in this checkout.
+    """
+    data_dir = Path(data_dir)
+    selected = _selected_seasons(seasons)
+    index = load_player_games_index(data_dir / PLAYER_GAMES_SUBDIR)
+
+    pending: list[tuple[WorklistGame, str, Path]] = []
+    for game in index.games:
+        if game.season not in selected:
+            continue
+        for endpoint in ENDPOINTS:
+            destination = cache_path(data_dir, game.season, game.game_id, endpoint)
+            if _read_cached_entry(destination, game, endpoint) is None:
+                pending.append((game, endpoint, destination))
+    if not pending:
+        return
+
+    raw_root = data_dir / RAW_SUBDIR
+    available = player_logs.available_bytes(_nearest_existing_ancestor(raw_root))
+    if available < FETCH_HEADROOM_BYTES:
+        raise BoxRosterValidationError(
+            "insufficient fetch capacity: required "
+            f"{FETCH_HEADROOM_BYTES} bytes, available {available} bytes"
+        )
+    stats_nba.preflight_dns()
+
+    session = session if session is not None else requests.Session()
+    pacer = pacer if pacer is not None else pbp.RequestPacer()
+    for game, endpoint, destination in pending:
+        payload = pbp.request_bytes(
+            session=session,
+            pacer=pacer,
+            endpoint_name=ENDPOINTS[endpoint],
+            parameters=request_parameters(game.game_id, endpoint),
+            context=f"box_rosters {game.game_id} {endpoint}",
+            sleeper=sleeper,
+        )
+        cache.publish_bytes(
+            destination,
+            payload,
+            expected_metadata(game, endpoint),
+            functools.partial(_PATH_VALIDATORS[endpoint], game_id=game.game_id),
+        )

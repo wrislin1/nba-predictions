@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from nba_data import box_rosters, cache
+from nba_data import box_rosters, cache, pbp
 from nba_data.player_games_build import PLAYER_GAMES_ARROW_SCHEMA
 
 
@@ -512,3 +512,356 @@ def test_game_keys_maps_date_and_tricodes_to_game_id():
     )
     with pytest.raises(box_rosters.BoxRosterValidationError, match="home and away"):
         box_rosters.game_keys(one_sided)
+
+
+# --------------------------------------------------------------------------
+# fetch
+# --------------------------------------------------------------------------
+
+
+class FakeResponse:
+    def __init__(self, status_code, content, headers=None, url=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+        self.url = url or "https://stats.nba.com/stats/x"
+
+
+class FakeSession:
+    """Queues responses/exceptions in order and records every call made."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+        self.request_log = []
+
+    def get(self, url, *, params=None, headers=None, timeout=None, allow_redirects=None):
+        self.calls += 1
+        self.request_log.append({
+            "url": url,
+            "params": params,
+            "headers": headers,
+            "timeout": timeout,
+            "allow_redirects": allow_redirects,
+        })
+        if not self._responses:
+            raise AssertionError("FakeSession received more calls than queued responses")
+        item = self._responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 0.0
+        self.sleeps = []
+
+    def now(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.value += seconds
+
+
+def _no_wait_pacer():
+    return pbp.RequestPacer(now=lambda: 0.0, sleeper=lambda seconds: None)
+
+
+def _ok(game, endpoint: str) -> FakeResponse:
+    return FakeResponse(
+        200,
+        fixture_bytes(game.game_id, endpoint),
+        {},
+        f"https://stats.nba.com/stats/{box_rosters.ENDPOINTS[endpoint]}?GameID={game.game_id}",
+    )
+
+
+def _pair_responses(*games) -> list:
+    return [_ok(game, endpoint) for game in games for endpoint in ("traditional", "summary")]
+
+
+def _fail_sleeper(seconds):
+    raise AssertionError(f"unexpected retry sleep of {seconds} s")
+
+
+def _fetch_environment(tmp_path, monkeypatch, *, rows=THREE_ROWS):
+    """Write a tiny worklist publication and fake the capacity and DNS gates."""
+    write_player_games_fixture(tmp_path / box_rosters.PLAYER_GAMES_SUBDIR, rows)
+    events = []
+    monkeypatch.setattr(
+        box_rosters.player_logs,
+        "available_bytes",
+        lambda path: events.append(("capacity", Path(path))) or box_rosters.FETCH_HEADROOM_BYTES,
+    )
+    monkeypatch.setattr(
+        box_rosters.stats_nba,
+        "preflight_dns",
+        lambda: events.append(("preflight", None)) or ("203.0.113.1",),
+    )
+    return events
+
+
+def test_fetch_requests_two_identities_per_uncached_game_in_worklist_order(
+    tmp_path, monkeypatch
+):
+    """Would fail if an identity, its URL, its parameters or its sidecar drifted."""
+    _fetch_environment(tmp_path, monkeypatch)
+    session = FakeSession(_pair_responses(FINALS, OPENER))
+
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+    )
+
+    assert session.calls == 4
+    expected_requests = [
+        (game, endpoint)
+        for game in (FINALS, OPENER)
+        for endpoint in ("traditional", "summary")
+    ]
+    for entry, (game, endpoint) in zip(session.request_log, expected_requests):
+        assert entry["url"] == (
+            f"https://stats.nba.com/stats/{box_rosters.ENDPOINTS[endpoint]}"
+        )
+        assert entry["params"] == sorted(
+            box_rosters.request_parameters(game.game_id, endpoint).items()
+        )
+        assert entry["allow_redirects"] is False
+        assert entry["timeout"] == 90
+    assert [entry["url"] for entry in session.request_log] == [
+        "https://stats.nba.com/stats/boxscoretraditionalv3",
+        "https://stats.nba.com/stats/boxscoresummaryv3",
+        "https://stats.nba.com/stats/boxscoretraditionalv3",
+        "https://stats.nba.com/stats/boxscoresummaryv3",
+    ]
+    for game, endpoint in expected_requests:
+        destination = box_rosters.cache_path(
+            tmp_path, game.season, game.game_id, endpoint
+        )
+        assert destination.is_file()
+        metadata = json.loads(_sidecar(destination).read_text(encoding="utf-8"))
+        expected = box_rosters.expected_metadata(game, endpoint)
+        assert {key: metadata[key] for key in expected} == expected
+        payload, _ = box_rosters.read_cached(tmp_path, game, endpoint)
+        assert payload == fixture_bytes(game.game_id, endpoint)
+    assert box_rosters.validate_cache_inventory(tmp_path, (FINALS, OPENER))
+
+
+def test_fetch_skips_complete_valid_pairs_and_fails_on_a_damaged_pair(
+    tmp_path, monkeypatch
+):
+    """Would fail if a valid pair were refetched or a damaged pair repaired."""
+    events = _fetch_environment(tmp_path, monkeypatch)
+    opener_traditional = _publish(tmp_path, OPENER, "traditional")
+    opener_summary = _publish(tmp_path, OPENER, "summary")
+    before = (
+        opener_traditional.read_bytes(),
+        _sidecar(opener_traditional).read_bytes(),
+        opener_summary.read_bytes(),
+        _sidecar(opener_summary).read_bytes(),
+    )
+
+    damaged = box_rosters.cache_path(tmp_path, FINALS.season, FINALS.game_id, "summary")
+    damaged.parent.mkdir(parents=True, exist_ok=True)
+    damaged.write_bytes(fixture_bytes(FINALS.game_id, "summary"))
+    session = FakeSession([])
+    with pytest.raises(cache.CacheIntegrityError, match="incomplete cache pair"):
+        box_rosters.fetch(
+            tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+        )
+    assert session.calls == 0
+    assert events == []
+    assert damaged.read_bytes() == fixture_bytes(FINALS.game_id, "summary")
+    damaged.unlink()
+
+    tampered = _publish(tmp_path, FINALS, "traditional")
+    sidecar = _sidecar(tampered)
+    record = json.loads(sidecar.read_text())
+    record["game_type"] = "regular"
+    sidecar.write_text(json.dumps(record))
+    with pytest.raises(cache.CacheIntegrityError, match="metadata mismatch"):
+        box_rosters.fetch(
+            tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+        )
+    assert session.calls == 0
+    assert events == []
+    tampered.unlink()
+    sidecar.unlink()
+
+    session = FakeSession(_pair_responses(FINALS))
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+    )
+
+    assert session.calls == 2
+    assert [dict(entry["params"])["GameID"] for entry in session.request_log] == [
+        FINALS.game_id, FINALS.game_id,
+    ]
+    assert (
+        opener_traditional.read_bytes(),
+        _sidecar(opener_traditional).read_bytes(),
+        opener_summary.read_bytes(),
+        _sidecar(opener_summary).read_bytes(),
+    ) == before
+    assert box_rosters.validate_cache_inventory(tmp_path, (FINALS, OPENER))
+
+
+def test_fetch_filters_seasons_and_deduplicates(tmp_path, monkeypatch):
+    """Would fail if the season filter leaked or a repeated season fetched twice."""
+    _fetch_environment(tmp_path, monkeypatch)
+
+    session = FakeSession(_pair_responses(OPENER))
+    box_rosters.fetch(
+        tmp_path, [2026, 2026], session=session, pacer=_no_wait_pacer(),
+        sleeper=_fail_sleeper,
+    )
+    assert session.calls == 2
+    assert {dict(entry["params"])["GameID"] for entry in session.request_log} == {
+        OPENER.game_id,
+    }
+    assert box_rosters.read_cached(tmp_path, FINALS, "traditional") is None
+    assert box_rosters.read_cached(tmp_path, FINALS, "summary") is None
+
+    session = FakeSession(_pair_responses(FINALS))
+    box_rosters.fetch(
+        tmp_path, iter([2025, 2026, 2025]), session=session, pacer=_no_wait_pacer(),
+        sleeper=_fail_sleeper,
+    )
+    assert session.calls == 2
+    assert {dict(entry["params"])["GameID"] for entry in session.request_log} == {
+        FINALS.game_id,
+    }
+
+    session = FakeSession([])
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+    )
+    assert session.calls == 0
+
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="season"):
+        box_rosters.fetch(
+            tmp_path, [2011], session=session, pacer=_no_wait_pacer(),
+            sleeper=_fail_sleeper,
+        )
+    assert session.calls == 0
+
+
+def test_fetch_preflights_once_and_checks_capacity_once_before_the_first_request(
+    tmp_path, monkeypatch
+):
+    """Would fail if the gates ran per identity, after a request, or with no work."""
+    events = _fetch_environment(tmp_path, monkeypatch)
+
+    class RecordingSession(FakeSession):
+        def get(self, url, **kwargs):
+            events.append(("request", url))
+            return super().get(url, **kwargs)
+
+    session = RecordingSession(_pair_responses(FINALS, OPENER))
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+    )
+
+    assert session.calls == 4
+    assert [kind for kind, _ in events] == [
+        "capacity", "preflight", "request", "request", "request", "request",
+    ]
+    assert events[0] == ("capacity", tmp_path)
+
+    events.clear()
+    session = RecordingSession([])
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+    )
+    assert events == []
+
+    other = tmp_path / "other"
+    write_player_games_fixture(other / box_rosters.PLAYER_GAMES_SUBDIR, THREE_ROWS)
+    monkeypatch.setattr(
+        box_rosters.player_logs,
+        "available_bytes",
+        lambda path: events.append(("capacity", Path(path)))
+        or box_rosters.FETCH_HEADROOM_BYTES - 1,
+    )
+    session = RecordingSession([])
+    with pytest.raises(
+        box_rosters.BoxRosterValidationError, match="insufficient fetch capacity"
+    ):
+        box_rosters.fetch(
+            other, session=session, pacer=_no_wait_pacer(), sleeper=_fail_sleeper
+        )
+    assert events == [("capacity", other)]
+    assert session.calls == 0
+    assert not (other / box_rosters.RAW_SUBDIR).exists()
+
+
+def test_fetch_retries_transient_statuses_then_stops_and_never_retries_other_4xx(
+    tmp_path, monkeypatch
+):
+    """Would fail if 5xx were not retried on the fixed ladder or a 404 were retried."""
+    _fetch_environment(tmp_path, monkeypatch)
+    sleeps = []
+    session = FakeSession([
+        FakeResponse(503, b"", {}),
+        FakeResponse(503, b"", {}),
+        *_pair_responses(FINALS, OPENER),
+    ])
+
+    box_rosters.fetch(
+        tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=sleeps.append
+    )
+
+    assert sleeps == [5.0, 10.0]
+    assert session.calls == 6
+    assert box_rosters.validate_cache_inventory(tmp_path, (FINALS, OPENER))
+
+    other = tmp_path / "other"
+    write_player_games_fixture(other / box_rosters.PLAYER_GAMES_SUBDIR, THREE_ROWS)
+    sleeps = []
+    session = FakeSession([FakeResponse(404, b"{}", {}), *_pair_responses(FINALS)])
+    with pytest.raises(cache.SourceAccessError, match="HTTP 404"):
+        box_rosters.fetch(
+            other, session=session, pacer=_no_wait_pacer(), sleeper=sleeps.append
+        )
+    assert sleeps == []
+    assert session.calls == 1
+    assert box_rosters.read_cached(other, FINALS, "traditional") is None
+
+
+def test_fetch_stops_without_retry_on_a_schema_invalid_200(tmp_path, monkeypatch):
+    """Would fail if a block page or HTML 200 were retried or cached."""
+    _fetch_environment(tmp_path, monkeypatch)
+    sleeps = []
+    html = b"<!DOCTYPE html><html><body>Access Denied</body></html>"
+    session = FakeSession([FakeResponse(200, html, {}), *_pair_responses(FINALS, OPENER)])
+
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="JSON"):
+        box_rosters.fetch(
+            tmp_path, session=session, pacer=_no_wait_pacer(), sleeper=sleeps.append
+        )
+
+    assert sleeps == []
+    assert session.calls == 1
+    for game in (FINALS, OPENER):
+        for endpoint in ("traditional", "summary"):
+            destination = box_rosters.cache_path(
+                tmp_path, game.season, game.game_id, endpoint
+            )
+            assert not destination.exists()
+            assert not _sidecar(destination).exists()
+            assert box_rosters.read_cached(tmp_path, game, endpoint) is None
+
+
+def test_fetch_paces_requests_at_least_1_5_seconds_apart(tmp_path, monkeypatch):
+    """Would fail if consecutive request starts were closer than 1.5 s."""
+    _fetch_environment(tmp_path, monkeypatch)
+    clock = FakeClock()
+    pacer = pbp.RequestPacer(now=clock.now, sleeper=clock.sleep)
+    session = FakeSession(_pair_responses(FINALS, OPENER))
+
+    box_rosters.fetch(tmp_path, session=session, pacer=pacer, sleeper=_fail_sleeper)
+
+    assert session.calls == 4
+    assert clock.sleeps == [1.5, 1.5, 1.5]
+    assert pacer.minimum_interval_s == box_rosters.MIN_REQUEST_INTERVAL_S == 1.5

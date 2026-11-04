@@ -1048,6 +1048,10 @@ def _request_bytes(
     raise AssertionError("unreachable: _request_bytes retry loop exited without result")
 
 
+# Public name for callers outside this module (box_rosters.fetch).
+request_bytes = _request_bytes
+
+
 def _worklist_context(season: int, game_type: str) -> str:
     return f"PBP worklist season={season} game_type={game_type!r}"
 

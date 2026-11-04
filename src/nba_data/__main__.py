@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from nba_data import (
+    box_rosters,
     bref,
     build,
     historical_bref,
@@ -70,6 +71,13 @@ def main() -> None:
         action="append",
         choices=player_logs.SOURCE_SEASONS,
     )
+    fetch_box_rosters = commands.add_parser("fetch-box-rosters")
+    fetch_box_rosters.add_argument(
+        "--season",
+        type=int,
+        action="append",
+        choices=box_rosters.PUBLICATION_SEASONS,
+    )
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
     args = parser.parse_args()
@@ -121,6 +129,13 @@ def main() -> None:
             else player_logs.SOURCE_SEASONS
         )
         player_logs.fetch(data, selected)
+    elif args.command == "fetch-box-rosters":
+        selected = (
+            tuple(sorted(set(args.season)))
+            if args.season
+            else box_rosters.PUBLICATION_SEASONS
+        )
+        box_rosters.fetch(data, selected)
     elif args.command == "build-pbp":
         pbp_build.run(data)
     elif args.command == "build-player-games":

@@ -655,3 +655,71 @@ def test_build_player_games_rejects_season_flag(monkeypatch, tmp_path):
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def _fake_box_rosters(calls):
+    return type(
+        "BoxRosters", (), {
+            "PUBLICATION_SEASONS": tuple(range(2012, 2027)),
+            "fetch": staticmethod(lambda data, seasons: calls.append(
+                (data, tuple(seasons))
+            )),
+        },
+    )
+
+
+def test_fetch_box_rosters_defaults_to_all_publication_seasons(monkeypatch, tmp_path):
+    """Would fail if the box-roster command omitted its complete default scope."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli, "box_rosters", _fake_box_rosters(calls), raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "fetch-box-rosters"]
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path, tuple(range(2012, 2027)))]
+
+
+def test_fetch_box_rosters_forwards_deduplicated_seasons(monkeypatch, tmp_path):
+    """Would fail if repeatable --season flags were repeated or left unsorted."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli, "box_rosters", _fake_box_rosters(calls), raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-box-rosters",
+            "--season", "2026", "--season", "2013", "--season", "2026",
+        ],
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path, (2013, 2026))]
+
+
+@pytest.mark.parametrize("season", ["2011", "2027", "not-a-season"])
+def test_fetch_box_rosters_rejects_season_outside_2012_2026(
+    monkeypatch, tmp_path, season
+):
+    """Would fail if a season outside the publication scope reached the fetcher."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(cli, "box_rosters", _fake_box_rosters(calls), raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-box-rosters",
+            "--season", season,
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
