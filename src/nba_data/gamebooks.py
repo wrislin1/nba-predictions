@@ -128,12 +128,25 @@ def _decode_object(payload: bytes, label: str) -> dict:
 
 
 def validate_comparison(path: Path) -> None:
-    """Accept a comparison record body only when it is a UTF-8 JSON object."""
+    """Accept a comparison record body only when it is a UTF-8 JSON object of the record shape.
+
+    The shape check ``write_comparison`` applies before publishing (exact keys
+    per record, team and list; a ten-digit ``game_id``; a ``differences``
+    count equal to the listed differences; a null or non-empty
+    ``reviewer_note``) runs again on every read, so a hand-edited record
+    whose sidecar was re-signed cannot be bound by the build or by the
+    snapshot layout check.
+    """
     try:
         payload = Path(path).read_bytes()
     except OSError as exc:
         raise GamebookError(f"cannot read comparison record {path}: {exc}") from exc
-    _decode_object(payload, f"comparison record {path}")
+    label = f"comparison record {path}"
+    document = _decode_object(payload, label)
+    try:
+        _validate_record(document)
+    except GamebookError as exc:
+        raise GamebookError(f"{label}: {exc}") from exc
 
 
 def _require_identity(metadata: Mapping, expected: Mapping[str, object], path: Path) -> None:

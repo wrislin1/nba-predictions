@@ -2598,3 +2598,140 @@ def test_audit_script_writes_review_artifacts_to_an_empty_directory(tmp_path, mo
     as_file.write_text("x", encoding="utf-8")
     refused = _run_audit(tmp_path, as_file)
     assert refused.returncode != 0 and "directory" in refused.stderr
+
+
+# --------------------------------------------------------------------------
+# whole-branch review fixes
+# --------------------------------------------------------------------------
+
+
+def _bulls_hornets_summary_with_code(code: str) -> bytes:
+    """The full-roster ``CHI@CHA`` summary body with its ``gameCode`` replaced."""
+    document = json.loads(bulls_hornets_bodies(full_roster=True)["summary"])
+    document["boxScoreSummary"]["gameCode"] = code
+    return box_tests.encode(document)
+
+
+def test_schedule_date_disagreement_assembles_fails_closed_and_is_an_audit_candidate(tmp_path, monkeypatch):
+    """Would fail if a gameCode dated a day off the player_games date crashed the
+    index (one game per run) instead of reaching the ledger gate and the audit."""
+    override = {(BULLS_HORNETS.game_id, "summary"): _bulls_hornets_summary_with_code("20240201/CHICHA")}
+    raw_root, player_games_root, ledger = seed_full_tree(tmp_path, monkeypatch, body_overrides=override)
+    approved = availability_build.load_exceptions(ledger)
+    index = box_rosters.load_player_games_index(player_games_root)
+    part_a = availability_build.assemble_part_a(raw_root, index, approved)
+    expected = {
+        "game_et_raw": "2024-01-31T19:00:00Z", "game_code_raw": "20240201/CHICHA", "game_date": "2024-01-31",
+    }
+    assert part_a.schedule_observed == {BULLS_HORNETS.game_id: expected}
+    # the index alone still refuses the bare disagreement; the assembler's seam is what builds
+    with pytest.raises(availability_resolve.AvailabilityResolveError, match="differs"):
+        availability_resolve.build_game_index(
+            part_a.schedule, part_a.rosters, part_a.team_strings, part_a.tricodes,
+            schedule_exceptions=approved["schedule_dates"],
+        )
+
+    # (a) Part B assembles and the listing resolves to the game under the player_games date
+    part_b = availability_build.assemble_part_b(raw_root, part_a, approved)
+    chi_cha = part_b.listings[part_b.listings["matchup_raw"] == "CHI@CHA"]
+    assert len(chi_cha) == 11
+    assert set(_col(chi_cha, "game_date")) == {date(2024, 1, 31)}
+    assert set(chi_cha["game_id"]) == {BULLS_HORNETS.game_id}
+    assert set(chi_cha["game_resolution"]) == {"resolved"}
+    assert dict(part_b.listings.dtypes[list(availability_build._LISTING_DTYPES)].astype(str)) == {
+        name: str(pd.Series(dtype=dtype).dtype) for name, dtype in availability_build._LISTING_DTYPES.items()
+    }
+
+    # (b) the build fails closed at the ledger gate, naming the candidate in full
+    with pytest.raises(
+        availability_build.AvailabilityBuildError,
+        match=rf"schedule_dates missing approvals.*{BULLS_HORNETS.game_id}.*20240201/CHICHA",
+    ):
+        _build(raw_root, player_games_root, _stage(tmp_path, "one"), ledger)
+    assert not any((tmp_path / "one").iterdir())
+
+    # (c) the exact approved entry passes and is applied; a drifted one still fails
+    approved_ledger = write_ledger(tmp_path, full_ledger(schedule_dates={
+        BULLS_HORNETS.game_id: {**expected, "note": "gameCode is dated the UTC day after the ET tip-off"},
+    }))
+    manifest = _build(raw_root, player_games_root, _stage(tmp_path, "two"), approved_ledger)
+    assert manifest["exception_ledger"]["applied"]["schedule_dates"] == {BULLS_HORNETS.game_id: expected}
+    assert manifest["exception_ledger"]["counts"]["schedule_dates"] == 1
+    assert manifest["validation"]["resolution"]["2024"]["identity_rate"] == 1.0
+    drifted = write_ledger(tmp_path, full_ledger(schedule_dates={
+        BULLS_HORNETS.game_id: {**expected, "game_date": "2024-02-01", "note": "wrong side of midnight"},
+    }))
+    with pytest.raises(availability_build.AvailabilityBuildError, match="schedule_dates"):
+        _build(raw_root, player_games_root, _stage(tmp_path, "three"), drifted)
+
+    # (d) the audit script (committed ledger, no gates) lists the candidate
+    output = tmp_path / "review"
+    result = _run_audit(tmp_path, output)
+    assert result.returncode == 0, result.stderr
+    candidates = json.loads((output / "ledger_candidates.json").read_text(encoding="utf-8"))
+    assert candidates["schedule_dates"] == {BULLS_HORNETS.game_id: {**expected, "note": ""}}
+    review = (output / "review.md").read_text(encoding="utf-8")
+    assert f"| schedule_dates | {BULLS_HORNETS.game_id} | new |" in review
+    assert f"| {BULLS_HORNETS.game_id} | 2024-01-31T19:00:00Z | 20240201/CHICHA | 2024-01-31 |" in review
+
+
+def test_identical_listings_to_previous_compares_one_report_at_a_time():
+    """Would fail if the running digest depended on row order, on reports outside
+    the chain, or treated a parsed version without rows differently from an
+    empty multiset."""
+    def version(report_id, slot_et, status="ok", season=2024):
+        return {"report_id": report_id, "season": season, "report_slot_et": slot_et, "parse_status": status}
+
+    def row(report_id, row_number, *, player="Ball, Lonzo", status="Out", game_date=date(2024, 1, 31)):
+        return {
+            "report_id": report_id, "row_number": row_number, "page": 1,
+            "game_date": game_date, "game_time_raw": "07:00 (ET)", "matchup_raw": "CHI@CHA",
+            "team_raw": "Chicago Bulls", "is_placeholder": False, "placeholder_raw": None,
+            "player_name_raw": player, "current_status_raw": status, "reason_raw": "Injury/Illness - Left Knee; Surgery",
+            "category_raw": None, "previous_status_raw": None,
+        }
+
+    first, second, third, fourth, fifth = (
+        f"Injury-Report_2024-01-31_{hour:02d}PM" for hour in (1, 2, 3, 4, 5)
+    )
+    versions = pd.DataFrame.from_records([
+        version(first, datetime(2024, 1, 31, 13)),
+        version(second, datetime(2024, 1, 31, 14)),
+        version(third, datetime(2024, 1, 31, 15)),      # parsed, but no listing rows at all
+        version(fourth, datetime(2024, 1, 31, 16)),     # parsed, no rows: equals the empty previous
+        version(fifth, datetime(2024, 1, 31, 17)),
+    ])
+    listings = pd.DataFrame.from_records([
+        row(first, 1), row(first, 2, player="Craig, Torrey"), row(first, 3, player="Ball, Lonzo"),
+        # the same multiset as the first, rows interleaved with another report's
+        row(second, 1, player="Craig, Torrey"),
+        row(fifth, 1, player="Ball, Lonzo", game_date=date(2024, 2, 1)),
+        row(second, 2), row(second, 3),
+    ])
+    shuffled = listings.sample(frac=1, random_state=7)
+
+    flags = availability_build.identical_listings_to_previous(versions, listings)
+
+    assert dict(zip(versions["report_id"], flags)) == {
+        first: False, second: True, third: False, fourth: True, fifth: False,
+    }
+    assert str(flags.dtype) == "boolean"
+    pd.testing.assert_series_equal(
+        availability_build.identical_listings_to_previous(versions, shuffled), flags,
+    )
+    # typed (nullable) frames compare like plain ones: NA and None are the same absence
+    typed = listings.astype({
+        "report_id": "string", "player_name_raw": "string", "placeholder_raw": "string",
+        "category_raw": "string", "previous_status_raw": "string", "is_placeholder": "boolean",
+    })
+    pd.testing.assert_series_equal(
+        availability_build.identical_listings_to_previous(versions, typed), flags,
+    )
+    # a differing date, status or an extra row breaks the chain
+    for mutate in (
+        lambda frame: frame.assign(game_date=[date(2024, 2, 1) if rid == second else d for rid, d in zip(frame["report_id"], frame["game_date"])]),
+        lambda frame: frame.assign(current_status_raw=["Questionable" if rid == second else s for rid, s in zip(frame["report_id"], frame["current_status_raw"])]),
+        lambda frame: pd.concat([frame, pd.DataFrame.from_records([row(second, 4)])], ignore_index=True),
+    ):
+        changed = availability_build.identical_listings_to_previous(versions, mutate(listings))
+        assert dict(zip(versions["report_id"], changed))[second] is False or not bool(changed.iloc[1])

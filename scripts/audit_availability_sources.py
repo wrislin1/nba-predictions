@@ -474,6 +474,10 @@ def audit(data_dir: Path, *, gamebook_sample: bool) -> dict[str, bytes]:
         ) + "\n").encode("utf-8"),
         "resolution.json": _json_bytes({str(season): entry for season, entry in metrics.items()}),
         "disagreement_patterns.json": _json_bytes({str(season): entry for season, entry in agreement.items()}),
+        # TODO(task-20): the owner copies reviewed entries from this document
+        # into src/nba_data/reference/availability_exceptions.json at the Task
+        # 20 review checkpoint, giving each a non-empty note; the ledger changes
+        # only there, and nothing in this script writes it.
         "ledger_candidates.json": _json_bytes(ledger_candidates(observed)),
     }
     if sample is not None:

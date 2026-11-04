@@ -12,10 +12,11 @@ layout in four independent gates:
    or regular file, and every body/sidecar pair verifies through
    ``cache.read_attested`` with the owning module's validator (box rosters by
    endpoint, report PDFs by signature, every inventory generation of every
-   month -- not only the highest -- by the generation validator, derivative
-   assets by column set, gamebooks by signature, comparison records as JSON
-   objects); an orphan body, an orphan sidecar, a stray ``.part`` file or an
-   unrecognised name fails;
+   month -- not only the highest -- by the generation validator and its
+   sidecar identity (provider, resource, month, its own generation number and
+   length), derivative assets by column set, gamebooks by signature,
+   comparison records by the record shape); an orphan body, an orphan
+   sidecar, a stray ``.part`` file or an unrecognised name fails;
 2. ``box_rosters.validate_cache_inventory`` passes for the exact worklist of
    the ``player_games`` publication;
 3. ``availability_build.validate_publication`` recomputes the publication
@@ -215,7 +216,7 @@ def _attest_box_rosters(root: Path, files: dict[str, Path]) -> int:
 def _attest_injury_reports(data_dir: Path, root: Path, files: dict[str, Path]) -> tuple[int, int]:
     label = "injury_reports"
     pdfs = 0
-    generation_months: dict[str, int] = {}
+    generation_bodies: dict[str, list[tuple[int, Path]]] = {}
     for name in _pair_bodies(files, label=label):
         parts = name.split("/")
         if len(parts) != 3:
@@ -248,18 +249,38 @@ def _attest_injury_reports(data_dir: Path, root: Path, files: dict[str, Path]) -
         elif kind == "inventory":
             if injury_reports.GENERATION_PATTERN.match(file_name) is None:
                 raise _unexpected(label, name)
-            generation_months[month] = generation_months.get(month, 0) + 1
+            generation_bodies.setdefault(month, []).append(
+                (injury_reports.generation_number(path), path),
+            )
         else:
             raise _unexpected(label, name)
     generations = 0
-    for month in sorted(generation_months):
+    for month in sorted(generation_bodies):
         current, damaged = injury_reports.read_current_inventory(data_dir, month)
         if current is None or damaged:
             names = sorted(path.name for path in damaged) or ["(none verify)"]
             raise AvailabilitySnapshotError(
                 f"inventory month {month}: generations do not verify: {', '.join(names)}"
             )
-        generations += generation_months[month]
+        # read_current_inventory proves every body; each sidecar must also
+        # name this month and its own generation number, like every other
+        # bound pair, so a generation cannot be re-signed under another slot.
+        for number, path in sorted(generation_bodies[month]):
+            payload, metadata = _attested(
+                path, injury_reports._inventory_validator(month), label=label,
+            )
+            _require_identity(
+                metadata,
+                {
+                    "provider": "nba_official",
+                    "resource": "injury_report_inventory",
+                    "month": month,
+                    "generation": number,
+                    "content_length": len(payload),
+                },
+                path,
+            )
+            generations += 1
     return pdfs, generations
 
 

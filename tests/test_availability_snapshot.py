@@ -15,6 +15,7 @@ file permissions: every failure is driven through content or layout.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -281,6 +282,18 @@ def _missing_raw_subtree(tree: Tree) -> str:
     return "missing raw subtree"
 
 
+def _mis_signed_generation_sidecar(tree: Tree, field: str, value) -> str:
+    """Rewrite one identity field of a generation sidecar; the body still hashes."""
+    sidecar = tree.raw_root / "nba_injury_reports/inventory/2024-01/gen-0001.json.meta.json"
+    document = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert document[field] != value
+    document[field] = value
+    sidecar.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    current, damaged = injury_reports.read_current_inventory(tree.data_dir, "2024-01")
+    assert current["generation"] == 1 and damaged == ()
+    return rf"raw sidecar identity mismatch .*gen-0001\.json: {field}"
+
+
 RAW_DEFECTS = {
     "missing_box_pair": _missing_box_pair,
     "orphan_box_body": _orphan_box_body,
@@ -293,6 +306,9 @@ RAW_DEFECTS = {
     "stray_part_file": _stray_part_file,
     "unrecognised_box_entry": _unrecognised_box_entry,
     "missing_raw_subtree": _missing_raw_subtree,
+    "generation_sidecar_wrong_generation": functools.partial(_mis_signed_generation_sidecar, field="generation", value=2),
+    "generation_sidecar_wrong_month": functools.partial(_mis_signed_generation_sidecar, field="month", value="2024-02"),
+    "generation_sidecar_wrong_resource": functools.partial(_mis_signed_generation_sidecar, field="resource", value="injury_report"),
 }
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -325,3 +326,53 @@ def test_select_gamebook_sample_is_deterministic_and_covers_the_required_cases()
     ]
     with pytest.raises(gamebooks.GamebookError, match="game_code_raw"):
         gamebooks.select_gamebook_sample(schedule.drop(columns=["game_code_raw"]), roster_counts)
+
+
+def test_validate_comparison_rejects_a_hand_edited_record_that_still_hashes(tmp_path):
+    """Would fail if a comparison record with wrong keys or a differences count
+    disagreeing with its lists could be bound once its sidecar is re-signed."""
+    data = tmp_path / "data"
+    names = {
+        "OKC": {"active": ["Shai Gilgeous-Alexander"], "inactive": ["Nikola Topić"]},
+        "HOU": {"active": ["Alperen Şengün", "Jabari Smith Jr."], "inactive": ["Fred VanVleet"]},
+    }
+    record = gamebooks.compare_rosters(OPENER_ID, names, opener_rosters())
+    record["reviewer_note"] = "Dieng is a two-way player the gamebook lists on the second page."
+    path = gamebooks.write_comparison(data, record)
+    sidecar_path = path.with_name(path.name + ".meta.json")
+    body, sidecar = path.read_bytes(), _sidecar(path)
+    assert record["differences"] > 0
+
+    def resign(document: dict) -> None:
+        edited = gamebooks.comparison_bytes(document)
+        path.write_bytes(edited)
+        sidecar_path.write_text(json.dumps({
+            **sidecar, "sha256": hashlib.sha256(edited).hexdigest(), "content_length": len(edited),
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    for mutate, match in (
+        (lambda doc: doc.__setitem__("differences", 0), "differences"),
+        (lambda doc: doc.__setitem__("differences", "6"), "differences"),
+        (lambda doc: doc.__setitem__("extra", 1), "exactly the keys"),
+        (lambda doc: doc.pop("reviewer_note"), "exactly the keys"),
+        (lambda doc: doc["teams"]["OKC"].pop("only_in_roster"), "exactly the keys"),
+        (lambda doc: doc["teams"]["OKC"]["only_in_roster"].pop("inactive"), "exactly the keys"),
+        (lambda doc: doc.__setitem__("game_id", "22500001"), "game_id"),
+        (lambda doc: doc.__setitem__("teams", {}), "teams"),
+        (lambda doc: doc.__setitem__("reviewer_note", " "), "reviewer_note"),
+    ):
+        document = json.loads(json.dumps(record))
+        mutate(document)
+        resign(document)
+        with pytest.raises(gamebooks.GamebookError, match=match):
+            gamebooks.validate_comparison(path)
+        with pytest.raises(gamebooks.GamebookError, match=match):
+            gamebooks.read_cached_comparison(data, OPENER_ID)
+    # the error names the record it refused
+    with pytest.raises(gamebooks.GamebookError, match=re.escape(str(path))):
+        gamebooks.validate_comparison(path)
+    # restored byte for byte, the pair binds again
+    path.write_bytes(body)
+    sidecar_path.write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    gamebooks.validate_comparison(path)
+    assert gamebooks.read_cached_comparison(data, OPENER_ID) == (record, sidecar)

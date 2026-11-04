@@ -76,6 +76,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -140,6 +141,13 @@ class AvailabilityBuildError(ValueError):
 
 # --------------------------------------------------------------------------
 # exception ledger
+#
+# TODO(task-20): the packaged ledger at EXCEPTIONS_PATH holds no entries until
+# the Task 20 owner review checkpoint. There the owner copies reviewed
+# candidates from the ``ledger_candidates.json`` that
+# ``scripts/audit_availability_sources.py`` writes into it, each with a
+# non-empty ``note``; the ledger changes only at that checkpoint, never from
+# a build or an audit run.
 # --------------------------------------------------------------------------
 
 
@@ -976,7 +984,28 @@ def _plain(value: object) -> object:
         pass
     if isinstance(value, pd.Timestamp):
         return value.to_pydatetime()
+    if isinstance(value, np.generic):
+        return value.item()
     return value
+
+
+def _listing_digest(identity: pd.DataFrame) -> str:
+    """SHA-256 of one report's listing multiset.
+
+    ``identity`` holds that report's :data:`LISTING_IDENTITY_COLUMNS`; each
+    row becomes the ``repr`` of its plain-value tuple and the sorted keys are
+    hashed in order, so two reports digest equal exactly when their
+    multisets of listing tuples are equal, whatever the row order.
+    """
+    keys = sorted(
+        repr(tuple(_plain(value) for value in row)).encode("utf-8")
+        for row in identity.itertuples(index=False, name=None)
+    )
+    digest = hashlib.sha256()
+    for key in keys:
+        digest.update(key)
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def identical_listings_to_previous(
@@ -989,9 +1018,13 @@ def identical_listings_to_previous(
     ``LISTING_IDENTITY_COLUMNS``. Within each season, versions are visited in
     ``(report_slot_et, report_id)`` order; an excluded version is ``False``
     and leaves the chain untouched, the first parsed version of a season is
-    ``False``, and a parsed version is ``True`` when the ``Counter`` of its
+    ``False``, and a parsed version is ``True`` when the multiset of its
     listing tuples equals the previous parsed version's. The result is a
     nullable-boolean Series aligned to ``versions``' index.
+
+    Only one report's tuples are in memory at a time: each parsed version's
+    rows are sliced by position and reduced to :func:`_listing_digest`, and
+    the chain keeps one digest per season.
     """
     for column in ("report_id", "season", "report_slot_et", "parse_status"):
         if column not in versions.columns:
@@ -999,13 +1032,15 @@ def identical_listings_to_previous(
     for column in ("report_id", *LISTING_IDENTITY_COLUMNS):
         if column not in listings.columns:
             raise AvailabilityBuildError(f"listings is missing column {column!r}")
-    multisets: dict[str, Counter] = {}
-    identity = listings[["report_id", *LISTING_IDENTITY_COLUMNS]]
-    for row in identity.itertuples(index=False, name=None):
-        multisets.setdefault(str(row[0]), Counter())[tuple(_plain(v) for v in row[1:])] += 1
+    identity = listings[list(LISTING_IDENTITY_COLUMNS)]
+    positions = {
+        str(report_id): rows
+        for report_id, rows in listings.groupby("report_id", sort=False).indices.items()
+    }
+    empty_digest = _listing_digest(identity.iloc[0:0])
 
     flags: dict = {}
-    previous: dict[int, Counter] = {}
+    previous: dict[int, str] = {}
     ordered = versions.sort_values(_VERSION_ORDER, kind="stable")
     for label, row in ordered.iterrows():
         status = str(row["parse_status"])
@@ -1017,7 +1052,8 @@ def identical_listings_to_previous(
             flags[label] = False
             continue
         season = int(row["season"])
-        current = multisets.get(str(row["report_id"]), Counter())
+        rows = positions.get(str(row["report_id"]))
+        current = empty_digest if rows is None else _listing_digest(identity.iloc[rows])
         flags[label] = season in previous and previous[season] == current
         previous[season] = current
     return pd.Series(
@@ -1065,11 +1101,14 @@ def assemble_part_b(raw_root: Path, part_a: PartA, approved: dict) -> PartB:
     }
     reports: list[tuple[_PresentReport, str]] = []
     observed: dict[str, dict] = {}
-    listing_rows: list[dict] = []
-    # Each present body is gated and reduced to its version fields and listing
-    # rows as soon as it is read, then released: a whole-tree build never
-    # holds every body or every parsed Listing at once.
+    month_frames: list[pd.DataFrame] = []
+    # Each present body is gated and reduced to its version fields and a typed
+    # listings frame (the listing dtypes, one frame per report) as soon as it
+    # is read, then released: a whole-tree build never holds every body, every
+    # parsed Listing or every listing row as a dict at once. The per-report
+    # frames are concatenated once per month and the months once at the end.
     for month in sorted(by_month):
+        report_frames: list[pd.DataFrame] = []
         current, path = _current_generation(data_dir, month)
         inventories.append({
             "month": month,
@@ -1106,16 +1145,34 @@ def assemble_part_b(raw_root: Path, part_a: PartA, approved: dict) -> PartB:
                 observed[slot.report_id] = entry
             reports.append((report, status))
             if status != "excluded":
-                listing_rows.extend(_listing_rows(report, parsed_listings))
+                rows = _listing_rows(report, parsed_listings)
+                if rows:
+                    report_frames.append(_listings_frame(rows))
+                del rows
             del parsed_listings
+        if report_frames:
+            month_frames.append(pd.concat(report_frames, ignore_index=True))
+        del report_frames
 
     index = availability_resolve.build_game_index(
         part_a.schedule, part_a.rosters, part_a.team_strings, part_a.tricodes,
-        schedule_exceptions=approved["schedule_dates"],
+        # An observed schedule_dates entry equals its schedule row by
+        # construction, so the index builds keyed by the player_games date for
+        # every game whether or not the owner has approved it yet, instead of
+        # raising for one game per run; approved entries take precedence and
+        # are still drift-checked. validate_exceptions then fails the build
+        # closed with the full candidate list, and the audit lists every
+        # candidate.
+        schedule_exceptions={**part_a.schedule_observed, **approved["schedule_dates"]},
     )
+    all_listings = (
+        pd.concat(month_frames, ignore_index=True) if month_frames else _listings_frame([])
+    )
+    del month_frames
     resolved = availability_resolve.resolve_listings(
-        _listings_frame(listing_rows), index, approved["team_resolution"],
+        all_listings, index, approved["team_resolution"],
     )
+    del all_listings
     team_observed = availability_resolve.team_resolution_observed(resolved, index)
     listings = resolved[[*INJURY_REPORT_LISTINGS_SCHEMA.names, LISTINGS_SLOT_COLUMN]]
     listings = listings.sort_values(_LISTING_ORDER, kind="stable").reset_index(drop=True)
@@ -1573,8 +1630,10 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
         versions, ("report_id", "season", "parse_status", "report_time_printed_et"), "versions",
     )
     _require_columns(listings, _OUR_COMPARISON_COLUMNS, "listings")
-    by_report = {
-        str(report_id): frame for report_id, frame in listings.groupby("report_id", sort=False)
+    # positions per report, sliced on demand: never one frame per report at once
+    positions = {
+        str(report_id): rows
+        for report_id, rows in listings.groupby("report_id", sort=False).indices.items()
     }
     empty = listings.iloc[0:0]
 
@@ -1625,8 +1684,10 @@ def derivative_agreement(part_b: PartB, derivative_root: Path) -> dict:
                 continue
             matched_minutes.add(minute)
             compared += 1
+            rows = positions.get(report_id)
             comparison = _compare_rows(
-                by_report.get(report_id, empty), theirs_rows, report_id=report_id, season=season,
+                empty if rows is None else listings.iloc[rows], theirs_rows,
+                report_id=report_id, season=season,
             )
             for key in _AGREEMENT_COUNTS:
                 totals[key] += comparison[key]
@@ -2410,6 +2471,12 @@ def render_audit(manifest: dict, *, snapshot_name: str | None, restore_verified:
     inspection findings, the restore-test command sequence and the
     file-naming correction.
     """
+    # TODO(task-22): the owner-machine deliverables that extend this skeleton
+    # by hand are README.md (the availability section), docs/data-dictionary.md
+    # (the four published tables) and
+    # docs/audits/2026-11-<dd>-availability-source-audit.md (this text plus the
+    # inspection findings, the restore-test command sequence and the
+    # file-naming correction); none of them exists in this branch.
     if not isinstance(manifest, dict) or set(manifest) != set(MANIFEST_KEYS):
         raise AvailabilityBuildError(
             f"manifest top-level keys must be exactly {sorted(MANIFEST_KEYS)}"
