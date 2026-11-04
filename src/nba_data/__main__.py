@@ -9,6 +9,7 @@ from nba_data import (
     historical_bref,
     historical_build,
     hoopr,
+    injury_derivative,
     injury_reports,
     pbp,
     pbp_build,
@@ -100,6 +101,7 @@ def main() -> None:
         "--recheck-unavailable",
         action="store_true",
     )
+    commands.add_parser("fetch-injury-derivative")
     commands.add_parser("build-pbp")
     commands.add_parser("build-player-games")
     args = parser.parse_args()
@@ -164,6 +166,8 @@ def main() -> None:
             data, selected, recheck_unavailable=args.recheck_unavailable,
         )
         print(json.dumps(summary, sort_keys=True))
+    elif args.command == "fetch-injury-derivative":
+        injury_derivative.fetch(data, injury_derivative.SEASONS)
     elif args.command == "build-pbp":
         pbp_build.run(data)
     elif args.command == "build-player-games":

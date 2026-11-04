@@ -802,3 +802,47 @@ def test_fetch_injury_reports_rejects_a_month_outside_the_window(
 
     assert exc_info.value.code == 2
     assert calls == []
+
+
+def _fake_injury_derivative(calls):
+    return type(
+        "InjuryDerivative", (), {
+            "SEASONS": tuple(range(2019, 2027)),
+            "fetch": staticmethod(lambda data, seasons: calls.append(
+                (data, tuple(seasons))
+            )),
+        },
+    )
+
+
+def test_fetch_injury_derivative_dispatches_all_eight_seasons(monkeypatch, tmp_path):
+    """Would fail if the derivative pin narrowed its scope or grew an option."""
+    cli = load_cli()
+    calls = []
+    monkeypatch.setattr(
+        cli, "injury_derivative", _fake_injury_derivative(calls), raising=False
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["nba_data", "--data-dir", str(tmp_path), "fetch-injury-derivative"]
+    )
+
+    cli.main()
+
+    assert calls == [(tmp_path.resolve(), tuple(range(2019, 2027)))]
+
+    # The command takes no options: a season flag is rejected before dispatch.
+    calls.clear()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "nba_data", "--data-dir", str(tmp_path), "fetch-injury-derivative",
+            "--season", "2026",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    assert calls == []
