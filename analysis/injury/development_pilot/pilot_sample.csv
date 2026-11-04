@@ -1,0 +1,47 @@
+stratum,era,person_id,player_name,country,college,match_method,draft_year,draft_round,draft_number,from_year,to_year,nba_regular_games_2019_2026,espn_athlete_id,college_seasons_espn,college_games_espn,college_minutes_espn,first_college_season,last_college_season,blind_subset,blind_subset_b
+A_us_college_multi,early,203110,Draymond Green,USA,Michigan State,name_unique_plausible,2012.0,2.0,35.0,2012,2026,482,41760.0,4,145.0,3619.0,2009.0,2012.0,True,False
+A_us_college_multi,early,203524,Solomon Hill,USA,Arizona,name_unique_plausible,2013.0,1.0,23.0,2013,2021,187,45855.0,4,139.0,4030.0,2010.0,2013.0,True,False
+A_us_college_multi,early,203914,Gary Harris,USA,Michigan State,name_unique_plausible,2014.0,1.0,19.0,2014,2025,411,62613.0,2,69.0,2141.0,2013.0,2014.0,False,False
+A_us_college_multi,early,1626150,Andrew Harrison,USA,Kentucky,name_unique_plausible,2015.0,2.0,44.0,2016,2018,17,66615.0,2,79.0,2261.0,2014.0,2015.0,True,False
+A_us_college_multi,late,1629833,Keljin Blevins,USA,Montana State,crosswalk_id,,,,2020,2021,48,3152335.0,4,117.0,2710.0,2015.0,2019.0,False,False
+A_us_college_multi,late,1630241,Sam Merrill,USA,Utah State,crosswalk_id,2020.0,2.0,60.0,2020,2026,225,4066757.0,4,131.0,4359.0,2017.0,2020.0,False,False
+A_us_college_multi,late,1642910,John Tonje,USA,Wisconsin,crosswalk_id,2025.0,2.0,53.0,2025,2026,6,4593043.0,6,167.0,3839.0,2020.0,2025.0,False,False
+A_us_college_multi,late,1642918,Alijah Martin,USA,Florida,crosswalk_id,2025.0,2.0,39.0,2025,2026,23,4702656.0,5,162.0,4301.0,2021.0,2025.0,True,False
+B_us_college_one,early,1626157,Karl-Anthony Towns,USA,Kentucky,crosswalk_id,2015.0,1.0,1.0,2015,2026,474,3136195.0,1,39.0,824.0,2015.0,2015.0,True,False
+B_us_college_one,early,1628964,Mo Bamba,USA,Texas,crosswalk_id,2018.0,1.0,6.0,2018,2026,368,4277919.0,1,30.0,906.0,2018.0,2018.0,False,True
+B_us_college_one,early,1629636,Darius Garland,USA,Vanderbilt,crosswalk_id,2019.0,1.0,5.0,2019,2026,427,4396907.0,1,5.0,139.0,2019.0,2019.0,False,True
+B_us_college_one,early,1629659,Talen Horton-Tucker,USA,Iowa State,crosswalk_id,2019.0,2.0,46.0,2019,2024,305,4396991.0,1,35.0,952.0,2019.0,2019.0,False,False
+B_us_college_one,late,1630271,Brodric Thomas,USA,Truman State,crosswalk_id,,,,2020,2021,44,4407254.0,1,1.0,30.0,2019.0,2019.0,False,True
+B_us_college_one,late,1630536,Sharife Cooper,USA,Auburn,crosswalk_id,2021.0,2.0,48.0,2021,2025,54,4432173.0,1,12.0,397.0,2021.0,2021.0,False,False
+B_us_college_one,late,1641729,Brice Sensabaugh,USA,Ohio State,crosswalk_id,2023.0,1.0,28.0,2023,2026,178,5105839.0,1,33.0,807.0,2023.0,2023.0,False,False
+B_us_college_one,late,1642848,Tre Johnson,USA,Texas,crosswalk_id,2025.0,1.0,6.0,2025,2026,60,5238230.0,1,33.0,1142.0,2025.0,2025.0,True,False
+C_us_no_college,early,2544,LeBron James,USA,St. Vincent-St. Mary HS (OH),unresolved,2003.0,1.0,1.0,2003,2026,479,1966.0,0,,,,,False,True
+C_us_no_college,early,2733,Shaun Livingston,USA,Peoria Central HS (IL),unresolved,2004.0,1.0,4.0,2004,2018,64,2393.0,0,,,,,False,False
+C_us_no_college,early,2747,JR Smith,USA,No College,unresolved,2004.0,1.0,18.0,2004,2019,17,2444.0,0,,,,,True,False
+C_us_no_college,early,101123,Gerald Green,USA,No College,unresolved,2005.0,1.0,18.0,2005,2018,73,2761.0,0,,,,,False,True
+C_us_no_college,early,101139,CJ Miles,USA,Skyline HS (TX),unresolved,2005.0,2.0,34.0,2005,2021,64,2778.0,0,,,,,False,False
+C_us_no_college,early,1629014,Anfernee Simons,USA,Edgewater HS (FL),unresolved,2018.0,1.0,24.0,2018,2026,444,4351851.0,0,,,,,False,True
+C_us_no_college,early,1629647,Darius Bazley,USA,Princeton HS (OH),unresolved,2019.0,1.0,23.0,2019,2023,237,4423545.0,0,,,,,False,False
+C_us_no_college,late,1630762,Phillip Wheeler,USA,Ranney School (HS),unresolved,,,,2024,2024,5,4909710.0,0,,,,,False,False
+D_intl_no_us_college,early,203095,Evan Fournier,France,Poitiers Basket 86,unresolved,2012.0,1.0,20.0,2012,2023,328,6588.0,0,,,,,True,False
+D_intl_no_us_college,early,203518,Alex Abrines,Spain,FC Barcelona,unresolved,2013.0,2.0,32.0,2016,2018,31,2995702.0,0,,,,,False,False
+D_intl_no_us_college,early,204060,Joe Ingles,Australia,Maccabi Tel Aviv,unresolved,,,,2014,2025,426,2968436.0,0,,,,,False,True
+D_intl_no_us_college,early,1627823,Juancho Hernangomez,Spain,Estudiantes,unresolved,2016.0,1.0,15.0,2016,2022,252,4017839.0,0,,,,,True,False
+D_intl_no_us_college,late,1627822,Petr Cornelie,France,Pau Orthez,unresolved,2016.0,2.0,53.0,2021,2021,13,3899009.0,0,,,,,False,False
+D_intl_no_us_college,late,1629686,Deividas Sirvydis,Lithuania,Lietuvos rytas Vilnius,unresolved,2019.0,2.0,37.0,2020,2021,23,4423883.0,0,,,,,False,True
+D_intl_no_us_college,late,1630166,Deni Avdija,Israel,Maccabi Tel Aviv,unresolved,2020.0,1.0,9.0,2020,2026,425,4683021.0,0,,,,,False,False
+D_intl_no_us_college,late,1631172,Ousmane Dieng,France,New Zealand Breakers,unresolved,2022.0,1.0,11.0,2022,2026,166,4997526.0,0,,,,,False,True
+E_intl_us_college,early,203939,Dwight Powell,Canada,Stanford,name_unique_plausible,2014.0,2.0,45.0,2014,2025,514,51365.0,4,136.0,3569.0,2011.0,2014.0,True,False
+E_intl_us_college,early,1627741,Buddy Hield,Bahamas,Oklahoma,name_unique_plausible,2016.0,1.0,6.0,2016,2026,603,61663.0,4,131.0,4159.0,2013.0,2016.0,False,True
+E_intl_us_college,early,1628449,Chris Boucher,Saint Lucia,Oregon,crosswalk_id,,,,2017,2025,415,3948153.0,2,68.0,1688.0,2016.0,2017.0,False,False
+E_intl_us_college,early,1628961,Kostas Antetokounmpo,Greece,Dayton,crosswalk_id,2018.0,2.0,60.0,2018,2020,22,4066490.0,1,29.0,438.0,2018.0,2018.0,True,False
+E_intl_us_college,late,1630209,Omer Yurtseven,Turkey,Georgetown,name_unique_plausible,,,,2020,2025,122,66768.0,6,215.0,5423.0,2014.0,2020.0,False,True
+E_intl_us_college,late,1630639,A.J. Lawson,Canada,South Carolina,crosswalk_id,,,,2022,2025,107,4067017.0,5,203.0,5697.0,2017.0,2021.0,True,False
+E_intl_us_college,late,1641744,Zach Edey,Canada,Purdue,crosswalk_id,2024.0,1.0,9.0,2024,2026,77,4600663.0,4,138.0,3440.0,2021.0,2024.0,False,False
+E_intl_us_college,late,1641783,Tristan da Silva,Germany,Colorado,crosswalk_id,2024.0,1.0,18.0,2024,2026,151,4702382.0,4,124.0,3339.0,2021.0,2024.0,False,True
+X_unresolved,early,2617,Udonis Haslem,USA,Florida,unresolved,,,,2003,2022,35,2184.0,0,,,,,False,False
+X_unresolved,early,2734,Devin Harris,USA,Wisconsin,unresolved,2004.0,1.0,5.0,2004,2018,68,2382.0,0,,,,,False,False
+X_unresolved,early,2738,Andre Iguodala,USA,Arizona,unresolved,2004.0,1.0,9.0,2004,2022,191,2386.0,0,,,,,False,False
+X_unresolved,early,1628390,Terrance Ferguson,USA,Adelaide,unresolved,2017.0,1.0,21.0,2017,2020,143,4230546.0,0,,,,,False,False
+X_unresolved,late,1631230,Dominick Barlow,USA,Overtime Elite,unresolved,,,,2022,2026,167,4870562.0,0,,,,,False,False
+X_unresolved,late,1641709,Ausar Thompson,USA,Overtime Elite,unresolved,2023.0,1.0,5.0,2023,2026,195,4684742.0,0,,,,,False,False
