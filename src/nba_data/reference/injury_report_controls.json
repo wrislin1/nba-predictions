@@ -1,0 +1,17 @@
+{
+  "controls": {
+    "Injury-Report_2018-12-17_05PM.pdf": {
+      "bytes": 33874,
+      "sha256": "1650d479009749f8a0fe2f665a6e808484967b5b37b6b7a9860d892d99b3ed9d"
+    },
+    "Injury-Report_2024-01-31_05PM.pdf": {
+      "bytes": 80020,
+      "sha256": "e39fe95bff31019494b82c9ec019919e94d8f10494395bce643d2c1ba02be17c"
+    },
+    "Injury-Report_2025-12-22_05_30PM.pdf": {
+      "bytes": 88537,
+      "sha256": "497f46407eaebbfd216b8f9544511675a3e4416856505267de41fc1603d04d30"
+    }
+  },
+  "schema_version": 1
+}
