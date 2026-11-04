@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -512,6 +513,330 @@ def test_game_keys_maps_date_and_tricodes_to_game_id():
     )
     with pytest.raises(box_rosters.BoxRosterValidationError, match="home and away"):
         box_rosters.game_keys(one_sided)
+
+
+# --------------------------------------------------------------------------
+# normalize_game
+# --------------------------------------------------------------------------
+
+
+GAME_ROSTERS_COLUMNS = [
+    "game_id", "person_id", "season", "game_type", "game_date", "nba_team_id",
+    "team_tricode_raw", "franchise_id", "is_home", "roster_status",
+    "first_name_raw", "family_name_raw", "jersey_num", "starter_position_raw",
+    "comment_raw", "comment_code", "minutes_raw",
+]
+GAME_ROSTERS_DTYPES = {
+    "game_id": "string", "person_id": "Int64", "season": "Int64",
+    "game_type": "string", "game_date": "object", "nba_team_id": "Int64",
+    "team_tricode_raw": "string", "franchise_id": "string", "is_home": "boolean",
+    "roster_status": "string", "first_name_raw": "string",
+    "family_name_raw": "string", "jersey_num": "string",
+    "starter_position_raw": "string", "comment_raw": "string",
+    "comment_code": "string", "minutes_raw": "string",
+}
+
+DORT, DIENG, SORBER = 1629652, 1631096, 1642850
+SMITH, FINNEY_SMITH = 1630224, 1627783
+
+
+def opener_index(appearances=None, team_rows=None) -> box_rosters.PlayerGamesIndex:
+    """Return a hand-built index for the opener; defaults match the fixtures."""
+    return box_rosters.PlayerGamesIndex(
+        manifest_binding={
+            "path": "parquet-large/player_games/_manifest.json",
+            "sha256": "0" * 64,
+            "bytes": 2,
+        },
+        games=(OPENER,),
+        appearances={
+            "0022500001": frozenset(
+                {DORT, SMITH} if appearances is None else appearances
+            )
+        },
+        team_rows={
+            "0022500001": (
+                {OKC: ("OKC", "OKC", True), HOU: ("HOU", "HOU", False)}
+                if team_rows is None else team_rows
+            )
+        },
+    )
+
+
+def normalize_opener(*, traditional=None, summary=None, game=OPENER, index=None):
+    return box_rosters.normalize_game(
+        traditional if traditional is not None else fixture_bytes("0022500001", "traditional"),
+        summary if summary is not None else fixture_bytes("0022500001", "summary"),
+        game=game,
+        index=index if index is not None else opener_index(),
+    )
+
+
+def _row(rosters, person_id: int) -> dict:
+    matches = rosters[rosters["person_id"] == person_id]
+    assert len(matches) == 1
+    return matches.iloc[0].to_dict()
+
+
+def _is_null(value) -> bool:
+    return value is None or value is pd.NA
+
+
+def test_normalize_game_derives_roster_status_from_appearances_and_inactives():
+    """Would fail if status, nulls or stripping drifted from the roster contract."""
+    result = normalize_opener()
+    rosters = result.rosters
+
+    assert isinstance(result, box_rosters.NormalizedGame)
+    assert list(rosters.columns) == GAME_ROSTERS_COLUMNS
+    assert {name: str(dtype) for name, dtype in rosters.dtypes.items()} == (
+        GAME_ROSTERS_DTYPES
+    )
+    assert len(rosters) == 5
+    assert set(rosters["game_id"]) == {"0022500001"}
+    assert set(rosters["season"]) == {2026}
+    assert set(rosters["game_type"]) == {"regular"}
+    assert set(rosters["game_date"]) == {date(2025, 10, 21)}
+    assert result.appearance_disagreements == ()
+    assert result.schedule_disagreement is None
+
+    dort = _row(rosters, DORT)
+    assert dort["roster_status"] == "played"
+    assert dort["starter_position_raw"] == "F"
+    assert _is_null(dort["comment_raw"])
+    assert _is_null(dort["comment_code"])
+    assert dort["minutes_raw"] == "32:10"
+    assert dort["jersey_num"] == "5"
+    assert dort["is_home"] == True  # noqa: E712
+    assert (dort["first_name_raw"], dort["family_name_raw"]) == ("Luguentz", "Dort")
+    assert dort["team_tricode_raw"] == "OKC"
+    assert dort["nba_team_id"] == OKC
+
+    dieng = _row(rosters, DIENG)
+    assert dieng["roster_status"] == "active_not_played"
+    assert _is_null(dieng["starter_position_raw"])
+    assert dieng["comment_raw"] == "DNP - Coach's Decision"
+    assert dieng["comment_code"] == "DNP"
+    assert _is_null(dieng["minutes_raw"])
+    assert dieng["jersey_num"] == "13"
+
+    sorber = _row(rosters, SORBER)
+    assert sorber["roster_status"] == "inactive"
+    assert _is_null(sorber["starter_position_raw"])
+    assert _is_null(sorber["comment_raw"])
+    assert _is_null(sorber["comment_code"])
+    assert _is_null(sorber["minutes_raw"])
+    assert sorber["jersey_num"] == "12"
+    assert sorber["is_home"] == True  # noqa: E712
+    assert (sorber["first_name_raw"], sorber["family_name_raw"]) == ("Thomas", "Sorber")
+    assert sorber["team_tricode_raw"] == "OKC"
+
+    finney_smith = _row(rosters, FINNEY_SMITH)
+    assert finney_smith["roster_status"] == "active_not_played"
+    assert finney_smith["comment_raw"] == "DND - Injury/Illness"
+    assert finney_smith["comment_code"] == "DND"
+    assert finney_smith["is_home"] == False  # noqa: E712
+    assert finney_smith["team_tricode_raw"] == "HOU"
+    assert _row(rosters, SMITH)["roster_status"] == "played"
+
+
+def test_normalize_game_orders_rows_and_resolves_franchise_from_player_games_rows():
+    """Would fail if rows were left in body order or franchise_id came from a tricode."""
+    index = opener_index(
+        team_rows={OKC: ("OKC-FR", "OKC", True), HOU: ("HOU-FR", "HOU", False)}
+    )
+
+    rosters = normalize_opener(index=index).rosters
+
+    assert list(
+        zip(rosters["nba_team_id"], rosters["roster_status"], rosters["person_id"])
+    ) == [
+        (HOU, "active_not_played", FINNEY_SMITH),
+        (HOU, "played", SMITH),
+        (OKC, "active_not_played", DIENG),
+        (OKC, "inactive", SORBER),
+        (OKC, "played", DORT),
+    ]
+    assert list(rosters.index) == [0, 1, 2, 3, 4]
+    assert list(rosters["franchise_id"]) == ["HOU-FR", "HOU-FR", "OKC-FR", "OKC-FR", "OKC-FR"]
+    assert list(rosters["team_tricode_raw"]) == ["HOU", "HOU", "OKC", "OKC", "OKC"]
+
+
+def test_normalize_game_schedule_row_parses_scheduled_start_as_utc_and_keeps_raw_strings():
+    """Would fail if gameEt were parsed as UTC or the raw strings were altered."""
+    result = normalize_opener()
+
+    assert result.schedule == {
+        "game_id": "0022500001",
+        "season": 2026,
+        "game_type": "regular",
+        "game_date": date(2025, 10, 21),
+        "scheduled_start_utc": datetime(2025, 10, 21, 23, 30, tzinfo=timezone.utc),
+        "scheduled_start_et_raw": "2025-10-21T19:30:00Z",
+        "game_code_raw": "20251021/HOUOKC",
+    }
+    assert result.schedule["scheduled_start_utc"].utcoffset() == timedelta(0)
+
+    document = fixture_document("0022500001", "summary")
+    document["boxScoreSummary"]["gameTimeUTC"] = "2025-10-22T01:30:00+02:00"
+    shifted = normalize_opener(summary=encode(document))
+    assert shifted.schedule["scheduled_start_utc"] == datetime(
+        2025, 10, 21, 23, 30, tzinfo=timezone.utc
+    )
+    assert shifted.schedule["scheduled_start_utc"].utcoffset() == timedelta(0)
+    assert shifted.schedule_disagreement is None
+
+
+def test_normalize_game_reports_appearance_disagreements_instead_of_guessing():
+    """Would fail if a comment/appearance conflict were classified instead of reported."""
+    credited_dnp = normalize_opener(index=opener_index({DORT, SMITH, DIENG}))
+    assert credited_dnp.appearance_disagreements == (
+        {
+            "season": 2026,
+            "game_id": "0022500001",
+            "person_id": DIENG,
+            "comment_raw": "DNP - Coach's Decision",
+            "minutes_raw": None,
+            "appearance": "credited",
+        },
+    )
+    assert _row(credited_dnp.rosters, DIENG)["roster_status"] == "played"
+
+    uncredited_played = normalize_opener(index=opener_index({SMITH}))
+    assert uncredited_played.appearance_disagreements == (
+        {
+            "season": 2026,
+            "game_id": "0022500001",
+            "person_id": DORT,
+            "comment_raw": None,
+            "minutes_raw": "32:10",
+            "appearance": "absent",
+        },
+    )
+    assert _row(uncredited_played.rosters, DORT)["roster_status"] == "active_not_played"
+
+    ghost = normalize_opener(index=opener_index({DORT, SMITH, 999}))
+    assert ghost.appearance_disagreements == (
+        {
+            "season": 2026,
+            "game_id": "0022500001",
+            "person_id": 999,
+            "comment_raw": None,
+            "minutes_raw": None,
+            "appearance": "credited",
+        },
+    )
+    assert 999 not in set(ghost.rosters["person_id"])
+
+    combined = normalize_opener(index=opener_index({SMITH, DIENG, 999}))
+    assert [entry["person_id"] for entry in combined.appearance_disagreements] == [
+        999, DORT, DIENG,
+    ]
+    assert len(combined.rosters) == 5
+
+    document = fixture_document("0022500001", "traditional")
+    players = document["boxScoreTraditional"]["homeTeam"]["players"]
+    duplicate = dict(players[0])
+    duplicate.update({"personId": SORBER, "firstName": "Thomas", "familyName": "Sorber"})
+    players.append(duplicate)
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="both"):
+        normalize_opener(traditional=encode(document))
+
+
+def test_normalize_game_reports_schedule_disagreement_when_dates_or_tricodes_differ():
+    """Would fail if a date disagreement were silently accepted or tricodes unchecked."""
+    document = fixture_document("0022500001", "summary")
+    document["boxScoreSummary"]["gameEt"] = "2025-10-22T19:30:00Z"
+    result = normalize_opener(summary=encode(document))
+    assert result.schedule_disagreement == {
+        "game_id": "0022500001",
+        "game_et_raw": "2025-10-22T19:30:00Z",
+        "game_code_raw": "20251021/HOUOKC",
+        "game_date": date(2025, 10, 21),
+    }
+    assert result.schedule["scheduled_start_et_raw"] == "2025-10-22T19:30:00Z"
+    assert result.schedule["game_date"] == date(2025, 10, 21)
+
+    document = fixture_document("0022500001", "summary")
+    document["boxScoreSummary"]["gameCode"] = "20251022/HOUOKC"
+    assert normalize_opener(summary=encode(document)).schedule_disagreement == {
+        "game_id": "0022500001",
+        "game_et_raw": "2025-10-21T19:30:00Z",
+        "game_code_raw": "20251022/HOUOKC",
+        "game_date": date(2025, 10, 21),
+    }
+
+    shifted_game = box_rosters.WorklistGame(
+        game_id=OPENER.game_id, season=OPENER.season,
+        game_type=OPENER.game_type, game_date=date(2025, 10, 22),
+    )
+    index = box_rosters.PlayerGamesIndex(
+        manifest_binding=opener_index().manifest_binding,
+        games=(shifted_game,),
+        appearances=opener_index().appearances,
+        team_rows=opener_index().team_rows,
+    )
+    assert normalize_opener(game=shifted_game, index=index).schedule_disagreement == {
+        "game_id": "0022500001",
+        "game_et_raw": "2025-10-21T19:30:00Z",
+        "game_code_raw": "20251021/HOUOKC",
+        "game_date": date(2025, 10, 22),
+    }
+
+    for game_code in ("20251021/OKCHOU", "20251021/HOUPHX"):
+        document = fixture_document("0022500001", "summary")
+        document["boxScoreSummary"]["gameCode"] = game_code
+        with pytest.raises(box_rosters.BoxRosterValidationError, match="tricode"):
+            normalize_opener(summary=encode(document))
+
+
+def test_normalize_game_rejects_team_ids_that_differ_from_player_games_rows():
+    """Would fail if a body naming other teams than player_games were normalized."""
+    ATL = 1610612737
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="team"):
+        normalize_opener(
+            index=opener_index(team_rows={OKC: ("OKC", "OKC", True), ATL: ("ATL", "ATL", False)})
+        )
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="team"):
+        normalize_opener(index=opener_index(team_rows={OKC: ("OKC", "OKC", True)}))
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="home"):
+        normalize_opener(
+            index=opener_index(team_rows={OKC: ("OKC", "OKC", False), HOU: ("HOU", "HOU", True)})
+        )
+
+    document = fixture_document("0022500001", "summary")
+    root = document["boxScoreSummary"]
+    root["homeTeam"], root["awayTeam"] = root["awayTeam"], root["homeTeam"]
+    root["homeTeamId"], root["awayTeamId"] = root["awayTeamId"], root["homeTeamId"]
+    box_rosters.validate_summary_bytes(encode(document), game_id="0022500001")
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="team"):
+        normalize_opener(summary=encode(document))
+
+    document = fixture_document("0022500001", "summary")
+    document["boxScoreSummary"]["awayTeam"]["teamId"] = ATL
+    document["boxScoreSummary"]["awayTeamId"] = ATL
+    with pytest.raises(box_rosters.BoxRosterValidationError, match="team"):
+        normalize_opener(summary=encode(document))
+
+
+def test_normalize_game_returns_team_strings_tricodes_and_roster_counts():
+    """Would fail if the per-team side outputs drifted from the body."""
+    result = normalize_opener()
+
+    assert result.team_strings == {OKC: "Oklahoma City Thunder", HOU: "Houston Rockets"}
+    assert result.tricodes == {OKC: "OKC", HOU: "HOU"}
+    assert result.roster_counts == {
+        OKC: {"active": 2, "inactive": 1},
+        HOU: {"active": 2, "inactive": 0},
+    }
+
+
+def test_comment_code_splits_on_first_separator_only():
+    """Would fail if the code were taken from any separator but the first."""
+    assert box_rosters.comment_code("DNP - Coach's Decision") == "DNP"
+    assert box_rosters.comment_code("NWT") == "NWT"
+    assert box_rosters.comment_code("DND - Injury/Illness - Left Knee") == "DND"
+    assert box_rosters.comment_code("DNP-Rest") == "DNP-Rest"
 
 
 # --------------------------------------------------------------------------

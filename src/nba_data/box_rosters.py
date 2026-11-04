@@ -17,7 +17,7 @@ import stat
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
@@ -771,3 +771,272 @@ def fetch(
             expected_metadata(game, endpoint),
             functools.partial(_PATH_VALIDATORS[endpoint], game_id=game.game_id),
         )
+
+
+# --------------------------------------------------------------------------
+# normalisation of one game into roster and schedule rows
+# --------------------------------------------------------------------------
+
+
+GAME_ROSTERS_COLUMNS = (
+    "game_id", "person_id", "season", "game_type", "game_date", "nba_team_id",
+    "team_tricode_raw", "franchise_id", "is_home", "roster_status",
+    "first_name_raw", "family_name_raw", "jersey_num", "starter_position_raw",
+    "comment_raw", "comment_code", "minutes_raw",
+)
+_GAME_ROSTERS_DTYPES = {
+    "game_id": "string", "person_id": "Int64", "season": "Int64",
+    "game_type": "string", "nba_team_id": "Int64", "team_tricode_raw": "string",
+    "franchise_id": "string", "is_home": "boolean", "roster_status": "string",
+    "first_name_raw": "string", "family_name_raw": "string",
+    "jersey_num": "string", "starter_position_raw": "string",
+    "comment_raw": "string", "comment_code": "string", "minutes_raw": "string",
+}
+COMMENT_SEPARATOR = " - "
+
+
+@dataclass(frozen=True)
+class NormalizedGame:
+    rosters: pd.DataFrame
+    schedule: dict
+    team_strings: dict[int, str]
+    tricodes: dict[int, str]
+    appearance_disagreements: tuple[dict, ...]
+    schedule_disagreement: dict | None
+    roster_counts: dict[int, dict[str, int]]
+
+
+def comment_code(comment: str) -> str:
+    """Return the text before the first ``" - "``, or the whole comment."""
+    if not isinstance(comment, str):
+        raise BoxRosterValidationError(f"comment must be a string: {comment!r}")
+    head, separator, _ = comment.partition(COMMENT_SEPARATOR)
+    return head if separator else comment
+
+
+def _null_when_empty(value: str) -> str | None:
+    return value if value else None
+
+
+def _date_prefix(value: str, length: int, *, iso: bool) -> date | None:
+    prefix = value[:length]
+    try:
+        if iso:
+            return date.fromisoformat(prefix)
+        return datetime.strptime(prefix, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _require_sides_agree(
+    traditional_root: Mapping, summary_root: Mapping, game: WorklistGame,
+    index: PlayerGamesIndex,
+) -> None:
+    home_id = traditional_root["homeTeam"]["teamId"]
+    away_id = traditional_root["awayTeam"]["teamId"]
+    if (
+        summary_root["homeTeamId"] != home_id
+        or summary_root["awayTeamId"] != away_id
+    ):
+        raise BoxRosterValidationError(
+            f"game {game.game_id}: summary teams "
+            f"home={summary_root['homeTeamId']} away={summary_root['awayTeamId']} "
+            f"differ from traditional teams home={home_id} away={away_id}"
+        )
+    team_rows = index.team_rows.get(game.game_id)
+    if not team_rows:
+        raise BoxRosterValidationError(
+            f"game {game.game_id}: no player_games team rows in the index"
+        )
+    if set(team_rows) != {home_id, away_id}:
+        raise BoxRosterValidationError(
+            f"game {game.game_id}: body teams {sorted((home_id, away_id))} differ "
+            f"from player_games team ids {sorted(team_rows)}"
+        )
+    for team_id, is_home in ((home_id, True), (away_id, False)):
+        if team_rows[team_id][2] != is_home:
+            raise BoxRosterValidationError(
+                f"game {game.game_id}: team {team_id} is "
+                f"{'home' if is_home else 'away'} in the body but "
+                f"{'home' if team_rows[team_id][2] else 'away'} in player_games"
+            )
+
+
+def _require_game_code_tricodes(
+    game_code: str, traditional_root: Mapping, game_id: str
+) -> None:
+    code_away, code_home = game_code[9:12], game_code[12:15]
+    body_away = traditional_root["awayTeam"]["teamTricode"]
+    body_home = traditional_root["homeTeam"]["teamTricode"]
+    if (code_away, code_home) != (body_away, body_home):
+        raise BoxRosterValidationError(
+            f"game {game_id}: gameCode tricodes {code_away}/{code_home} differ "
+            f"from the traditional teamTricodes {body_away}/{body_home}"
+        )
+
+
+def normalize_game(
+    traditional: bytes,
+    summary: bytes,
+    *,
+    game: WorklistGame,
+    index: PlayerGamesIndex,
+) -> NormalizedGame:
+    """Turn one game's two validated bodies into roster and schedule rows.
+
+    Disagreements between the bodies and ``player_games`` are reported, never
+    resolved here: a credited person with a non-empty comment, an empty-comment
+    player who is not credited and a credited person with no traditional row
+    each become an ``appearance_disagreements`` entry; a ``gameEt`` /
+    ``gameCode`` / ``game_date`` date disagreement sets
+    ``schedule_disagreement``. Structural conflicts (team ids or sides that
+    differ between the bodies and ``player_games``, ``gameCode`` tricodes that
+    differ from the traditional body, one person in both an active and an
+    inactive list) raise ``BoxRosterValidationError``.
+    """
+    validate_traditional_bytes(traditional, game_id=game.game_id)
+    validate_summary_bytes(summary, game_id=game.game_id)
+    traditional_root = json.loads(traditional)["boxScoreTraditional"]
+    summary_root = json.loads(summary)["boxScoreSummary"]
+
+    _require_sides_agree(traditional_root, summary_root, game, index)
+    game_code = summary_root["gameCode"]
+    _require_game_code_tricodes(game_code, traditional_root, game.game_id)
+    team_rows = index.team_rows[game.game_id]
+    credited = frozenset(index.appearances.get(game.game_id, frozenset()))
+
+    team_strings: dict[int, str] = {}
+    tricodes: dict[int, str] = {}
+    roster_counts: dict[int, dict[str, int]] = {}
+    records: list[dict] = []
+    active_people: dict[int, dict] = {}
+    inactive_people: dict[int, dict] = {}
+
+    for side, is_home in (("homeTeam", True), ("awayTeam", False)):
+        team = traditional_root[side]
+        team_id = team["teamId"]
+        inactives = summary_root[side]["inactives"]
+        team_strings[team_id] = f"{team['teamCity']} {team['teamName']}"
+        tricodes[team_id] = team["teamTricode"]
+        roster_counts[team_id] = {
+            "active": len(team["players"]), "inactive": len(inactives),
+        }
+        base = {
+            "game_id": game.game_id,
+            "season": game.season,
+            "game_type": game.game_type,
+            "game_date": game.game_date,
+            "nba_team_id": team_id,
+            "team_tricode_raw": team["teamTricode"],
+            "franchise_id": team_rows[team_id][0],
+            "is_home": is_home,
+        }
+        for player in team["players"]:
+            person_id = player["personId"]
+            if person_id in active_people or person_id in inactive_people:
+                raise BoxRosterValidationError(
+                    f"game {game.game_id}: person {person_id} is listed twice "
+                    "(both active lists or an active and an inactive list)"
+                )
+            comment = _null_when_empty(player["comment"])
+            record = {
+                **base,
+                "person_id": person_id,
+                "roster_status": (
+                    "played" if person_id in credited else "active_not_played"
+                ),
+                "first_name_raw": player["firstName"],
+                "family_name_raw": player["familyName"],
+                "jersey_num": _null_when_empty(player["jerseyNum"].strip()),
+                "starter_position_raw": _null_when_empty(player["position"]),
+                "comment_raw": comment,
+                "comment_code": None if comment is None else comment_code(comment),
+                "minutes_raw": _null_when_empty(player["statistics"]["minutes"]),
+            }
+            active_people[person_id] = record
+            records.append(record)
+        for inactive in inactives:
+            person_id = inactive["personId"]
+            if person_id in active_people or person_id in inactive_people:
+                raise BoxRosterValidationError(
+                    f"game {game.game_id}: person {person_id} is listed twice "
+                    "(both inactive lists or an active and an inactive list)"
+                )
+            record = {
+                **base,
+                "person_id": person_id,
+                "roster_status": "inactive",
+                "first_name_raw": inactive["firstName"],
+                "family_name_raw": inactive["familyName"],
+                "jersey_num": _null_when_empty(inactive["jerseyNum"].strip()),
+                "starter_position_raw": None,
+                "comment_raw": None,
+                "comment_code": None,
+                "minutes_raw": None,
+            }
+            inactive_people[person_id] = record
+            records.append(record)
+
+    disagreements: list[dict] = []
+    for person_id, record in active_people.items():
+        is_credited = person_id in credited
+        has_comment = record["comment_raw"] is not None
+        if is_credited == has_comment:
+            disagreements.append({
+                "season": game.season,
+                "game_id": game.game_id,
+                "person_id": person_id,
+                "comment_raw": record["comment_raw"],
+                "minutes_raw": record["minutes_raw"],
+                "appearance": "credited" if is_credited else "absent",
+            })
+    for person_id in credited - active_people.keys():
+        disagreements.append({
+            "season": game.season,
+            "game_id": game.game_id,
+            "person_id": person_id,
+            "comment_raw": None,
+            "minutes_raw": None,
+            "appearance": "credited",
+        })
+    disagreements.sort(key=lambda entry: entry["person_id"])
+
+    rosters = pd.DataFrame.from_records(records, columns=list(GAME_ROSTERS_COLUMNS))
+    rosters = rosters.astype(_GAME_ROSTERS_DTYPES)
+    rosters = rosters.sort_values(
+        ["nba_team_id", "roster_status", "person_id"], kind="stable"
+    ).reset_index(drop=True)
+
+    game_et_raw = summary_root["gameEt"]
+    scheduled_start_utc = _parse_iso_instant(
+        summary_root["gameTimeUTC"], "box-score summary gameTimeUTC"
+    ).astimezone(timezone.utc)
+    schedule = {
+        "game_id": game.game_id,
+        "season": game.season,
+        "game_type": game.game_type,
+        "game_date": game.game_date,
+        "scheduled_start_utc": scheduled_start_utc,
+        "scheduled_start_et_raw": game_et_raw,
+        "game_code_raw": game_code,
+    }
+    et_date = _date_prefix(game_et_raw, 10, iso=True)
+    code_date = _date_prefix(game_code, 8, iso=False)
+    schedule_disagreement = None
+    if not (et_date == code_date == game.game_date):
+        schedule_disagreement = {
+            "game_id": game.game_id,
+            "game_et_raw": game_et_raw,
+            "game_code_raw": game_code,
+            "game_date": game.game_date,
+        }
+
+    return NormalizedGame(
+        rosters=rosters,
+        schedule=schedule,
+        team_strings=team_strings,
+        tricodes=tricodes,
+        appearance_disagreements=tuple(disagreements),
+        schedule_disagreement=schedule_disagreement,
+        roster_counts=roster_counts,
+    )
